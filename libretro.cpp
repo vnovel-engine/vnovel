@@ -236,21 +236,29 @@ bool retro_load_game(const struct retro_game_info *game)
   }
 
   // Auto-detect encryption key from .exe in game directory.
-  // NScripter embeds a 256-entry key table in its executables.
-  const char* exe_names[] = {
-    "nscr.exe", "Tsukihime.exe", "onscripter.exe",
-    "ひぐらしのなく頃に解.exe",  // Higurashi Kai
-    NULL
-  };
-  for (int i = 0; exe_names[i]; i++) {
-    char test_path[PATH_MAX_LENGTH];
-    fill_pathname_join(test_path, archive_path, exe_names[i], sizeof(test_path));
-    FILE* fp = fopen(test_path, "rb");
-    if (fp) {
-      fclose(fp);
-      ons->setKeyEXE(test_path);
-      log_cb(RETRO_LOG_INFO, "Using key from: %s\n", test_path);
-      break;
+  // Only needed for encrypted scripts (nscript.___, mode 3).
+  // nscript.dat (mode 1) uses simple XOR and doesn't need a key table.
+  char enc_check[PATH_MAX_LENGTH];
+  fill_pathname_join(enc_check, archive_path, "nscript.___", sizeof(enc_check));
+  FILE *enc_fp = fopen(enc_check, "rb");
+  if (enc_fp) {
+    fclose(enc_fp); // nscript.___ exists — need key table
+    const char* exe_names[] = {
+      "nscr.exe", "Tsukihime.exe", "onscripter.exe",
+      "ひぐらしのなく頃に解.exe",  // Higurashi Kai
+      "game.exe",  // generic fallback (renamed from Japanese)
+      NULL
+    };
+    for (int i = 0; exe_names[i]; i++) {
+      char test_path[PATH_MAX_LENGTH];
+      fill_pathname_join(test_path, archive_path, exe_names[i], sizeof(test_path));
+      FILE* fp = fopen(test_path, "rb");
+      if (fp) {
+        fclose(fp);
+        ons->setKeyEXE(test_path);
+        log_cb(RETRO_LOG_INFO, "Using key from: %s\n", test_path);
+        break;
+      }
     }
   }
 
