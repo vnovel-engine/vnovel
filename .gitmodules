@@ -1,0 +1,9 @@
+[submodule "deps-overlay"]
+	path = deps-overlay
+	url = https://gitlab.com/matchaxnb/onscripter-libretro.git
+[submodule "deps/onscripter-en"]
+	path = deps/onscripter-en
+	url = https://gitlab.com/matchaxnb/onscripter-en.git
+[submodule "smpeg"]
+	path = smpeg
+	url = https://gitlab.com/matchaxnb/smpeg.git

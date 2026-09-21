@@ -1,0 +1,12 @@
+*.o
+*.so
+*.dll
+*.a
+*.dylib
+deps/bzip2
+deps/libmad
+deps/libogg
+deps/libvorbis
+deps/libretro-common
+deps/sdl
+deps/sdl-mixer
