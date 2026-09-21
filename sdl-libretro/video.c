@@ -169,8 +169,17 @@ static void DUMMY_UnlockHWSurface(_THIS, SDL_Surface *surface)
   return;
 }
 
+/* Frame sync semaphore: when LIBRETRO_FRAME_SYNC is enabled, the engine
+   blocks here after each screen update, waiting for retro_run() to post.
+   This gives 1:1 frame synchronization — every flush() is displayed. */
+SDL_sem *SDL_libretro_wait_sem = NULL;
+
 static void DUMMY_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 {
+#ifdef LIBRETRO_FRAME_SYNC
+  if (SDL_libretro_wait_sem)
+    SDL_SemWait(SDL_libretro_wait_sem);
+#endif
 }
 
 int DUMMY_SetColors(_THIS, int firstcolor, int ncolors, SDL_Color *colors)

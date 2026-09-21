@@ -104,7 +104,11 @@ else
 endif
 
 # --- Global defines ---
-DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64
+DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
+
+# Frame synchronization: remove -DLIBRETRO_FRAME_SYNC to disable 1:1 frame sync.
+# When enabled, every flush() is displayed exactly once.
+# When disabled, the engine runs freely, useful for debugging.
 
 # --- Compiler flags ---
 CFLAGS   += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall $(fpic)

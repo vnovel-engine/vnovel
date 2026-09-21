@@ -30,6 +30,15 @@ retro_input_state_t  SDL_libretro_input_state_cb;
 SDL_AudioSpec       *SDL_libretro_audio_spec = NULL;
 SDL_sem             *SDL_libretro_event_sem  = NULL;
 
+/* Frame sync: when enabled, DUMMY_UpdateRects blocks on this semaphore
+   after each screen flush. retro_run() posts it once per frame, giving
+   1:1 frame synchronization — every flush() is displayed.
+   Controlled by -DLIBRETRO_FRAME_SYNC at build time. */
+#ifdef LIBRETRO_FRAME_SYNC
+extern SDL_sem *SDL_libretro_wait_sem;
+static SDL_sem *fs_sem = NULL;
+#endif
+
 static void                        fallback_log(enum retro_log_level level, const char *fmt, ...);
 static retro_log_printf_t          log_cb = fallback_log;
 static retro_video_refresh_t       video_cb;
@@ -225,6 +234,11 @@ bool retro_load_game(const struct retro_game_info *game)
   }
 
   SDL_libretro_event_sem = SDL_CreateSemaphore(0);
+#ifdef LIBRETRO_FRAME_SYNC
+  // Semaphore created here but not assigned yet — engine init flushes must not block
+  fs_sem = SDL_CreateSemaphore(0); // created here, activated in retro_run
+  SDL_libretro_wait_sem = NULL; // disabled during init
+#endif
 
   ons_thread = SDL_CreateThread(ons_main, NULL);
 
@@ -246,6 +260,16 @@ void retro_reset(void)
 
 void retro_run(void)
 {
+#ifdef LIBRETRO_FRAME_SYNC
+  // Activate frame sync on the first retro_run call.
+  // By now the engine has finished init and is in its event loop.
+  static bool frame_sync_activated = false;
+  if (!frame_sync_activated) {
+    SDL_libretro_wait_sem = fs_sem;
+    frame_sync_activated = true;
+  }
+#endif
+
   // If the frontend has disabled video (e.g. menu open), pause the ONScripter thread
   // by not posting the event semaphore — the thread blocks in DUMMY_PumpEvents
   int av_enable = 1;
@@ -269,6 +293,11 @@ void retro_run(void)
   input_poll_cb();
 
   SDL_libretro_PumpEvents();
+
+#ifdef LIBRETRO_FRAME_SYNC
+  // Wake the engine thread — one frame's worth of events has been injected
+  SDL_SemPost(SDL_libretro_wait_sem);
+#endif
 
   // Show toast when engine state actually changes
   static bool prev_auto = false, prev_skip = false;
@@ -373,6 +402,10 @@ void retro_unload_game(void)
   }
   SDL_DestroySemaphore(SDL_libretro_event_sem);
   SDL_libretro_event_sem = nullptr;
+#ifdef LIBRETRO_FRAME_SYNC
+  SDL_libretro_wait_sem = NULL; // unblock engine before destroying
+  SDL_DestroySemaphore(fs_sem);
+#endif
   delete ons;
   ons = nullptr;
   SDL_Quit();
