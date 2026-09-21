@@ -255,7 +255,16 @@ void retro_deinit(void)
 
 void retro_reset(void)
 {
-  if (ons) ons->resetCommand();
+#ifdef LIBRETRO_FRAME_SYNC
+  SDL_sem *saved_wait_sem = SDL_libretro_wait_sem;
+  SDL_libretro_wait_sem = NULL;
+#endif
+  if (ons) {
+    ons->resetCommand();
+  }
+#ifdef LIBRETRO_FRAME_SYNC
+  SDL_libretro_wait_sem = saved_wait_sem;
+#endif
 }
 
 void retro_run(void)
