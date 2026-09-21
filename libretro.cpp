@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include "libretro_core_options.h"
+
 #ifdef _WIN32
 #define ons_mkdir(path) mkdir(path)
 #else
@@ -38,6 +40,11 @@ SDL_sem             *SDL_libretro_event_sem  = NULL;
 extern SDL_sem *SDL_libretro_wait_sem;
 static SDL_sem *fs_sem = NULL;
 #endif
+
+/* Core options (set via retro_set_environment, read in retro_run) */
+static bool opt_frame_sync = true;
+static bool opt_indicators = true;
+static int  opt_debug_level = 0;
 
 static void                        fallback_log(enum retro_log_level level, const char *fmt, ...);
 static retro_log_printf_t          log_cb = fallback_log;
@@ -101,6 +108,19 @@ void retro_set_environment(retro_environment_t cb)
   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
     log_cb = log.log;
   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_descs);
+
+  // Core options: frame sync, indicators, debug level
+  libretro_set_core_options(environ_cb, &opt_frame_sync, &opt_indicators, &opt_debug_level);
+
+  // Callback to let RetroArch know we support updating options at runtime
+  struct retro_core_options_update_display_callback update_cb = {
+    .callback = []() -> bool {
+      // Options are re-read via retro_variable at each retro_run
+      return true;
+    }
+  };
+  environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK, &update_cb);
+
   // L button generates right-click to open the rmenu (save/load/lookback)
   SDL_libretro_rightclick_button = RETRO_DEVICE_ID_JOYPAD_L;
   // L button no longer sends SDLK_o (one-page mode)
@@ -215,12 +235,13 @@ bool retro_load_game(const struct retro_game_info *game)
     ons->setSavePath(archive_path);
   }
 
-  // Auto-detect encryption key from .exe in game directory (e.g. Tsukihime.exe)
-  // This is needed for encrypted NScripter scripts (encryption mode 3)
-  char exe_path[PATH_MAX_LENGTH];
-  fill_pathname_join(exe_path, archive_path, "*.exe", sizeof(exe_path));
-  // Try common names
-  const char* exe_names[] = {"nscr.exe", "Tsukihime.exe", "onscripter.exe", NULL};
+  // Auto-detect encryption key from .exe in game directory.
+  // NScripter embeds a 256-entry key table in its executables.
+  const char* exe_names[] = {
+    "nscr.exe", "Tsukihime.exe", "onscripter.exe",
+    "ひぐらしのなく頃に解.exe",  // Higurashi Kai
+    NULL
+  };
   for (int i = 0; exe_names[i]; i++) {
     char test_path[PATH_MAX_LENGTH];
     fill_pathname_join(test_path, archive_path, exe_names[i], sizeof(test_path));
@@ -239,6 +260,10 @@ bool retro_load_game(const struct retro_game_info *game)
   fs_sem = SDL_CreateSemaphore(0); // created here, activated in retro_run
   SDL_libretro_wait_sem = NULL; // disabled during init
 #endif
+
+  // Apply core options
+  ons->setDebugLevel(opt_debug_level);
+  log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
 
   ons_thread = SDL_CreateThread(ons_main, NULL);
 
@@ -274,8 +299,37 @@ void retro_run(void)
   // By now the engine has finished init and is in its event loop.
   static bool frame_sync_activated = false;
   if (!frame_sync_activated) {
-    SDL_libretro_wait_sem = fs_sem;
+    if (opt_frame_sync)
+      SDL_libretro_wait_sem = fs_sem;
     frame_sync_activated = true;
+  }
+
+  // Re-read core options each frame (allows hot-reload from Quick Menu)
+  struct retro_variable var = {0};
+
+  var.key = "onscripter-en_frame_sync";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+    bool new_sync = (strcmp(var.value, "enabled") == 0);
+    if (new_sync != opt_frame_sync) {
+      opt_frame_sync = new_sync;
+      if (opt_frame_sync && !SDL_libretro_wait_sem)
+        SDL_libretro_wait_sem = fs_sem;
+      else if (!opt_frame_sync)
+        SDL_libretro_wait_sem = NULL;
+    }
+  }
+
+  var.key = "onscripter-en_mode_indicators";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    opt_indicators = (strcmp(var.value, "enabled") == 0);
+
+  var.key = "onscripter-en_debug_level";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+    int new_debug = atoi(var.value);
+    if (new_debug != opt_debug_level) {
+      opt_debug_level = new_debug;
+      if (ons) ons->setDebugLevel(opt_debug_level);
+    }
   }
 #endif
 
@@ -320,7 +374,7 @@ void retro_run(void)
   // Draw discreet persistent mode indicators in top-right corner.
   // Save/restore the pixels under the badges so they don't persist on the
   // ONScripter surface between frames (which uses dirty-rect rendering).
-  if (screen && screen->pixels && ons) {
+  if (opt_indicators && screen && screen->pixels && ons) {
     Uint32 *px = (Uint32 *)screen->pixels;
     int w = screen->w, h = screen->h;
     int pitch = screen->pitch / 4;
@@ -349,7 +403,7 @@ void retro_run(void)
         for (int dx = 0; dx < badge_w; dx++)
           if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w) {
             saved_px[saved_count * badge_w * badge_h + dy * badge_w + dx] = px[(by+dy) * pitch + (bx+dx)];
-            px[(by+dy) * pitch + (bx+dx)] = 0xFF22AA22;
+            px[(by+dy) * pitch + (bx+dx)] = 0xCC22AA22;
           }
       saved_count++;
       bx -= badge_w + gap;
@@ -362,7 +416,7 @@ void retro_run(void)
         for (int dx = 0; dx < badge_w; dx++)
           if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w) {
             saved_px[saved_count * badge_w * badge_h + dy * badge_w + dx] = px[(by+dy) * pitch + (bx+dx)];
-            px[(by+dy) * pitch + (bx+dx)] = 0xFFAAAA22;
+            px[(by+dy) * pitch + (bx+dx)] = 0xCCAAAA22;
           }
       saved_count++;
     }
