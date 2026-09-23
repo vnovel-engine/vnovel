@@ -24,12 +24,7 @@ static retro_log_printf_t          log_cb = fallback_log;
 static jmp_buf engine_error_jmp;
 static bool engine_error_jmp_valid = false;
 
-extern "C" void ons_script_error_longjmp(void)
-{
-  if (engine_error_jmp_valid) longjmp(engine_error_jmp, 1);
-}
-
-extern "C" void pons_script_error_longjmp(void)
+extern "C" void libretro_script_error_longjmp(void)
 {
   if (engine_error_jmp_valid) longjmp(engine_error_jmp, 1);
 }
