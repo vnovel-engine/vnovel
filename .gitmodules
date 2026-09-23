@@ -7,3 +7,6 @@
 [submodule "smpeg"]
 	path = smpeg
 	url = https://gitlab.com/matchaxnb/smpeg.git
+[submodule "deps/ponscripter"]
+	path = deps/ponscripter
+	url = https://gitlab.com/matchaxnb/ponscripter.git

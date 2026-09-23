@@ -7,6 +7,7 @@
 #include <sys/types.h>
 
 #include "libretro_core_options.h"
+#include "engine_cabi.h"
 
 #ifdef _WIN32
 #define ons_mkdir(path) mkdir(path)
@@ -52,7 +53,8 @@ static retro_video_refresh_t       video_cb;
 static retro_input_poll_t          input_poll_cb;
 static retro_audio_sample_batch_t  audio_batch_cb;
 static retro_environment_t         environ_cb;
-static ONScripterLabel *ons = nullptr;
+static EngineHandle engine = nullptr;
+static const EngineVTable *vtable = nullptr;
 static SDL_Thread                 *ons_thread;
 static uint32_t                    delta;
 
@@ -162,8 +164,8 @@ void retro_get_system_info(struct retro_system_info *info)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-  int width = ons ? ons->getWidth() : 0;
-  int height = ons ? ons->getHeight() : 0;
+  int width = engine ? vtable->getWidth(engine) : 0;
+  int height = engine ? vtable->getHeight(engine) : 0;
   // Clamp to sane defaults — initSDL() may not have run yet
   if (width <= 0 || width > 4096) width = 640;
   if (height <= 0 || height > 4096) height = 480;
@@ -202,14 +204,14 @@ static int ons_main(void *data)
   }
   ons_error_jmp_valid = true;
 
-  if (ons->init()) {
+  if (vtable->init(engine)) {
     log_cb(RETRO_LOG_ERROR, "Failed to initialize ONScripter\n");
     ons_error_jmp_valid = false;
     return -1;
   }
 
   SDL_ShowCursor(SDL_DISABLE);
-  ons->executeLabel();
+  vtable->executeLabel(engine);
   ons_error_jmp_valid = false;
   return 0;
 }
@@ -221,8 +223,20 @@ bool retro_load_game(const struct retro_game_info *game)
 
   char archive_path[PATH_MAX_LENGTH];
   fill_pathname_basedir(archive_path, game->path, sizeof(archive_path));
-  ons = new ONScripterLabel();
-  ons->setArchivePath(archive_path);
+
+  // Detect engine: PONScripter for pscript.dat, ONScripter-EN otherwise
+  char pscript_check[PATH_MAX_LENGTH];
+  fill_pathname_join(pscript_check, archive_path, "pscript.dat", sizeof(pscript_check));
+  FILE *pscript_fp = fopen(pscript_check, "rb");
+  if (pscript_fp) {
+    fclose(pscript_fp);
+    vtable = &pons_engine_vtable; engine = vtable->create();
+    log_cb(RETRO_LOG_INFO, "Using PONScripter engine (pscript.dat)\n");
+  } else {
+    vtable = &ons_engine_vtable; engine = vtable->create();
+    log_cb(RETRO_LOG_INFO, "Using ONScripter-EN engine (nscript.dat)\n");
+  }
+  vtable->setArchivePath(engine, archive_path);
 
   // Honor RetroArch's save directory; fall back to game directory
   const char *save_dir = NULL;
@@ -230,9 +244,9 @@ bool retro_load_game(const struct retro_game_info *game)
     char save_path[PATH_MAX_LENGTH];
     fill_pathname_join(save_path, save_dir, "onscripter-en", sizeof(save_path));
     ons_mkdir(save_path);
-    ons->setSavePath(save_path);
+    vtable->setSavePath(engine, save_path);
   } else {
-    ons->setSavePath(archive_path);
+    vtable->setSavePath(engine, archive_path);
   }
 
   // Auto-detect encryption key from .exe in game directory.
@@ -255,7 +269,7 @@ bool retro_load_game(const struct retro_game_info *game)
       FILE* fp = fopen(test_path, "rb");
       if (fp) {
         fclose(fp);
-        ons->setKeyEXE(test_path);
+        vtable->setKeyEXE(engine, test_path);
         log_cb(RETRO_LOG_INFO, "Using key from: %s\n", test_path);
         break;
       }
@@ -270,7 +284,7 @@ bool retro_load_game(const struct retro_game_info *game)
 #endif
 
   // Apply core options
-  ons->setDebugLevel(opt_debug_level);
+  vtable->setDebugLevel(engine, opt_debug_level);
   log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
 
   ons_thread = SDL_CreateThread(ons_main, NULL);
@@ -292,8 +306,8 @@ void retro_reset(void)
   SDL_sem *saved_wait_sem = SDL_libretro_wait_sem;
   SDL_libretro_wait_sem = NULL;
 #endif
-  if (ons) {
-    ons->resetCommand();
+  if (engine) {
+    vtable->resetCommand(engine);
   }
 #ifdef LIBRETRO_FRAME_SYNC
   SDL_libretro_wait_sem = saved_wait_sem;
@@ -336,7 +350,7 @@ void retro_run(void)
     int new_debug = atoi(var.value);
     if (new_debug != opt_debug_level) {
       opt_debug_level = new_debug;
-      if (ons) ons->setDebugLevel(opt_debug_level);
+      if (engine) vtable->setDebugLevel(engine, opt_debug_level);
     }
   }
 #endif
@@ -372,8 +386,8 @@ void retro_run(void)
 
   // Show toast when engine state actually changes
   static bool prev_auto = false, prev_skip = false;
-  bool cur_auto = ons && ons->isAutoMode();
-  bool cur_skip = ons && ons->isSkipMode();
+  bool cur_auto = engine && vtable->isAutoMode(engine);
+  bool cur_skip = engine && vtable->isSkipMode(engine);
   if (cur_auto != prev_auto)  show_message(cur_auto ? "Auto: on" : "Auto: off");
   if (cur_skip != prev_skip) show_message(cur_skip ? "Skip: on" : "Skip: off");
   prev_auto  = cur_auto;
@@ -382,7 +396,7 @@ void retro_run(void)
   // Draw discreet persistent mode indicators in top-right corner.
   // Save/restore the pixels under the badges so they don't persist on the
   // ONScripter surface between frames (which uses dirty-rect rendering).
-  if (opt_indicators && screen && screen->pixels && ons) {
+  if (opt_indicators && screen && screen->pixels && engine) {
     Uint32 *px = (Uint32 *)screen->pixels;
     int w = screen->w, h = screen->h;
     int pitch = screen->pitch / 4;
@@ -404,7 +418,7 @@ void retro_run(void)
     // Draw badges and save what's underneath
     int bx = w - badge_w - gap;
     // Green badge for auto mode
-    if (ons->isAutoMode()) {
+    if (vtable->isAutoMode(engine)) {
       saved_pos[saved_count][0] = bx;
       saved_pos[saved_count][1] = by;
       for (int dy = 0; dy < badge_h; dy++)
@@ -417,7 +431,7 @@ void retro_run(void)
       bx -= badge_w + gap;
     }
     // Yellow badge for skip mode
-    if (ons->isSkipMode()) {
+    if (vtable->isSkipMode(engine)) {
       saved_pos[saved_count][0] = bx;
       saved_pos[saved_count][1] = by;
       for (int dy = 0; dy < badge_h; dy++)
@@ -477,8 +491,8 @@ void retro_unload_game(void)
   SDL_libretro_wait_sem = NULL; // unblock engine before destroying
   SDL_DestroySemaphore(fs_sem);
 #endif
-  delete ons;
-  ons = nullptr;
+  vtable->destroy(engine);
+  engine = nullptr;
   SDL_Quit();
 }
 

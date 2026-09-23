@@ -118,7 +118,7 @@ LDFLAGS  += $(LIBM)
 # --- Source files and includes ---
 include Makefile.common
 
-OBJECTS := $(SOURCES_C:.c=.o) $(SOURCES_CXX:.cpp=.o) $(SOURCES_S:.S=.o)
+OBJECTS := $(SOURCES_C:.c=.o) $(SOURCES_CXX:.cpp=.o) $(ONS_OBJS) $(PONS_OBJS) engine_ons_cabi.o engine_pons_cabi.o $(SOURCES_S:.S=.o)
 
 # --- Build rules ---
 all: $(TARGET)
@@ -135,8 +135,18 @@ $(TARGET): $(OBJECTS)
 	@$(if $(Q), $(shell echo echo CXX $<),)
 	$(Q)$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+# ONScripter-EN (hidden visibility, separate objects)
+%.ons.o: %.cpp
+	@$(if $(Q), $(shell echo echo CXX(ons) $<),)
+	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
+
+# PONScripter (hidden visibility, separate objects)
+%.pons.o: %.cpp
+	@$(if $(Q), $(shell echo echo CXX(pons) $<),)
+	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
+
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(ONS_OBJS) $(PONS_OBJS) $(TARGET)
 
 install:
 	@test -n "$(DESTDIR)" || (echo "ERROR: set DESTDIR" && false)
@@ -147,3 +157,20 @@ install:
 
 print-%:
 	@echo '$*=$($*)'
+
+
+# C ABI wrappers: compile with only their engine's include path
+# to avoid header name conflicts between ONScripter-EN and PONScripter
+engine_ons_cabi.o: engine_ons_cabi.cpp
+	@$(if $(Q), $(shell echo echo CXX(ons-cabi) $<),)
+	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
+		-I$(LIBRETRO_COMM)/include -I$(ONSCRIPTER_EN) -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
+		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(CORE_DIR) -I$(SMPEG_DIR) \
+		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
+
+engine_pons_cabi.o: engine_pons_cabi.cpp
+	@$(if $(Q), $(shell echo echo CXX(pons-cabi) $<),)
+	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
+		-I$(LIBRETRO_COMM)/include -I$(PONSCRIPTER) -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
+		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(CORE_DIR) -I$(SMPEG_DIR) \
+		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<

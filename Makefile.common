@@ -7,13 +7,15 @@ DEPS_DIR        := $(CORE_DIR)/deps
 LIBRETRO_COMM   := $(DEPS_DIR)/libretro-common
 SDL_LIBRETRO    := $(CORE_DIR)/sdl-libretro
 ONSCRIPTER_EN   := $(DEPS_DIR)/onscripter-en
+PONSCRIPTER     := $(DEPS_DIR)/ponscripter/src
 SMPEG_DIR       := $(CORE_DIR)/smpeg
 SDL_DIR         := $(DEPS_DIR)/sdl
 
-# --- Include paths ---
+# --- Include paths (shared) ---
 INCFLAGS := \
   -I$(LIBRETRO_COMM)/include \
   -I$(ONSCRIPTER_EN) \
+  -I$(PONSCRIPTER) \
   -I$(DEPS_DIR)/bzip2 \
   -I$(DEPS_DIR)/libogg/include \
   -I$(DEPS_DIR)/libvorbis/include \
@@ -135,8 +137,12 @@ SOURCES_CXX += $(addprefix $(SMPEG_DIR)/video/, \
   motionvec.cpp parseblock.cpp readfile.cpp util.cpp vhar128.cpp video.cpp \
 )
 
-# --- ONScripter-EN engine ---
-SOURCES_CXX += $(addprefix $(ONSCRIPTER_EN)/, \
+# =============================================================================
+# Engine: ONScripter-EN
+# Compiled as a static library with -fvisibility=hidden to avoid symbol
+# conflicts with PONScripter (they share class names like ScriptHandler).
+# =============================================================================
+ONS_CXX := $(addprefix $(ONSCRIPTER_EN)/, \
   ONScripterLabel.cpp \
   ONScripterLabel_animation.cpp \
   ONScripterLabel_command.cpp \
@@ -168,7 +174,53 @@ SOURCES_CXX += $(addprefix $(ONSCRIPTER_EN)/, \
   graphics_routines.cpp \
 )
 
-# --- Core files ---
+ONS_OBJS := $(ONS_CXX:.cpp=.ons.o)
+$(ONS_OBJS): CXXFLAGS += -fvisibility=hidden
+
+# =============================================================================
+# Engine: PONScripter
+# Same approach — hidden visibility, separate object files.
+# =============================================================================
+PONS_CXX := $(addprefix $(PONSCRIPTER)/, \
+  PonscripterLabel.cpp \
+  PonscripterLabel_animation.cpp \
+  PonscripterLabel_command.cpp \
+  PonscripterLabel_effect.cpp \
+  PonscripterLabel_event.cpp \
+  PonscripterLabel_ext.cpp \
+  PonscripterLabel_file.cpp \
+  PonscripterLabel_file2.cpp \
+  PonscripterLabel_image.cpp \
+  PonscripterLabel_rmenu.cpp \
+  PonscripterLabel_sound.cpp \
+  PonscripterLabel_text.cpp \
+  ScriptHandler.cpp \
+  ScriptParser.cpp \
+  ScriptParser_command.cpp \
+  AnimationInfo.cpp \
+  DirtyRect.cpp \
+  DirPaths.cpp \
+  DirectReader.cpp \
+  SarReader.cpp \
+  NsaReader.cpp \
+  MadWrapper.cpp \
+  resize_image.cpp \
+  font.cpp \
+  Fontinfo.cpp \
+  encoding.cpp \
+  cp932_encoding.cpp \
+  expression.cpp \
+  prng.cpp \
+  pstring.cpp \
+  bstrwrap.cpp \
+)
+
+PONS_OBJS := $(PONS_CXX:.cpp=.pons.o)
+$(PONS_OBJS): CXXFLAGS += -fvisibility=hidden
+
+# =============================================================================
+# Core files (libretro API + C ABI wrappers for both engines)
+# =============================================================================
 SOURCES_CXX += \
   $(CORE_DIR)/libretro.cpp \
   $(CORE_DIR)/embed_stub.cpp
