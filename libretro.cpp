@@ -15,15 +15,20 @@
 #define ons_mkdir(path) mkdir(path, 0755)
 #endif
 
-// ONScripter calls exit() on script errors and SDL init failures.
-// We catch these via longjmp. errorAndExit() calls ons_script_error_longjmp()
-// which longjmps back to ons_main's setjmp checkpoint.
-static jmp_buf ons_error_jmp;
-static bool ons_error_jmp_valid = false;
+// Both engines call exit() on script errors and SDL init failures.
+// We catch these via longjmp. errorAndExit() calls the engine-specific
+// longjmp function which jumps back to ons_main's setjmp checkpoint.
+static jmp_buf engine_error_jmp;
+static bool engine_error_jmp_valid = false;
 
 extern "C" void ons_script_error_longjmp(void)
 {
-  if (ons_error_jmp_valid) longjmp(ons_error_jmp, 1);
+  if (engine_error_jmp_valid) longjmp(engine_error_jmp, 1);
+}
+
+extern "C" void pons_script_error_longjmp(void)
+{
+  if (engine_error_jmp_valid) longjmp(engine_error_jmp, 1);
 }
 
 //don't use #include <onscripter/ONScripter.h>, use #include <ONScripterLabel.h> instead (stop including wrong header file)  
@@ -196,23 +201,23 @@ void retro_init(void)
 
 static int ons_main(void *data)
 {
-  if (setjmp(ons_error_jmp) != 0) {
+  if (setjmp(engine_error_jmp) != 0) {
     // ONScripter called errorAndExit() - caught by longjmp
     log_cb(RETRO_LOG_ERROR, "ONScripter script error - returning cleanly\n");
-    ons_error_jmp_valid = false;
+    engine_error_jmp_valid = false;
     return 0;
   }
-  ons_error_jmp_valid = true;
+  engine_error_jmp_valid = true;
 
   if (vtable->init(engine)) {
     log_cb(RETRO_LOG_ERROR, "Failed to initialize ONScripter\n");
-    ons_error_jmp_valid = false;
+    engine_error_jmp_valid = false;
     return -1;
   }
 
   SDL_ShowCursor(SDL_DISABLE);
   vtable->executeLabel(engine);
-  ons_error_jmp_valid = false;
+  engine_error_jmp_valid = false;
   return 0;
 }
 

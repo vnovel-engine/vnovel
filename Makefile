@@ -137,20 +137,21 @@ $(TARGET): $(OBJECTS) libons_rn.a libpons_rn.a
 
 # ONScripter-EN (hidden visibility, separate objects)
 %.ons.o: %.cpp
-	@$(if $(Q), $(shell echo echo CXX(ons) $<),)
+	@echo "CXX(ons) $<"
 	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
 
 # PONScripter (hidden visibility, separate objects)
 %.pons.o: %.cpp
-	@$(if $(Q), $(shell echo echo CXX(pons) $<),)
+	@echo "CXX(pons) $<"
 	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
 
 %.pons.o: %.c
-	@$(if $(Q), $(shell echo echo CC(pons) $<),)
+	@echo "CC(pons) $<"
 	$(Q)$(CC) $(CFLAGS) -fvisibility=hidden -c -o $@ $<
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(ONS_OBJS) $(PONS_OBJS) $(TARGET) libons.a libpons.a libons_rn.a libpons_rn.a ons_rename.txt pons_rename.txt rename_stamp
+	rm -rf build_ons_rn build_pons_rn
 
 install:
 	@test -n "$(DESTDIR)" || (echo "ERROR: set DESTDIR" && false)
@@ -180,9 +181,33 @@ engine_pons_cabi.o: engine_pons_cabi.cpp
 		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
 
 # Engine static libraries (avoids duplicate symbol errors)
-libons_rn.a: $(ONS_OBJS)
+# Engine static libraries
+libons.a: $(ONS_OBJS)
 	$(Q)$(AR) rcs $@ $^
 
-libpons_rn.a: $(PONS_OBJS)
+libpons.a: $(PONS_OBJS)
 	$(Q)$(AR) rcs $@ $^
 
+# Generate symbol rename maps from conflicting symbols
+# Renamed libraries (objcopy --redefine-syms to avoid symbol conflicts)
+# Fallback: generate rename maps with a stamp file
+rename_stamp: libons.a libpons.a
+	@echo "Generating symbol rename maps..."
+	@nm libons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/ons_all.txt
+	@nm libpons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/pons_all.txt
+	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | awk '{print $$0 " ons_" $$0}' > ons_rename.txt
+	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | awk '{print $$0 " pons_" $$0}' > pons_rename.txt
+	@touch rename_stamp
+
+
+libons_rn.a: libons.a rename_stamp
+	rm -rf build_ons_rn && mkdir build_ons_rn
+	cd build_ons_rn && ar x ../libons.a
+	cd build_ons_rn && for f in *.o; do objcopy --redefine-syms=../ons_rename.txt "$$f" 2>/dev/null; done
+	$(Q)$(AR) rcs $@ build_ons_rn/*.o
+
+libpons_rn.a: libpons.a rename_stamp
+	rm -rf build_pons_rn && mkdir build_pons_rn
+	cd build_pons_rn && ar x ../libpons.a
+	cd build_pons_rn && for f in *.o; do objcopy --redefine-syms=../pons_rename.txt "$$f" 2>/dev/null; done
+	$(Q)$(AR) rcs $@ build_pons_rn/*.o
