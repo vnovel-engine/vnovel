@@ -2,6 +2,7 @@
 #include <retro_miscellaneous.h>
 #include <file/file_path.h>
 #include <setjmp.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -18,6 +19,8 @@
 // Both engines call exit() on script errors and SDL init failures.
 // We catch these via longjmp. errorAndExit() calls the engine-specific
 // longjmp function which jumps back to ons_main's setjmp checkpoint.
+static void                        fallback_log(enum retro_log_level level, const char *fmt, ...);
+static retro_log_printf_t          log_cb = fallback_log;
 static jmp_buf engine_error_jmp;
 static bool engine_error_jmp_valid = false;
 
@@ -29,6 +32,34 @@ extern "C" void ons_script_error_longjmp(void)
 extern "C" void pons_script_error_longjmp(void)
 {
   if (engine_error_jmp_valid) longjmp(engine_error_jmp, 1);
+}
+
+/* ---- Snapshot & state dump mechanism ----
+ * Engine scripts call snapshotsave("name") / dumpstate("name") which
+ * set a pending request. retro_run() checks these in the frame-sync gap
+ * (engine thread blocked in DUMMY_UpdateRects) — no race condition.
+ */
+#define MAX_REQ_NAME 256
+static char pending_snapshot[MAX_REQ_NAME] = {0};
+static char pending_dumpstate[MAX_REQ_NAME] = {0};
+static const char *test_output_dir = ".";  /* set in retro_load_game */
+
+extern "C" void retro_request_snapshot(const char *name)
+{
+  if (name) {
+    strncpy(pending_snapshot, name, MAX_REQ_NAME - 1);
+    pending_snapshot[MAX_REQ_NAME - 1] = '\0';
+    log_cb(RETRO_LOG_INFO, "Snapshot requested: %s\n", name);
+  }
+}
+
+extern "C" void retro_request_dumpstate(const char *name)
+{
+  if (name) {
+    strncpy(pending_dumpstate, name, MAX_REQ_NAME - 1);
+    pending_dumpstate[MAX_REQ_NAME - 1] = '\0';
+    log_cb(RETRO_LOG_INFO, "State dump requested: %s\n", name);
+  }
 }
 
 //don't use #include <onscripter/ONScripter.h>, use #include <ONScripterLabel.h> instead (stop including wrong header file)  
@@ -52,14 +83,19 @@ static bool opt_frame_sync = true;
 static bool opt_indicators = true;
 static int  opt_debug_level = 0;
 
-static void                        fallback_log(enum retro_log_level level, const char *fmt, ...);
-static retro_log_printf_t          log_cb = fallback_log;
 static retro_video_refresh_t       video_cb;
 static retro_input_poll_t          input_poll_cb;
 static retro_audio_sample_batch_t  audio_batch_cb;
 static retro_environment_t         environ_cb;
 static EngineHandle engine = nullptr;
 static const EngineVTable *vtable = nullptr;
+
+/* Wrapper called from retro_run to dump engine state to a FILE* */
+static void engine_dump_state(EngineHandle h, FILE *f)
+{
+  if (vtable && vtable->dumpState)
+    vtable->dumpState(h, f);
+}
 static SDL_Thread                 *ons_thread;
 static uint32_t                    delta;
 
@@ -174,6 +210,13 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
   // Clamp to sane defaults — initSDL() may not have run yet
   if (width <= 0 || width > 4096) width = 640;
   if (height <= 0 || height > 4096) height = 480;
+  // Test override: ONS_TEST_WIDTH/HEIGHT forces a fixed geometry
+  {
+    const char *tw = getenv("ONS_TEST_WIDTH");
+    const char *th = getenv("ONS_TEST_HEIGHT");
+    if (tw) width = atoi(tw);
+    if (th) height = atoi(th);
+  }
   info->geometry.base_width = width;
   info->geometry.base_height = height;
   info->geometry.max_width = width;
@@ -250,8 +293,10 @@ bool retro_load_game(const struct retro_game_info *game)
     fill_pathname_join(save_path, save_dir, "onscripter-en", sizeof(save_path));
     ons_mkdir(save_path);
     vtable->setSavePath(engine, save_path);
+    test_output_dir = strdup(save_path);
   } else {
     vtable->setSavePath(engine, archive_path);
+    test_output_dir = strdup(archive_path);
   }
 
   // Auto-detect encryption key from .exe in game directory.
@@ -283,8 +328,7 @@ bool retro_load_game(const struct retro_game_info *game)
 
   SDL_libretro_event_sem = SDL_CreateSemaphore(0);
 #ifdef LIBRETRO_FRAME_SYNC
-  // Semaphore created here but not assigned yet — engine init flushes must not block
-  fs_sem = SDL_CreateSemaphore(0); // created here, activated in retro_run
+  fs_sem = SDL_CreateSemaphore(0);
   SDL_libretro_wait_sem = NULL; // disabled during init
 #endif
 
@@ -385,7 +429,30 @@ void retro_run(void)
   SDL_libretro_PumpEvents();
 
 #ifdef LIBRETRO_FRAME_SYNC
-  // Wake the engine thread — one frame's worth of events has been injected
+  // Wake the engine thread — one frame's worth of events has been injected.
+  // But first: process any pending snapshot/dumpstate requests while the
+  // engine thread is still blocked in DUMMY_UpdateRects (no race).
+  if (pending_snapshot[0]) {
+    SDL_Surface *snap_screen = SDL_GetVideoSurface();
+    if (snap_screen && snap_screen->pixels) {
+      char bmp_path[PATH_MAX_LENGTH];
+      snprintf(bmp_path, sizeof(bmp_path), "%s/%s.bmp", test_output_dir, pending_snapshot);
+      SDL_SaveBMP(snap_screen, bmp_path);
+      log_cb(RETRO_LOG_INFO, "Snapshot saved: %s\n", bmp_path);
+    }
+    pending_snapshot[0] = '\0';
+  }
+  if (pending_dumpstate[0]) {
+    char dump_path[PATH_MAX_LENGTH];
+    snprintf(dump_path, sizeof(dump_path), "%s/%s.txt", test_output_dir, pending_dumpstate);
+    FILE *f = fopen(dump_path, "w");
+    if (f) {
+      engine_dump_state(engine, f);
+      fclose(f);
+      log_cb(RETRO_LOG_INFO, "State dump saved: %s\n", dump_path);
+    }
+    pending_dumpstate[0] = '\0';
+  }
   SDL_SemPost(SDL_libretro_wait_sem);
 #endif
 

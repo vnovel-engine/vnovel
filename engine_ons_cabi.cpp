@@ -4,6 +4,7 @@
 // with -fvisibility=hidden so their symbols don't collide with PONScripter.
 
 #include "engine_cabi.h"
+#include <stdio.h>
 #include "ONScripterLabel.h"
 
 static EngineHandle ons_create(void) {
@@ -45,9 +46,12 @@ static int ons_isAutoMode(EngineHandle h) {
 static int ons_isSkipMode(EngineHandle h) {
     return ((ONScripterLabel*)h)->isSkipMode();
 }
+static void ons_dumpState(EngineHandle h, void* f) {
+    ((ONScripterLabel*)h)->dumpState((FILE*)f);
+}
 
 extern "C" const EngineVTable ons_engine_vtable = {
     ons_create, ons_destroy, ons_init, ons_executeLabel, ons_resetCommand,
     ons_setArchivePath, ons_setSavePath, ons_setKeyEXE, ons_setDebugLevel,
-    ons_getWidth, ons_getHeight, ons_isAutoMode, ons_isSkipMode
+    ons_getWidth, ons_getHeight, ons_isAutoMode, ons_isSkipMode, ons_dumpState
 };

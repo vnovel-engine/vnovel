@@ -32,6 +32,7 @@ typedef struct {
     int          (*getHeight)(EngineHandle);
     int          (*isAutoMode)(EngineHandle);
     int          (*isSkipMode)(EngineHandle);
+    void         (*dumpState)(EngineHandle, void*);  /* FILE* */
 } EngineVTable;
 
 extern const EngineVTable ons_engine_vtable;

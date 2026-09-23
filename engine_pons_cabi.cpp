@@ -2,6 +2,7 @@
 // Same pattern as engine_ons_cabi.cpp.
 
 #include "engine_cabi.h"
+#include <stdio.h>
 #include "PonscripterLabel.h"
 
 static EngineHandle pons_create(void) {
@@ -43,9 +44,12 @@ static int pons_isAutoMode(EngineHandle h) {
 static int pons_isSkipMode(EngineHandle h) {
     return ((PonscripterLabel*)h)->isSkipMode();
 }
+static void pons_dumpState(EngineHandle h, void* f) {
+    ((PonscripterLabel*)h)->dumpState((FILE*)f);
+}
 
 extern "C" const EngineVTable pons_engine_vtable = {
     pons_create, pons_destroy, pons_init, pons_executeLabel, pons_resetCommand,
     pons_setArchivePath, pons_setSavePath, pons_setKeyEXE, pons_setDebugLevel,
-    pons_getWidth, pons_getHeight, pons_isAutoMode, pons_isSkipMode
+    pons_getWidth, pons_getHeight, pons_isAutoMode, pons_isSkipMode, pons_dumpState
 };

@@ -1,9 +1,41 @@
 #include <SDL_libretro.h>
 #include <sdl/src/events/SDL_events_c.h>
 #include <sdl/src/video/dummy/SDL_nullevents_c.h>
+#include <stdlib.h>
 
 /* Which RetroPad button generates a right-click (-1 = none) */
 int SDL_libretro_rightclick_button = RIGHTCLICK_NONE;
+
+/* ---- Test auto-advance ----
+ * Set ONS_TEST_AUTODVANCE=<frames> to inject a RETURN keypress every
+ * N frames. This lets automated tests advance through text without a
+ * human pressing buttons. Zero or unset = disabled.
+ */
+static int test_autoadvance_frames = -1;
+static int test_autoadvance_counter = 0;
+
+static int get_test_autoadvance(void)
+{
+  if (test_autoadvance_frames < 0) {
+    const char *env = getenv("ONS_TEST_AUTODVANCE");
+    test_autoadvance_frames = env ? atoi(env) : 0;
+  }
+  return test_autoadvance_frames;
+}
+
+static void maybe_inject_autoclick(void)
+{
+  int n = get_test_autoadvance();
+  if (n <= 0) return;
+  fprintf(stderr, "AA: counter=%d/%d\n", test_autoadvance_counter, n);
+  if (++test_autoadvance_counter >= n) {
+    test_autoadvance_counter = 0;
+    fprintf(stderr, "AA: INJECTING SPACE\n");
+    static SDL_keysym sp_sym = { SDLK_SPACE, SDLK_SPACE, 0 };
+    SDL_PrivateKeyboard(SDL_PRESSED, &sp_sym);
+    SDL_PrivateKeyboard(SDL_RELEASED, &sp_sym);
+  }
+}
 
 /* Fixed RetroPad → ONScripter key mapping.
  * Users remap at the RetroArch Controls level, not here. */
@@ -30,7 +62,7 @@ int SDL_libretro_key_from_ons_key(ons_key_t k)
 {
   switch (k) {
     case ONS_KEY_SPACE:     return SDLK_SPACE;
-    case ONS_KEY_RETURN:    return SDLK_RETURN;
+    case ONS_KEY_RETURN:    return SDLK_SPACE;
     case ONS_KEY_ESCAPE:    return SDLK_ESCAPE;
     case ONS_KEY_RCTRL:     return SDLK_RCTRL;
     case ONS_KEY_a:         return SDLK_a;
@@ -147,6 +179,7 @@ void SDL_libretro_PumpEvents(void)
 {
   PumpKeyboardEvents();
   PumpMouseEvents();
+  maybe_inject_autoclick();
   SDL_SemPost(SDL_libretro_event_sem);
 }
 

@@ -10,3 +10,6 @@ deps/libvorbis
 deps/libretro-common
 deps/sdl
 deps/sdl-mixer
+ons_rename.txt
+pons_rename.txt
+rename_stamp

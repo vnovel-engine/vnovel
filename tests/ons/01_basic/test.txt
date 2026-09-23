@@ -1,0 +1,13 @@
+*define
+mode_ext
+game
+*start
+bg #000000,0
+repaint
+snapshotsave "01_bg"
+dumpstate "01_bg"
+bg #FF0000,0
+repaint
+snapshotsave "02_red"
+dumpstate "02_red"
+end
