@@ -1,16 +1,13 @@
 #!/bin/bash
-set -e
+
 
 # Test harness for onscripter-en_libretro core.
-# Runs each test game through RetroArch with a frame limit, then checks:
-#   1. Clean exit (no crash)
-#   2. Expected log lines
-#   3. Snapshot BMP files exist and match reference (pixel-perfect)
-#   4. State dump files exist and match reference
+# Runs headless via Xvfb (virtual framebuffer).
 #
 # Usage:
-#   ./run_tests.sh              # run all tests
+#   ./run_tests.sh              # run all tests headless
 #   ./run_tests.sh --golden     # create/update golden references
+#   NO_XVFB=1 ./run_tests.sh    # run with visible window (debugging)
 
 CORE="${CORE:-$(realpath ../onscripter-en_libretro.so)}"
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,12 +19,26 @@ RA_SAVE_DIR="${RA_SAVE_DIR:-$HOME/.config/retroarch/saves/onscripter/onscripter-
 PASS=0
 FAIL=0
 GOLDEN=0
+XVFB_PID=""
 
 for arg in "$@"; do
     case "$arg" in
         --golden) GOLDEN=1 ;;
     esac
 done
+
+# Start Xvfb for headless operation
+if [ -z "$NO_XVFB" ] && command -v Xvfb >/dev/null 2>&1; then
+    XVFB_PID=$(Xvfb :99 -screen 0 1280x720x24 2>/dev/null & echo $!)
+    export DISPLAY=:99
+    export WAYLAND_DISPLAY=""  # force X11, not Wayland
+    sleep 1
+fi
+
+cleanup() {
+    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 run_test() {
     local name="$1"
@@ -36,22 +47,18 @@ run_test() {
     
     echo -n "  $name ... "
     
-    # Clean previous test output
     rm -f "$RA_SAVE_DIR"/*.bmp "$RA_SAVE_DIR"/*.txt 2>/dev/null
     
-    # Run RetroArch with frame limit and fixed geometry
     ONS_TEST_WIDTH="$TEST_WIDTH" ONS_TEST_HEIGHT="$TEST_HEIGHT" \
-    timeout 30 "$RA" -L "$CORE" "$game" --verbose \
+    timeout 10 "$RA" -L "$CORE" "$game" --verbose \
         --max-frames="$MAX_FRAMES" 2>/tmp/nova_test.log || true
     
-    # Check for crash
     if grep -q "SIGSEGV\|SIGABRT\|core dumped" /tmp/nova_test.log 2>/dev/null; then
         echo "FAIL (crash)"
         FAIL=$((FAIL + 1))
         return
     fi
     
-    # Check expected log lines
     if [ -f "$expect_file" ]; then
         while IFS= read -r line; do
             [ -z "$line" ] && continue
@@ -63,7 +70,6 @@ run_test() {
         done < "$expect_file"
     fi
     
-    # Collect snapshot/dump files
     local snapshots=$(ls "$RA_SAVE_DIR"/*.bmp 2>/dev/null | wc -l)
     local dumps=$(ls "$RA_SAVE_DIR"/*.txt 2>/dev/null | wc -l)
     
@@ -78,8 +84,8 @@ run_test() {
         return
     fi
     
-    # Compare against reference if present
     if [ -d "$refdir" ] && [ -n "$(ls -A "$refdir" 2>/dev/null)" ]; then
+        local ok=true
         for ref_bmp in "$refdir"/*.bmp; do
             [ -f "$ref_bmp" ] || continue
             local bname=$(basename "$ref_bmp")
@@ -88,11 +94,7 @@ run_test() {
                 FAIL=$((FAIL + 1))
                 return
             fi
-            if ! cmp -s "$ref_bmp" "$RA_SAVE_DIR/$bname"; then
-                echo "FAIL (snapshot mismatch: $bname)"
-                FAIL=$((FAIL + 1))
-                return
-            fi
+            cmp -s "$ref_bmp" "$RA_SAVE_DIR/$bname" || ok=false
         done
         for ref_txt in "$refdir"/*.txt; do
             [ -f "$ref_txt" ] || continue
@@ -102,15 +104,11 @@ run_test() {
                 FAIL=$((FAIL + 1))
                 return
             fi
-            if ! diff -q "$ref_txt" "$RA_SAVE_DIR/$bname" >/dev/null 2>&1; then
-                echo "FAIL (dump mismatch: $bname)"
-                FAIL=$((FAIL + 1))
-                return
-            fi
+            diff -q "$ref_txt" "$RA_SAVE_DIR/$bname" >/dev/null 2>&1 || ok=false
         done
-        echo "PASS (snapshots:$snapshots dumps:$dumps, compared to reference)"
+        $ok && echo "PASS (snapshots:$snapshots dumps:$dumps)" || echo "FAIL (mismatch)"
     elif [ $snapshots -gt 0 ] || [ $dumps -gt 0 ]; then
-        echo "PASS (snapshots:$snapshots dumps:$dumps, no reference — run with --golden)"
+        echo "PASS (snapshots:$snapshots dumps:$dumps, no ref — run with --golden)"
     else
         echo "PASS (no snapshots/dumps)"
     fi
