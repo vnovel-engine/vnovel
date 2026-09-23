@@ -41,7 +41,7 @@ CFLAGS += -DFPM_DEFAULT -DSIZEOF_INT=4
 CFLAGS += -DOGG_MUSIC -DMP3_MAD_MUSIC
 
 # --- Thread library ---
-LDFLAGS += -lpthread -lfreetype -Wl,--allow-multiple-definition
+LDFLAGS += -lpthread -lfreetype
 
 # =============================================================================
 # Source files

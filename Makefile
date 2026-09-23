@@ -123,9 +123,9 @@ OBJECTS := $(SOURCES_C:.c=.o) $(SOURCES_CXX:.cpp=.o) engine_ons_cabi.o engine_po
 # --- Build rules ---
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS) libons.a libpons.a
+$(TARGET): $(OBJECTS) libons_rn.a libpons_rn.a
 	@$(if $(Q), $(shell echo echo LD $@),)
-	$(Q)$(CXX) $(fpic) $(SHARED) -o $@ $(OBJECTS) libons.a libpons.a $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(SHARED) -o $@ $(OBJECTS) libons_rn.a libpons_rn.a $(LDFLAGS)
 
 %.o: %.c
 	@$(if $(Q), $(shell echo echo CC $<),)
@@ -180,8 +180,9 @@ engine_pons_cabi.o: engine_pons_cabi.cpp
 		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
 
 # Engine static libraries (avoids duplicate symbol errors)
-libons.a: $(ONS_OBJS)
+libons_rn.a: $(ONS_OBJS)
 	$(Q)$(AR) rcs $@ $^
 
-libpons.a: $(PONS_OBJS)
+libpons_rn.a: $(PONS_OBJS)
 	$(Q)$(AR) rcs $@ $^
+
