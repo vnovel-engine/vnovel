@@ -41,7 +41,7 @@ CFLAGS += -DFPM_DEFAULT -DSIZEOF_INT=4
 CFLAGS += -DOGG_MUSIC -DMP3_MAD_MUSIC
 
 # --- Thread library ---
-LDFLAGS += -lpthread
+LDFLAGS += -lpthread -lfreetype -Wl,--allow-multiple-definition
 
 # =============================================================================
 # Source files
@@ -216,7 +216,10 @@ PONS_CXX := $(addprefix $(PONSCRIPTER)/, \
 )
 
 PONS_OBJS := $(PONS_CXX:.cpp=.pons.o)
-$(PONS_OBJS): CXXFLAGS += -fvisibility=hidden
+PONS_C := $(PONSCRIPTER)/bstrlib.c
+PONS_OBJS += $(PONS_C:.c=.pons.o)
+$(PONS_OBJS): CXXFLAGS += -fvisibility=hidden -I/usr/include/freetype2
+$(PONS_OBJS): CFLAGS += -fvisibility=hidden -I/usr/include/freetype2
 
 # =============================================================================
 # Core files (libretro API + C ABI wrappers for both engines)

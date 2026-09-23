@@ -4,7 +4,7 @@
 // with -fvisibility=hidden so their symbols don't collide with PONScripter.
 
 #include "engine_cabi.h"
-#include "onscripter-en/ONScripterLabel.h"
+#include "ONScripterLabel.h"
 
 static EngineHandle ons_create(void) {
     return new ONScripterLabel();

@@ -2,7 +2,7 @@
 // Same pattern as engine_ons_cabi.cpp.
 
 #include "engine_cabi.h"
-#include "ponscripter/src/PonscripterLabel.h"
+#include "PonscripterLabel.h"
 
 static EngineHandle pons_create(void) {
     return new PonscripterLabel();

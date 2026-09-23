@@ -118,14 +118,14 @@ LDFLAGS  += $(LIBM)
 # --- Source files and includes ---
 include Makefile.common
 
-OBJECTS := $(SOURCES_C:.c=.o) $(SOURCES_CXX:.cpp=.o) $(ONS_OBJS) $(PONS_OBJS) engine_ons_cabi.o engine_pons_cabi.o $(SOURCES_S:.S=.o)
+OBJECTS := $(SOURCES_C:.c=.o) $(SOURCES_CXX:.cpp=.o) engine_ons_cabi.o engine_pons_cabi.o $(SOURCES_S:.S=.o)
 
 # --- Build rules ---
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS)
+$(TARGET): $(OBJECTS) libons.a libpons.a
 	@$(if $(Q), $(shell echo echo LD $@),)
-	$(Q)$(CXX) $(fpic) $(SHARED) -o $@ $(OBJECTS) $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(SHARED) -o $@ $(OBJECTS) libons.a libpons.a $(LDFLAGS)
 
 %.o: %.c
 	@$(if $(Q), $(shell echo echo CC $<),)
@@ -145,8 +145,12 @@ $(TARGET): $(OBJECTS)
 	@$(if $(Q), $(shell echo echo CXX(pons) $<),)
 	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
 
+%.pons.o: %.c
+	@$(if $(Q), $(shell echo echo CC(pons) $<),)
+	$(Q)$(CC) $(CFLAGS) -fvisibility=hidden -c -o $@ $<
+
 clean:
-	rm -f $(OBJECTS) $(ONS_OBJS) $(PONS_OBJS) $(TARGET)
+	rm -f $(OBJECTS) $(TARGET)
 
 install:
 	@test -n "$(DESTDIR)" || (echo "ERROR: set DESTDIR" && false)
@@ -171,6 +175,13 @@ engine_ons_cabi.o: engine_ons_cabi.cpp
 engine_pons_cabi.o: engine_pons_cabi.cpp
 	@$(if $(Q), $(shell echo echo CXX(pons-cabi) $<),)
 	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
-		-I$(LIBRETRO_COMM)/include -I$(PONSCRIPTER) -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
+		-I$(LIBRETRO_COMM)/include -I$(PONSCRIPTER) -I/usr/include/freetype2 -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
 		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(CORE_DIR) -I$(SMPEG_DIR) \
 		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
+
+# Engine static libraries (avoids duplicate symbol errors)
+libons.a: $(ONS_OBJS)
+	$(Q)$(AR) rcs $@ $^
+
+libpons.a: $(PONS_OBJS)
+	$(Q)$(AR) rcs $@ $^
