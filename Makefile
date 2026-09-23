@@ -32,6 +32,11 @@ endif
 
 # --- Core identity ---
 CORE_DIR     := .
+
+# Auto-create symlinks to vendored deps from deps-overlay
+$(shell for d in bzip2 libmad libogg libvorbis sdl sdl-mixer libretro-common; do \
+	[ -e $(CORE_DIR)/deps/$$d ] || ln -s ../deps-overlay/deps/$$d $(CORE_DIR)/deps/$$d 2>/dev/null; \
+done)
 TARGET_NAME  := onscripter-en
 LIBM         := -lm
 
@@ -120,8 +125,12 @@ include Makefile.common
 
 OBJECTS := $(SOURCES_C:.c=.o) $(SOURCES_CXX:.cpp=.o) engine_ons_cabi.o engine_pons_cabi.o $(SOURCES_S:.S=.o)
 
-# --- Build rules ---
+# Make symlinks first so .o files can find their sources
 all: $(TARGET)
+
+# --- Dependency symlinks (deps-overlay provides vendored libs) ---
+DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps/sdl-mixer deps/libretro-common
+
 
 $(TARGET): $(OBJECTS) libons_rn.a libpons_rn.a
 	@$(if $(Q), $(shell echo echo LD $@),)
