@@ -1,0 +1,8 @@
+# ONScripter-EN state dump
+# Numeric variables (%0-%4095)
+# String variables ($0-$4095)
+# Engine flags
+global_variable_border:200
+automode:0
+skip_mode:0
+saveon:1

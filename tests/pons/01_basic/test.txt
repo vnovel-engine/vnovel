@@ -1,0 +1,8 @@
+*define
+*start
+bg #000000,0
+repaint
+snapshotsave "01_bg"
+dumpstate "01_bg"
+repaint
+end

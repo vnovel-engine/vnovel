@@ -1,0 +1,17 @@
+*.o
+*.so
+*.dll
+*.a
+*.dylib
+deps/bzip2
+deps/libmad
+deps/libogg
+deps/libvorbis
+deps/libretro-common
+deps/sdl
+deps/sdl-mixer
+ons_rename.txt
+pons_rename.txt
+rename_stamp
+.venv/
+deploy-recalbox.py

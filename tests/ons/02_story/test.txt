@@ -1,0 +1,44 @@
+*define
+mode_ext
+game
+*start
+bg #000000,0
+repaint
+snapshotsave "story_01_intro"
+dumpstate "story_01_intro"
+mov %0,1
+bg #FF0000,0
+repaint
+snapshotsave "story_02_nscript"
+dumpstate "story_02_nscript"
+mov %0,2
+bg #00FF00,0
+repaint
+snapshotsave "story_03_nscripter"
+dumpstate "story_03_nscripter"
+mov %0,3
+bg #0000FF,0
+repaint
+snapshotsave "story_04_translation"
+dumpstate "story_04_translation"
+mov %0,4
+bg #FFFF00,0
+repaint
+snapshotsave "story_05_onscripter_en"
+dumpstate "story_05_onscripter_en"
+mov %0,5
+bg #FF00FF,0
+repaint
+snapshotsave "story_06_ponscripter"
+dumpstate "story_06_ponscripter"
+mov %0,6
+bg #00FFFF,0
+repaint
+snapshotsave "story_07_unified"
+dumpstate "story_07_unified"
+mov %0,7
+bg #FFFFFF,0
+repaint
+snapshotsave "story_08_final"
+dumpstate "story_08_final"
+end
