@@ -150,17 +150,17 @@ DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps
 
 
 $(TARGET): $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
-	@$(if $(Q), $(shell echo echo LD $@),)
+	@$(if $(Q),echo "LD $@",)
 	$(Q)$(CXX) $(fpic) $(SHARED) -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS)
 
 # --- Generic compile rules (output to BUILD_DIR, preserving subdirs) ---
 $(BUILD_DIR)/%.o: %.c
-	@$(if $(Q), $(shell echo echo CC $<),)
+	@$(if $(Q),echo "CC $<",)
 	@mkdir -p $(dir $@)
 	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/%.o: %.cpp
-	@$(if $(Q), $(shell echo echo CXX $<),)
+	@$(if $(Q),echo "CXX $<",)
 	@mkdir -p $(dir $@)
 	$(Q)$(CXX) $(CXXFLAGS) -c -o $@ $<
 
@@ -168,18 +168,18 @@ $(BUILD_DIR)/%.o: %.cpp
 $(BUILD_DIR)/%.ons.o: %.cpp
 	@echo "CXX(ons) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -I/usr/include/freetype2 -c -o $@ $<
+	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
 
 # PONScripter (hidden visibility, separate objects)
 $(BUILD_DIR)/%.pons.o: %.cpp
 	@echo "CXX(pons) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -I/usr/include/freetype2 -c -o $@ $<
+	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
 
 $(BUILD_DIR)/%.pons.o: %.c
 	@echo "CC(pons) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CC) $(CFLAGS) -fvisibility=hidden -I/usr/include/freetype2 -c -o $@ $<
+	$(Q)$(CC) $(CFLAGS) -fvisibility=hidden -c -o $@ $<
 
 clean:
 	rm -rf build
@@ -199,7 +199,7 @@ print-%:
 # C ABI wrappers: compile with only their engine's include path
 # to avoid header name conflicts between ONScripter-EN and PONScripter
 $(BUILD_DIR)/engine_ons_cabi.o: engine_ons_cabi.cpp
-	@$(if $(Q), $(shell echo echo CXX(ons-cabi) $<),)
+	@$(if $(Q),echo "CXX ons-cabi $<",)
 	@mkdir -p $(dir $@)
 	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
 		-I$(LIBRETRO_COMM)/include -I$(ONSCRIPTER_EN) -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
@@ -209,10 +209,10 @@ $(BUILD_DIR)/engine_ons_cabi.o: engine_ons_cabi.cpp
 		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
 
 $(BUILD_DIR)/engine_pons_cabi.o: engine_pons_cabi.cpp
-	@$(if $(Q), $(shell echo echo CXX(pons-cabi) $<),)
+	@$(if $(Q),echo "CXX pons-cabi $<",)
 	@mkdir -p $(dir $@)
 	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
-		-I$(LIBRETRO_COMM)/include -I$(PONSCRIPTER) -I/usr/include/freetype2 -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
+		-I$(LIBRETRO_COMM)/include -I$(PONSCRIPTER) -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
 		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(DEPS_DIR)/libogg/include \
 		-I$(DEPS_DIR)/libvorbis/include -I$(DEPS_DIR)/libmad -I$(DEPS_DIR)/bzip2 \
 		-I$(CORE_DIR) -I$(SMPEG_DIR) \
@@ -233,19 +233,19 @@ rename_stamp: $(BUILD_DIR)/libons.a $(BUILD_DIR)/libpons.a
 	@echo "Generating symbol rename maps..."
 	@$(NM) $(BUILD_DIR)/libons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/ons_all.txt
 	@$(NM) $(BUILD_DIR)/libpons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/pons_all.txt
-	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | awk '{print $$0 " ons_" $$0}' > ons_rename.txt
-	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | awk '{print $$0 " pons_" $$0}' > pons_rename.txt
+	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | grep -v '^$$' | awk '{print $$0 "=ons_" $$0}' > ons_rename.txt
+	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | grep -v '^$$' | awk '{print $$0 "=pons_" $$0}' > pons_rename.txt
 	@touch rename_stamp
 
 
 $(BUILD_DIR)/libons_rn.a: $(BUILD_DIR)/libons.a rename_stamp
 	@rm -rf $(BUILD_DIR)/_ons_rn && mkdir -p $(BUILD_DIR)/_ons_rn
 	cd $(BUILD_DIR)/_ons_rn && $(AR) x ../libons.a
-	cd $(BUILD_DIR)/_ons_rn && for f in *.o; do $(OBJCOPY) --redefine-syms=../../../ons_rename.txt "$$f" 2>/dev/null || true; done
+	cd $(BUILD_DIR)/_ons_rn && sh ../../../rename-syms.sh ../../../ons_rename.txt $(OBJCOPY) *.o
 	$(Q)$(AR) rcs $@ $(BUILD_DIR)/_ons_rn/*.o
 
 $(BUILD_DIR)/libpons_rn.a: $(BUILD_DIR)/libpons.a rename_stamp
 	@rm -rf $(BUILD_DIR)/_pons_rn && mkdir -p $(BUILD_DIR)/_pons_rn
 	cd $(BUILD_DIR)/_pons_rn && $(AR) x ../libpons.a
-	cd $(BUILD_DIR)/_pons_rn && for f in *.o; do $(OBJCOPY) --redefine-syms=../../../pons_rename.txt "$$f" 2>/dev/null || true; done
+	cd $(BUILD_DIR)/_pons_rn && sh ../../../rename-syms.sh ../../../pons_rename.txt $(OBJCOPY) *.o
 	$(Q)$(AR) rcs $@ $(BUILD_DIR)/_pons_rn/*.o
