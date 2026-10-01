@@ -129,14 +129,6 @@ SDL_Surface *DUMMY_SetVideoMode(_THIS, SDL_Surface *current,
 
   SDL_memset(this->hidden->buffer, 0, width * height * (bpp / 8));
 
-  /* Allocate the new pixel format for the screen */
-  if (!SDL_ReallocFormat(current, bpp, 0, 0, 0, 0)) {
-    SDL_free(this->hidden->buffer);
-    this->hidden->buffer = NULL;
-    SDL_SetError("Couldn't allocate new pixel format for requested mode");
-    return(NULL);
-  }
-
   /* Set up the new mode framebuffer */
   current->flags = flags & SDL_FULLSCREEN;
   this->hidden->w = current->w = width;
@@ -144,7 +136,12 @@ SDL_Surface *DUMMY_SetVideoMode(_THIS, SDL_Surface *current,
   current->pitch = current->w * (bpp / 8);
   current->pixels = this->hidden->buffer;
 
-  /* We're done */
+  /* Use standard XRGB8888 format matching what RetroArch expects */
+  if (bpp == 32) {
+    SDL_ReallocFormat(current, bpp, 0x00ff0000, 0x0000ff00, 0x000000ff, 0);
+  } else {
+    SDL_ReallocFormat(current, bpp, 0, 0, 0, 0);
+  }
   return current;
 }
 
@@ -173,6 +170,7 @@ static void DUMMY_UnlockHWSurface(_THIS, SDL_Surface *surface)
    blocks here after each screen update, waiting for retro_run() to post.
    This gives 1:1 frame synchronization — every flush() is displayed. */
 SDL_sem *SDL_libretro_wait_sem = NULL;
+SDL_sem *SDL_libretro_rendered_sem = NULL;
 bool SDL_libretro_paused = false;
 bool SDL_libretro_fastforward = false;
 int SDL_libretro_ff_speed = 50;
@@ -180,8 +178,8 @@ Uint32 SDL_libretro_ff_offset = 0;
 
 static void DUMMY_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 {
-  /* No-op — the engine renders freely. Throttling happens in
-   * DUMMY_PumpEvents (blocking on event_sem). */
+  /* No-op. Engine renders freely to the framebuffer.
+   * retro_run() displays whatever is current each frame. */
 }
 
 int DUMMY_SetColors(_THIS, int firstcolor, int ncolors, SDL_Color *colors)

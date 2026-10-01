@@ -53,6 +53,8 @@ SDL_SYSTIMER  ?= unix/SDL_systimer.c
 ifeq ($(platform), unix)
    TARGET   := $(TARGET_NAME)_libretro.so
    fpic    := -fPIC
+   CXXFLAGS += $(shell pkg-config --cflags freetype2 2>/dev/null)
+   CFLAGS   += $(shell pkg-config --cflags freetype2 2>/dev/null)
    SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
 
 else ifeq ($(platform), aarch64)
@@ -151,7 +153,7 @@ DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps
 
 $(TARGET): $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(SHARED) -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(SHARED) -Wl,-z,muldefs -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS)
 
 # --- Generic compile rules (output to BUILD_DIR, preserving subdirs) ---
 $(BUILD_DIR)/%.o: %.c
@@ -227,14 +229,22 @@ $(BUILD_DIR)/libpons.a: $(PONS_OBJS)
 	@mkdir -p $(dir $@)
 	$(Q)$(AR) rcs $@ $^
 
-# Generate symbol rename maps from conflicting symbols
-# Renamed libraries (objcopy --redefine-syms to avoid symbol conflicts)
+# Generate symbol rename maps.
+# Common symbols (intersection) are renamed to prevent cross-resolution.
+# Additionally, weak symbols (V/W) unique to each library are renamed
+# because the linker can cross-resolve them despite different names —
+# COMDAT group deduplication uses the group signature (not the symbol
+# name), and objcopy doesn't rename group signatures. The rename-syms.sh
+# script strips the GROUP flag from affected sections to prevent this.
 rename_stamp: $(BUILD_DIR)/libons.a $(BUILD_DIR)/libpons.a
 	@echo "Generating symbol rename maps..."
 	@$(NM) $(BUILD_DIR)/libons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/ons_all.txt
 	@$(NM) $(BUILD_DIR)/libpons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/pons_all.txt
-	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | grep -v '^$$' | awk '{print $$0 "=ons_" $$0}' > ons_rename.txt
-	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | grep -v '^$$' | awk '{print $$0 "=pons_" $$0}' > pons_rename.txt
+	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | grep -v '^$$' > /tmp/ons_common.txt
+	@$(NM) $(BUILD_DIR)/libons.a | grep ' [VW] ' | awk '{print $$3}' | sort -u > /tmp/ons_weak.txt
+	@$(NM) $(BUILD_DIR)/libpons.a | grep ' [VW] ' | awk '{print $$3}' | sort -u > /tmp/pons_weak.txt
+	@cat /tmp/ons_common.txt /tmp/ons_weak.txt | sort -u | grep -v '^$$' | awk '{print $$0 "=ons_" $$0}' > ons_rename.txt
+	@cat /tmp/ons_common.txt /tmp/pons_weak.txt | sort -u | grep -v '^$$' | awk '{print $$0 "=pons_" $$0}' > pons_rename.txt
 	@touch rename_stamp
 
 

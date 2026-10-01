@@ -109,7 +109,8 @@ static void engine_dump_state(EngineHandle h, FILE *f)
 }
 static SDL_Thread                 *ons_thread;
 static uint32_t                    delta;
-
+static char last_archive_path[PATH_MAX_LENGTH];
+static char last_save_path[PATH_MAX_LENGTH];
 
 static void show_message(const char *msg)
 {
@@ -294,6 +295,7 @@ bool retro_load_game(const struct retro_game_info *game)
     log_cb(RETRO_LOG_INFO, "Using ONScripter-EN engine (nscript.dat)\n");
   }
   vtable->setArchivePath(engine, archive_path);
+  strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
 
   // Honor RetroArch's save directory; fall back to game directory
   const char *save_dir = NULL;
@@ -302,9 +304,11 @@ bool retro_load_game(const struct retro_game_info *game)
     fill_pathname_join(save_path, save_dir, "onscripter-en", sizeof(save_path));
     ons_mkdir(save_path);
     vtable->setSavePath(engine, save_path);
+    strncpy(last_save_path, save_path, sizeof(last_save_path));
     test_output_dir = strdup(save_path);
   } else {
     vtable->setSavePath(engine, archive_path);
+    strncpy(last_save_path, archive_path, sizeof(last_save_path));
     test_output_dir = strdup(archive_path);
   }
 
@@ -341,9 +345,12 @@ bool retro_load_game(const struct retro_game_info *game)
   SDL_libretro_wait_sem = NULL; // disabled during init
 #endif
 
-  // Apply core options
+  // Read debug level option before starting engine
+  struct retro_variable dbgvar = {0};
+  dbgvar.key = "onscripter-en_debug_level";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
+    opt_debug_level = atoi(dbgvar.value);
   vtable->setDebugLevel(engine, opt_debug_level);
-  log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
 
   ons_thread = SDL_CreateThread(ons_main, NULL);
 
@@ -360,16 +367,26 @@ void retro_deinit(void)
 
 void retro_reset(void)
 {
-#ifdef LIBRETRO_FRAME_SYNC
-  SDL_sem *saved_wait_sem = SDL_libretro_wait_sem;
-  SDL_libretro_wait_sem = NULL;
-#endif
-  if (engine) {
-    vtable->resetCommand(engine);
+  if (ons_thread) {
+    SDL_KillThread(ons_thread);
+    ons_thread = nullptr;
   }
 #ifdef LIBRETRO_FRAME_SYNC
-  SDL_libretro_wait_sem = saved_wait_sem;
+  SDL_libretro_wait_sem = NULL;
 #endif
+  if (engine && vtable) {
+    vtable->destroy(engine);
+    engine = nullptr;
+  }
+  if (vtable) {
+    engine = vtable->create();
+    if (engine) {
+      vtable->setArchivePath(engine, last_archive_path);
+      vtable->setSavePath(engine, last_save_path);
+      vtable->setDebugLevel(engine, opt_debug_level);
+      ons_thread = SDL_CreateThread(ons_main, NULL);
+    }
+  }
 }
 
 void retro_run(void)
@@ -383,11 +400,24 @@ void retro_run(void)
      * init calls advancePhase(0) many times, each pushing ONS_TIMER_EVENT.
      * Without draining, each takes one frame (60fps) to process. */
     SDL_Event ev;
-    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
-      ;
+    while (SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 1)
+      SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT));
     frame_sync_activated = true;
+    /* Dump envdata for debugging */
+    { char env_path[PATH_MAX_LENGTH]; fill_pathname_join(env_path, last_save_path, "envdata", sizeof(env_path));
+      FILE *ef = fopen(env_path, "rb");
+      if (ef) { fseek(ef, 0, SEEK_END); long esz = ftell(ef); fseek(ef, 0, SEEK_SET);
+        log_cb(RETRO_LOG_INFO, "envdata: %s (%ld bytes)\n", env_path, esz);
+        unsigned char buf[256]; size_t nr = fread(buf, 1, esz < 256 ? esz : 256, ef);
+        for (size_t i = 0; i < nr; i += 16) {
+          char hex[128] = ""; int p = 0;
+          for (size_t j = i; j < i+16 && j < nr; j++) p += snprintf(hex+p, sizeof(hex)-p, "%02x ", buf[j]);
+          log_cb(RETRO_LOG_INFO, "  %04zx: %s\n", i, hex);
+        }
+        fclose(ef);
+      } else log_cb(RETRO_LOG_INFO, "envdata: not found (using defaults)\n");
+    }
   }
-
   // Re-read core options each frame (allows hot-reload from Quick Menu)
   struct retro_variable var = {0};
 
@@ -477,17 +507,10 @@ void retro_run(void)
   SDL_libretro_fastforward = ff;
   if (ff) SDL_libretro_ff_offset += SDL_libretro_ff_speed;
   else SDL_libretro_ff_offset = 0;
-  // block on event_sem. The engine's SDL_WaitEvent loops with SDL_Delay(10),
-  // but no events are pumped (SDL_libretro_PumpEvents is not called), so
-  // the engine idles. Timer events from SDL_AddTimer accumulate.
+  if (!engine || !vtable) return;
   int av_enable = 1;
   if (environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av_enable) && !(av_enable & 1)) {
     SDL_libretro_paused = true;
-    SDL_Surface *screen = SDL_GetVideoSurface();
-    if (screen)
-      video_cb(screen->pixels, screen->w, screen->h, screen->pitch);
-    else
-      video_cb(NULL, 0, 0, 0);
     return;
   }
   // Unpause: clear flag and drain accumulated timer events
@@ -605,11 +628,9 @@ void retro_run(void)
     video_cb(NULL, 0, 0, 0);
   }
   if (spec && SDL_GetAudioStatus() == SDL_AUDIO_PLAYING && frames <= max_frames) {
-    SDL_LockAudio();
     memset(stream, 0, frames * 4);
     spec->callback(NULL, (uint8_t *)stream, frames * 4);
     audio_batch_cb(stream, frames);
-    SDL_UnlockAudio();
   }
 }
 

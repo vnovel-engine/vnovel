@@ -11,7 +11,8 @@ extern SDL_AudioSpec       *SDL_libretro_audio_spec;
 extern retro_input_state_t  SDL_libretro_input_state_cb;
 extern SDL_sem             *SDL_libretro_event_sem;
 void                        SDL_libretro_PumpEvents(void);
-
+extern SDL_sem             *SDL_libretro_wait_sem;  /* engine blocks here after flush; retro_run posts */
+extern SDL_sem             *SDL_libretro_rendered_sem; /* engine posts here after render; retro_run waits */
 /* RetroPad button to ONScripter key mapping (configurable via core options) */
 typedef enum {
   ONS_KEY_SPACE = 0,

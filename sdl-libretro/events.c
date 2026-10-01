@@ -145,13 +145,11 @@ static void PumpMouseEvents(void)
   if (!screen) return;
   int16_t _pressed = 0;
 
-  /* Use RETRO_DEVICE_POINTER for absolute position (normalized to window),
-   * which maps correctly to framebuffer coordinates regardless of window
-   * scale. Fall back to RETRO_DEVICE_MOUSE relative deltas if pointer
-   * is unavailable. */
+  /* Use RETRO_DEVICE_POINTER for absolute position (normalized to window,
+   * maps directly to framebuffer coords). RetroArch returns 0,0 when no
+   * pointer is active. Fall back to RETRO_DEVICE_MOUSE relative deltas. */
   int16_t px = SDL_libretro_input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
   int16_t py = SDL_libretro_input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
-
   if (px != 0 || py != 0) {
     int16_t nx = screen->w * (px + 0x7fff) / 0xffff;
     int16_t ny = screen->h * (py + 0x7fff) / 0xffff;
@@ -191,8 +189,6 @@ static void PumpMouseEvents(void)
       SDL_libretro_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, SDL_libretro_rightclick_button)) {
     _pressed = 2;
   }
-  // Keyboard 'm' key as alternative right-click (menu) trigger
-  // Removed: conflicts with nothing, but right-click and L button work now.
 
   if (pressed) {
     if (!_pressed) {
@@ -213,8 +209,9 @@ void DUMMY_PumpEvents(_THIS)
 {
   /* Block on event_sem until retro_run posts it. This throttles the engine
    * to one event loop iteration per retro_run call (60fps). During
-   * fast-forward or pause, return immediately (don't block). */
-  if (SDL_libretro_fastforward || SDL_libretro_paused)
+   * fast-forward, return immediately (don't block). During pause,
+   * retro_run doesn't post event_sem, so the engine blocks here. */
+  if (SDL_libretro_fastforward)
     return;
   SDL_SemWait(SDL_libretro_event_sem);
 }
