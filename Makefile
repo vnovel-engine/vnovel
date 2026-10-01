@@ -67,9 +67,9 @@ else ifeq ($(platform), aarch64)
    AR      := $(CROSS)ar
    OBJCOPY := $(CROSS)objcopy
    NM      := $(CROSS)nm
-   LDFLAGS  += -L/tmp/aarch64-ft/usr/aarch64-linux-gnu/lib -lfreetype
-   CXXFLAGS += -I/tmp/aarch64-ft/usr/aarch64-linux-gnu/include/freetype2
-   CFLAGS   += -I/tmp/aarch64-ft/usr/aarch64-linux-gnu/include/freetype2
+   LDFLAGS  += -lfreetype
+   CXXFLAGS += $(shell pkg-config --cflags freetype2 2>/dev/null)
+   CFLAGS   += $(shell pkg-config --cflags freetype2 2>/dev/null)
 else ifeq ($(platform), mingw)
    CROSS    := x86_64-w64-mingw32-
    TARGET    := $(TARGET_NAME)_libretro.dll
