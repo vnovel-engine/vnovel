@@ -207,13 +207,11 @@ static void PumpMouseEvents(void)
 
 void DUMMY_PumpEvents(_THIS)
 {
-  /* Block on event_sem until retro_run posts it. This throttles the engine
-   * to one event loop iteration per retro_run call (60fps). During
-   * fast-forward, return immediately (don't block). During pause,
-   * retro_run doesn't post event_sem, so the engine blocks here. */
-  if (SDL_libretro_fastforward)
-    return;
-  SDL_SemWait(SDL_libretro_event_sem);
+  /* No-op. SDL_WaitEvent handles blocking via SDL_Delay.
+   * Input events are pushed by SDL_libretro_PumpEvents() from retro_run.
+   * Timer events are pushed by SDL_AddTimer via the RunTimer thread.
+   * advancePhase(0) pushes timer events directly — SDL_WaitEvent
+   * returns them immediately without blocking. */
 }
 
 void SDL_libretro_PumpEvents(void)

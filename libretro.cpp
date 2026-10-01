@@ -242,6 +242,7 @@ static void frame_cb(retro_usec_t usec)
   delta = usec / 1000;
 }
 
+
 void retro_init(void)
 {
   enum retro_pixel_format pixfmt = RETRO_PIXEL_FORMAT_XRGB8888;
@@ -268,7 +269,9 @@ static int ons_main(void *data)
     engine_error_jmp_valid = false;
     return -1;
   }
-  SDL_ShowCursor(SDL_DISABLE);
+  { extern int SDL_timer_started, SDL_timer_running;
+    log_cb(RETRO_LOG_INFO, "Timer state: started=%d running=%d\n",
+           SDL_timer_started, SDL_timer_running); }
   vtable->eventLoop(engine);
   engine_error_jmp_valid = false;
   return 0;
@@ -351,7 +354,7 @@ bool retro_load_game(const struct retro_game_info *game)
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
     opt_debug_level = atoi(dbgvar.value);
   vtable->setDebugLevel(engine, opt_debug_level);
-
+  log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
   ons_thread = SDL_CreateThread(ons_main, NULL);
 
   return true;
@@ -389,21 +392,17 @@ void retro_reset(void)
   }
 }
 
+extern "C" void SDL_ThreadedTimerCheck(void);
+
 void retro_run(void)
 {
 #ifdef LIBRETRO_FRAME_SYNC
-  // Activate frame sync on the first retro_run call.
-  // By now the engine has finished init and is in its event loop.
   static bool frame_sync_activated = false;
   if (!frame_sync_activated) {
-    /* Drain timer events that accumulated during init(). The engine's
-     * init calls advancePhase(0) many times, each pushing ONS_TIMER_EVENT.
-     * Without draining, each takes one frame (60fps) to process. */
     SDL_Event ev;
-    while (SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 1)
-      SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT));
+    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
+      ;
     frame_sync_activated = true;
-    /* Dump envdata for debugging */
     { char env_path[PATH_MAX_LENGTH]; fill_pathname_join(env_path, last_save_path, "envdata", sizeof(env_path));
       FILE *ef = fopen(env_path, "rb");
       if (ef) { fseek(ef, 0, SEEK_END); long esz = ftell(ef); fseek(ef, 0, SEEK_SET);
@@ -427,7 +426,7 @@ void retro_run(void)
     if (new_sync != opt_frame_sync) {
       opt_frame_sync = new_sync;
       if (opt_frame_sync && !SDL_libretro_wait_sem)
-        SDL_libretro_wait_sem = fs_sem;
+        SDL_libretro_wait_sem = NULL; /* disabled — causes deadlock */
       else if (!opt_frame_sync)
         SDL_libretro_wait_sem = NULL;
     }
@@ -525,17 +524,12 @@ void retro_run(void)
   SDL_AudioSpec *spec = SDL_libretro_audio_spec;
   static const size_t max_frames = 2048;
   static int16_t stream[max_frames * 2];
-  size_t frames = delta * 44100 / 1000;
+  size_t frames = (spec ? spec->freq : 44100) / 60;
   frames = (frames / 32 + 1) * 32;
-
   input_poll_cb();
 
   SDL_libretro_PumpEvents();
-
 #ifdef LIBRETRO_FRAME_SYNC
-  // Wake the engine thread — one frame's worth of events has been injected.
-  // But first: process any pending snapshot/dumpstate requests while the
-  // engine thread is still blocked in DUMMY_UpdateRects (no race).
   if (pending_snapshot[0]) {
     SDL_Surface *snap_screen = SDL_GetVideoSurface();
     if (snap_screen && snap_screen->pixels) {
@@ -557,7 +551,7 @@ void retro_run(void)
     }
     pending_dumpstate[0] = '\0';
   }
-  SDL_SemPost(SDL_libretro_wait_sem);
+  /* wait_sem disabled — engine paces via event_sem only */
 #endif
 
   // Show toast when engine state actually changes
@@ -627,13 +621,17 @@ void retro_run(void)
   } else {
     video_cb(NULL, 0, 0, 0);
   }
+  /* Audio: call mixer callback directly. No lock — the engine rarely
+ * holds the mixer lock (only during Mix_PlayChannel etc.), and the
+ * callback is fast. This avoids ring buffer underruns. */
   if (spec && SDL_GetAudioStatus() == SDL_AUDIO_PLAYING && frames <= max_frames) {
     memset(stream, 0, frames * 4);
+    { static int tc = 0; Uint32 t0 = SDL_GetTicks();
     spec->callback(NULL, (uint8_t *)stream, frames * 4);
-    audio_batch_cb(stream, frames);
+    Uint32 t1 = SDL_GetTicks();
+    if (tc < 20) { log_cb(RETRO_LOG_INFO, "[%u] audio: mix=%dms frames=%zu\n", t0, t1-t0, frames); tc++; } }
   }
 }
-
 size_t retro_serialize_size(void)
 {
   return 0;
