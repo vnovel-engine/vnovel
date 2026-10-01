@@ -61,9 +61,9 @@ extern "C" void retro_request_dumpstate(const char *name)
 #include <ONScripterLabel.h>
 
 retro_input_state_t  SDL_libretro_input_state_cb;
+bool SDL_libretro_input_ready = false;
 SDL_AudioSpec       *SDL_libretro_audio_spec = NULL;
 SDL_sem             *SDL_libretro_event_sem  = NULL;
-
 /* Frame sync: when enabled, DUMMY_UpdateRects blocks on this semaphore
    after each screen flush. retro_run() posts it once per frame, giving
    1:1 frame synchronization — every flush() is displayed.
@@ -80,7 +80,7 @@ static int  opt_debug_level = 0;
 static bool opt_software_cursor = true;
 static int  opt_text_speed = -1;
 static int  opt_ff_speed = 50;
-
+float opt_mouse_sensitivity = 1.0;
 /* Key remap state */
 #include "key_remap.h"
 
@@ -100,7 +100,7 @@ static retro_audio_sample_batch_t  audio_batch_cb;
 static retro_environment_t         environ_cb;
 static EngineHandle engine = nullptr;
 static const EngineVTable *vtable = nullptr;
-
+static volatile bool engine_running = false;
 /* Wrapper called from retro_run to dump engine state to a FILE* */
 static void engine_dump_state(EngineHandle h, FILE *f)
 {
@@ -152,7 +152,13 @@ static struct retro_input_descriptor input_descs[] = {
   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "Reading Speed" },
   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Quick Save" },
   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Auto Mode" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Skip Mode" },
+  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X,      "Mouse X" },
+  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y,      "Mouse Y" },
+  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT,   "Click" },
+  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT,  "Menu" },
+  { 0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X,   "Touch X" },
+  { 0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y,   "Touch Y" },
+  { 0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED, "Touch" },
   { 0, 0, 0, 0, NULL },
 };
 
@@ -230,9 +236,9 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
   }
   info->geometry.base_width = width;
   info->geometry.base_height = height;
-  info->geometry.max_width = 1920;
-  info->geometry.max_height = 1440;
-  info->geometry.aspect_ratio = 0.0;
+  info->geometry.max_width = width;
+  info->geometry.max_height = height;
+  info->geometry.aspect_ratio = 4.0 / 3.0;
   info->timing.fps = 60.0;
   info->timing.sample_rate = 44100.0;
 }
@@ -260,13 +266,12 @@ static int ons_main(void *data)
     // ONScripter called errorAndExit() - caught by longjmp
     log_cb(RETRO_LOG_ERROR, "ONScripter script error - returning cleanly\n");
     engine_error_jmp_valid = false;
+    engine_running = false;
     return 0;
   }
   engine_error_jmp_valid = true;
-
+  engine_running = true;
   if (vtable->init(engine)) {
-    log_cb(RETRO_LOG_ERROR, "Failed to initialize ONScripter\n");
-    engine_error_jmp_valid = false;
     return -1;
   }
   { extern int SDL_timer_started, SDL_timer_running;
@@ -274,9 +279,10 @@ static int ons_main(void *data)
            SDL_timer_started, SDL_timer_running); }
   SDL_ShowCursor(SDL_DISABLE);
   vtable->eventLoop(engine);
+  engine_running = false;
   engine_error_jmp_valid = false;
+  return 0;
 }
-
 bool retro_load_game(const struct retro_game_info *game)
 {
   if (!game)
@@ -387,6 +393,7 @@ void retro_reset(void)
       vtable->setArchivePath(engine, last_archive_path);
       vtable->setSavePath(engine, last_save_path);
       vtable->setDebugLevel(engine, opt_debug_level);
+      SDL_PauseAudio(0); /* Resume audio after engine restart */
       ons_thread = SDL_CreateThread(ons_main, NULL);
     }
   }
@@ -396,6 +403,14 @@ extern "C" void SDL_ThreadedTimerCheck(void);
 
 void retro_run(void)
 {
+  if (!engine_running) {
+    /* Engine thread exited. Black screen, stop audio. */
+    if (SDL_libretro_audio_spec) SDL_PauseAudio(1);
+    static Uint32 black[640*480];
+    memset(black, 0, sizeof(black));
+    video_cb(black, 640, 480, 640*4);
+    return;
+  }
 #ifdef LIBRETRO_FRAME_SYNC
   static bool frame_sync_activated = false;
   if (!frame_sync_activated) {
@@ -406,7 +421,6 @@ void retro_run(void)
     { char env_path[PATH_MAX_LENGTH]; fill_pathname_join(env_path, last_save_path, "envdata", sizeof(env_path));
       FILE *ef = fopen(env_path, "rb");
       if (ef) { fseek(ef, 0, SEEK_END); long esz = ftell(ef); fseek(ef, 0, SEEK_SET);
-        log_cb(RETRO_LOG_INFO, "envdata: %s (%ld bytes)\n", env_path, esz);
         unsigned char buf[256]; size_t nr = fread(buf, 1, esz < 256 ? esz : 256, ef);
         for (size_t i = 0; i < nr; i += 16) {
           char hex[128] = ""; int p = 0;
@@ -472,8 +486,11 @@ void retro_run(void)
     else if (strcmp(var.value, "32x") == 0) SDL_libretro_ff_speed = 200;
     else if (strcmp(var.value, "max") == 0)  SDL_libretro_ff_speed = 1000;
   }
- #endif
 
+  var.key = "onscripter-en_mouse_sensitivity";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    opt_mouse_sensitivity = atof(var.value);
+#endif
   /* Read key remap options */
   #define PARSE_KEY(optname, idx) do { \
     var.key = optname; \
@@ -527,15 +544,22 @@ void retro_run(void)
   size_t frames = (spec ? spec->freq : 44100) / 60;
   frames = (frames / 32 + 1) * 32;
   input_poll_cb();
-
+  SDL_libretro_input_ready = true;
   SDL_libretro_PumpEvents();
+  /* Force RetroArch to recalculate the GL viewport on every frame.
+   * Fixes scaling bug when toggling fullscreen mid-scene. */
+  struct retro_game_geometry geom;
+  geom.base_width = 640;
+  geom.base_height = 480;
+  geom.max_width = 640;
+  geom.max_height = 480;
+  geom.aspect_ratio = 4.0 / 3.0;
+  environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geom);
 #ifdef LIBRETRO_FRAME_SYNC
   if (pending_snapshot[0]) {
     SDL_Surface *snap_screen = SDL_GetVideoSurface();
     if (snap_screen && snap_screen->pixels) {
       char bmp_path[PATH_MAX_LENGTH];
-      snprintf(bmp_path, sizeof(bmp_path), "%s/%s.bmp", test_output_dir, pending_snapshot);
-      SDL_SaveBMP(snap_screen, bmp_path);
       log_cb(RETRO_LOG_INFO, "Snapshot saved: %s\n", bmp_path);
     }
     pending_snapshot[0] = '\0';
@@ -579,13 +603,10 @@ void retro_run(void)
       shadow = (Uint32 *)realloc(shadow, fb_size);
       shadow_size = fb_size;
     }
-    SDL_LockSurface(screen);
     memcpy(shadow, screen->pixels, fb_size);
-    SDL_UnlockSurface(screen);
     int w = screen->w, h = screen->h;
     int pitch = screen->pitch / 4;
-
-    // Draw mode indicators (top-right corner)
+    /* Draw mode indicators (top-right corner) */
     int bx = w - 12, by = 4;
     if (draw_auto) {
       for (int dy = 0; dy < 8; dy++)
@@ -600,8 +621,7 @@ void retro_run(void)
           if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
             shadow[(by+dy) * pitch + (bx+dx)] = 0xCCAAAA22;
     }
-
-    // Draw software cursor
+    /* Draw software cursor on shadow (not on engine framebuffer) */
     if (opt_software_cursor) {
       int cx, cy;
       SDL_libretro_get_mouse_pos(&cx, &cy);
@@ -615,7 +635,6 @@ void retro_run(void)
         }
       }
     }
-
     video_cb(shadow, screen->w, screen->h, screen->pitch);
   } else if (screen && screen->pixels) {
     video_cb(screen->pixels, screen->w, screen->h, screen->pitch);

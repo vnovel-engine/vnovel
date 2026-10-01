@@ -98,8 +98,11 @@ static void PumpKeyboardEvents(void)
           break;
         }
       }
-      sym.scancode = sdl_key;
-      sym.sym = sdl_key;
+      /* Don't forward the fullscreen key to the engine — it changes
+       * the SDL video mode resolution, conflicting with RetroArch's
+       * own fullscreen. RetroArch handles fullscreen natively. */
+      if (sdl_key == engine_keys[REMAP_FULLSCREEN])
+        continue;
       SDL_PrivateKeyboard(state ? SDL_PRESSED : SDL_RELEASED, &sym);
     }
   }
@@ -145,33 +148,19 @@ static void PumpMouseEvents(void)
   if (!screen) return;
   int16_t _pressed = 0;
 
-  /* Use RETRO_DEVICE_POINTER for absolute position (normalized to window,
-   * maps directly to framebuffer coords). RetroArch returns 0,0 when no
-   * pointer is active. Fall back to RETRO_DEVICE_MOUSE relative deltas. */
-  int16_t px = SDL_libretro_input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
-  int16_t py = SDL_libretro_input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
-  if (px != 0 || py != 0) {
-    int16_t nx = screen->w * (px + 0x7fff) / 0xffff;
-    int16_t ny = screen->h * (py + 0x7fff) / 0xffff;
-    if (mouse_x != nx || mouse_y != ny) {
-      mouse_x = nx;
-      mouse_y = ny;
-      have_mouse = true;
-      SDL_PrivateMouseMotion(0, 0, mouse_x, mouse_y);
-    }
-  } else {
-    int16_t mx = SDL_libretro_input_state_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
-    int16_t my = SDL_libretro_input_state_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
-    if (mx != 0 || my != 0) {
-      mouse_x += mx;
-      mouse_y += my;
-      if (mouse_x < 0) mouse_x = 0;
-      if (mouse_y < 0) mouse_y = 0;
-      if (mouse_x >= screen->w) mouse_x = screen->w - 1;
-      if (mouse_y >= screen->h) mouse_y = screen->h - 1;
-      have_mouse = true;
-      SDL_PrivateMouseMotion(0, 0, mouse_x, mouse_y);
-    }
+
+  /* Relative mouse mode: use RETRO_DEVICE_MOUSE deltas. */
+  extern float opt_mouse_sensitivity;
+  int16_t mx = SDL_libretro_input_state_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
+  int16_t my = SDL_libretro_input_state_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
+  if (mx != 0 || my != 0) {
+    mouse_x += (int16_t)(mx * opt_mouse_sensitivity);
+    mouse_y += (int16_t)(my * opt_mouse_sensitivity);
+    if (mouse_x < 0) mouse_x = 0;
+    if (mouse_y < 0) mouse_y = 0;
+    if (mouse_x >= screen->w) mouse_x = screen->w - 1;
+    if (mouse_y >= screen->h) mouse_y = screen->h - 1;
+    have_mouse = true;
   }
 
   while (SDL_libretro_input_state_cb(0, RETRO_DEVICE_POINTER, _pressed, RETRO_DEVICE_ID_POINTER_PRESSED)) {
@@ -207,19 +196,21 @@ static void PumpMouseEvents(void)
 
 void DUMMY_PumpEvents(_THIS)
 {
-  /* No-op. SDL_WaitEvent handles blocking via SDL_Delay.
-   * Input events are pushed by SDL_libretro_PumpEvents() from retro_run.
-   * Timer events are pushed by SDL_AddTimer via the RunTimer thread.
-   * advancePhase(0) pushes timer events directly — SDL_WaitEvent
-   * returns them immediately without blocking. */
+  /* Push a motion event only when position changed since last push.
+   * This avoids flooding the event queue with duplicate motion
+   * events that cause the engine to spin at 100% CPU. */
+  static Sint16 last_pushed_x = -1, last_pushed_y = -1;
+  if (mouse_x != last_pushed_x || mouse_y != last_pushed_y) {
+    SDL_PrivateMouseMotion(0, 0, mouse_x, mouse_y);
+    last_pushed_x = mouse_x;
+    last_pushed_y = mouse_y;
+  }
 }
-
 void SDL_libretro_PumpEvents(void)
 {
   PumpKeyboardEvents();
   PumpMouseEvents();
   maybe_inject_autoclick();
-  SDL_SemPost(SDL_libretro_event_sem);
 }
 
 void DUMMY_InitOSKeymap(_THIS)

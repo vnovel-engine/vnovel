@@ -96,6 +96,23 @@ struct retro_core_option_definition option_defs_us[] = {
       "8x"
    },
    {
+      "onscripter-en_mouse_sensitivity",
+      "Mouse Sensitivity",
+      "Scales mouse movement for the in-game cursor. "
+      "Adjust if the software cursor moves faster or slower "
+      "than the real mouse.",
+      {
+         { "0.5",  NULL },
+         { "0.75", NULL },
+         { "1.0",  NULL },
+         { "1.25", NULL },
+         { "1.5",  NULL },
+         { "2.0",  NULL },
+         { NULL, NULL },
+      },
+      "1.0"
+   },
+   {
       "onscripter-en_key_lookback",
       "Lookback Key",
       "Key to open the text history / lookback mode.",
