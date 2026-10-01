@@ -1,0 +1,12 @@
+// toy_test.tjs — Simple test: create window, fill with red, verify rendering
+// Run: KRKRSDL2_LIBRETRO=1 SDL_VIDEODRIVER=dummy krkrsdl2 -debugwin -readencoding=UTF-8
+
+var win = new Window();
+var layer = new Layer(win, null);
+win.add(layer);
+layer.setSize(640, 480);
+layer.fillRect(0, 0, 640, 480, 0xFF0000); // red
+layer.visible = true;
+win.setInnerSize(640, 480);
+win.visible = true;
+// Don't loop — let krkrsdl2's main loop handle rendering

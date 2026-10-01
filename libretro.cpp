@@ -162,6 +162,8 @@ static struct retro_input_descriptor input_descs[] = {
   { 0, 0, 0, 0, NULL },
 };
 
+static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t);
+
 void retro_set_environment(retro_environment_t cb)
 {
   static struct retro_log_callback log;
@@ -169,6 +171,11 @@ void retro_set_environment(retro_environment_t cb)
   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
     log_cb = log.log;
   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_descs);
+
+  // Real keyboard events (Enter/Space/arrow keys) must reach the engine:
+  // RetroArch's default retropad map does not carry Space.
+  static struct retro_keyboard_callback kb_cb = { krkr_keyboard_cb };
+  environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb_cb);
 
   // Core options: frame sync, indicators, debug level
   libretro_set_core_options(environ_cb, &opt_frame_sync, &opt_indicators, &opt_debug_level);
@@ -283,15 +290,66 @@ static int ons_main(void *data)
   engine_error_jmp_valid = false;
   return 0;
 }
-bool retro_load_game(const struct retro_game_info *game)
+// KiriKiri engine C functions (from engine_kirikiri_cabi.cpp)
+extern "C" {
+  typedef void* EngineHandle;
+  EngineHandle krkr_create(void);
+  void krkr_setArchivePath(EngineHandle, const char*);
+  void krkr_setSavePath(EngineHandle, const char*);
+  int krkr_init(EngineHandle);
+  void **krkr_get_surface_ptr(void);
+  int *krkr_get_surface_updated_ptr(void);
+  void krkr_get_mouse_pos(int *x, int *y);
+  void krkr_pump_events(void);
+  void krkr_set_input_callbacks(retro_input_state_t state_cb, retro_input_poll_t poll_cb);
+  void krkr_push_key(int sym, int down);
+  int krkr_get_audio(int16_t *out_buf, int max_frames);
+  void krkr_shutdown(void);
+}
+
+/* RetroArch keyboard callback -> engine key queue. Also feed the SDL2
+ * compat path (SDL_libretro_keyboard_event) used by ONScripter engines. */
+static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
 {
+  /* RetroArch's keyboard callback may deliver only the release (up) without a
+   * matching press. KAG's scenario drivers advance in onKeyDown, so synthesize
+   * the missing keydown immediately before an unmatched keyup. */
+  static unsigned char seen[512];
+  if (keycode < 512 && down)
+    seen[keycode] = 1;
+  if (!down && keycode < 512 && !seen[keycode])
+    krkr_push_key((int)keycode, 1);
+  if (keycode < 512)
+    seen[keycode] = 0;
+  krkr_push_key((int)keycode, down ? 1 : 0);
+}
+
+bool retro_load_game(const struct retro_game_info *game){
   if (!game)
     return false;
 
   char archive_path[PATH_MAX_LENGTH];
   fill_pathname_basedir(archive_path, game->path, sizeof(archive_path));
+  // Get save directory early (needed for KiriKiri path)
+  const char *save_dir = NULL;
+  environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir);
 
-  // Detect engine: PONScripter for pscript.dat, ONScripter-EN otherwise
+  // Detect engine: KiriKiri for .xp3, PONScripter for pscript.dat, ONScripter-EN otherwise
+  char xp3_check[PATH_MAX_LENGTH];
+  fill_pathname_join(xp3_check, archive_path, "data.xp3", sizeof(xp3_check));
+  FILE *xp3_fp = fopen(xp3_check, "rb");
+  if (xp3_fp) {
+    fclose(xp3_fp);
+    engine = krkr_create();
+    log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (data.xp3)\n");
+    krkr_setArchivePath(engine, archive_path);
+    krkr_setSavePath(engine, save_dir ? save_dir : archive_path);
+    krkr_init(engine);
+    strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
+    return true;
+  }
+  // extern C declarations are at file scope above retro_load_game
+  // Check for PONScripter
   char pscript_check[PATH_MAX_LENGTH];
   fill_pathname_join(pscript_check, archive_path, "pscript.dat", sizeof(pscript_check));
   FILE *pscript_fp = fopen(pscript_check, "rb");
@@ -304,11 +362,9 @@ bool retro_load_game(const struct retro_game_info *game)
     log_cb(RETRO_LOG_INFO, "Using ONScripter-EN engine (nscript.dat)\n");
   }
   vtable->setArchivePath(engine, archive_path);
-  strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
 
   // Honor RetroArch's save directory; fall back to game directory
-  const char *save_dir = NULL;
-  if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir) && save_dir && save_dir[0]) {
+  if (save_dir && save_dir[0]) {
     char save_path[PATH_MAX_LENGTH];
     fill_pathname_join(save_path, save_dir, "onscripter-en", sizeof(save_path));
     ons_mkdir(save_path);
@@ -403,9 +459,99 @@ extern "C" void SDL_ThreadedTimerCheck(void);
 
 void retro_run(void)
 {
+  // KiriKiri engine path: read from SDL_libretro_surface
+  // Use void* to avoid SDL 1.2/SDL2 type conflict
+  if (!vtable) {
+    static bool kiri_input_wired = false;
+    if (!kiri_input_wired && SDL_libretro_input_state_cb && input_poll_cb) {
+      krkr_set_input_callbacks(SDL_libretro_input_state_cb, input_poll_cb);
+      kiri_input_wired = true;
+    }
+    void **surf_ptr = krkr_get_surface_ptr();
+    if (input_poll_cb) input_poll_cb();
+    krkr_pump_events();
+    static int kiri_dbg = 0;
+    if (kiri_dbg < 5) { fprintf(stderr, "KIRI retro_run: surf_ptr=%p *surf_ptr=%p\n", surf_ptr, surf_ptr ? *surf_ptr : NULL); kiri_dbg++; }
+    if (surf_ptr && *surf_ptr) {
+      char *s = (char*)*surf_ptr;
+      // SDL2 SDL_Surface layout on x86-64:
+      // flags(4) + pad(4) + format(8) + w(4) + h(4) + pitch(4) + pad(4) + pixels(8)
+      int w = *(int*)(s + 16);
+      int h = *(int*)(s + 20);
+      int pitch = *(int*)(s + 24);
+      void *pixels = *(void**)(s + 32);
+      if (pixels) {
+        /* Software cursor: the engine renders no pointer (dummy video
+         * driver), so overlay one on a shadow copy of the framebuffer. */
+        if (opt_software_cursor) {
+          static Uint32 *kshadow = NULL;
+          static int kshadow_sz = 0;
+          int fb = pitch * h;
+          if (fb > kshadow_sz) { kshadow = (Uint32*)realloc(kshadow, fb); kshadow_sz = fb; }
+          if (kshadow) {
+            memcpy(kshadow, pixels, fb);
+            int cx = 0, cy = 0;
+            krkr_get_mouse_pos(&cx, &cy);
+            int kpitch = pitch / 4;
+            /* 12x18 arrow cursor; '#' = black, '.' = white outline, ' ' = clear */
+            static const char *arrow[18] = {
+              "##          ",
+              "#.#         ",
+              "#..#        ",
+              "#...#       ",
+              "#....#      ",
+              "#.....#     ",
+              "#......#    ",
+              "#.......#   ",
+              "#........#  ",
+              "#.........# ",
+              "#..........#",
+              "#.....######",
+              "#..#.#      ",
+              "#.#..#      ",
+              "##...#      ",
+              "#....#      ",
+              " #..#       ",
+              "  ##        ",
+            };
+            for (int dy = 0; dy < 18; dy++) {
+              for (int dx = 0; dx < 12; dx++) {
+                char c = arrow[dy][dx];
+                if (c == ' ') continue;
+                int sx = cx + dx, sy = cy + dy;
+                if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+                kshadow[sy * kpitch + sx] = (c == '#') ? 0xFF000000 : 0xFFFFFFFF;
+              }
+            }
+            video_cb(kshadow, w, h, pitch);
+          } else {
+            video_cb(pixels, w, h, pitch);
+          }
+        } else {
+          video_cb(pixels, w, h, pitch);
+        }
+      } else {
+        video_cb(NULL, 0, 0, 0);
+      }
+    } else {
+      video_cb(NULL, 0, 0, 0);
+    }
+    // Audio: emit a fixed number of frames per video frame so RetroArch's
+    // audio_sync pacing stays stable. Pad with silence when the engine has
+    // produced less (e.g. before FAudio starts or during a pause).
+    {
+      static int16_t audio_buf[8192 * 2];
+      const int target = 44100 / 60;  /* 735 frames per video frame */
+      int got = krkr_get_audio(audio_buf, target);
+      if (got < 0) got = 0;
+      if (got < target)
+        memset(audio_buf + got * 2, 0, (target - got) * 2 * sizeof(int16_t));
+      if (audio_batch_cb)
+        audio_batch_cb(audio_buf, target);
+    }
+    return;
+  }
   if (!engine_running) {
-    /* Engine thread exited. Black screen, stop audio. */
-    if (SDL_libretro_audio_spec) SDL_PauseAudio(1);
     static Uint32 black[640*480];
     memset(black, 0, sizeof(black));
     video_cb(black, 640, 480, 640*4);
@@ -678,6 +824,11 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 
 void retro_unload_game(void)
 {
+  if (!vtable) {
+    // KiriKiri path: shut down the krkrsdl2 engine thread cleanly.
+    krkr_shutdown();
+    return;
+  }
   if (ons_thread) {
     SDL_KillThread(ons_thread);
     ons_thread = nullptr;

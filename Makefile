@@ -138,6 +138,7 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES_C)) \
            $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SOURCES_CXX)) \
            $(BUILD_DIR)/engine_ons_cabi.o \
            $(BUILD_DIR)/engine_pons_cabi.o \
+           $(BUILD_DIR)/engine_kirikiri_cabi.o \
            $(patsubst %.S,$(BUILD_DIR)/%.o,$(SOURCES_S))
 
 ONS_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.ons.o,$(ONS_CXX))
@@ -153,7 +154,7 @@ DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps
 
 $(TARGET): $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(SHARED) -Wl,-z,muldefs -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(SHARED) -Wl,-z,muldefs -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS) -ldl -lpthread
 
 # --- Generic compile rules (output to BUILD_DIR, preserving subdirs) ---
 $(BUILD_DIR)/%.o: %.c
@@ -219,6 +220,13 @@ $(BUILD_DIR)/engine_pons_cabi.o: engine_pons_cabi.cpp
 		-I$(DEPS_DIR)/libvorbis/include -I$(DEPS_DIR)/libmad -I$(DEPS_DIR)/bzip2 \
 		-I$(CORE_DIR) -I$(SMPEG_DIR) \
 		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
+
+$(BUILD_DIR)/engine_kirikiri_cabi.o: engine_kirikiri_cabi.cpp
+	@$(if $(Q),echo "CXX kirikiri-cabi $<",)
+	@mkdir -p $(dir $@)
+	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
+		-I$(LIBRETRO_COMM)/include -I$(CORE_DIR) \
+		-c -o $@ $<
 
 # Engine static libraries (avoids duplicate symbol errors)
 $(BUILD_DIR)/libons.a: $(ONS_OBJS)
