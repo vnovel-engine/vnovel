@@ -49,6 +49,20 @@ The following files in this repository are derived from
 - `sdl-libretro/SDL_ttf.c` — font rendering bridge
 - `sdl-libretro/SDL_config_libretro.h` — SDL configuration
 
+### Vendored SDL 1.2 patches
+
+The SDL 1.2 source in `deps/sdl/` (vendored from `deps-overlay`) includes
+the following patch:
+
+- **`src/timer/SDL_timer.c` — `SDL_AddTimer` fix**: `SDL_SYS_TimerInit()`
+  calls `SDL_SetTimerThreaded(1)`, but `SDL_timer_mutex` was only created
+  in `SDL_TimerInit` if `SDL_timer_threaded` was already set *before*
+  `SDL_SYS_TimerInit` ran. This caused `SDL_AddTimer` to return NULL,
+  preventing real timers from being created. The fix creates
+  `SDL_timer_mutex` on demand in `SDL_AddTimer` if it is NULL, and removes
+  the redundant `if (!SDL_timer_threaded)` check that was blocking
+  multiple timers.
+
 The following files are original work by Matcha & Nova:
 
 - `engine_cabi.h` — C ABI vtable for multi-engine dispatch

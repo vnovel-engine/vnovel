@@ -272,9 +272,9 @@ static int ons_main(void *data)
   { extern int SDL_timer_started, SDL_timer_running;
     log_cb(RETRO_LOG_INFO, "Timer state: started=%d running=%d\n",
            SDL_timer_started, SDL_timer_running); }
+  SDL_ShowCursor(SDL_DISABLE);
   vtable->eventLoop(engine);
   engine_error_jmp_valid = false;
-  return 0;
 }
 
 bool retro_load_game(const struct retro_game_info *game)
@@ -579,8 +579,9 @@ void retro_run(void)
       shadow = (Uint32 *)realloc(shadow, fb_size);
       shadow_size = fb_size;
     }
+    SDL_LockSurface(screen);
     memcpy(shadow, screen->pixels, fb_size);
-
+    SDL_UnlockSurface(screen);
     int w = screen->w, h = screen->h;
     int pitch = screen->pitch / 4;
 
@@ -630,6 +631,7 @@ void retro_run(void)
     spec->callback(NULL, (uint8_t *)stream, frames * 4);
     Uint32 t1 = SDL_GetTicks();
     if (tc < 20) { log_cb(RETRO_LOG_INFO, "[%u] audio: mix=%dms frames=%zu\n", t0, t1-t0, frames); tc++; } }
+    audio_batch_cb(stream, frames);
   }
 }
 size_t retro_serialize_size(void)
