@@ -21,6 +21,8 @@ typedef unsigned int Uint32;
 typedef void (*krkrsdl2_pre_init_platform_t)();
 typedef void (*krkrsdl2_run_main_loop_t)();
 typedef void (*krkrsdl2_cleanup_t)();
+typedef void (*krkr_set_flag_t)(int);
+typedef void (*krkr_notify_poll_t)(long long);
 
 // Global surface pointer — void* to avoid SDL 1.2/SDL2 type conflict
 extern "C" void *SDL_libretro_surface = NULL;
@@ -34,8 +36,11 @@ static char krkr_personal_path[4096] = "";
 static krkrsdl2_pre_init_platform_t p_pre_init = NULL;
 static krkrsdl2_run_main_loop_t p_run_main_loop = NULL;
 static krkrsdl2_cleanup_t p_cleanup = NULL;
+static krkr_set_flag_t p_set_fastforward = NULL;
+static krkr_notify_poll_t p_notify_poll = NULL;
 static void **krkr_surface_ptr = NULL;
 static int *krkr_surface_updated_ptr = NULL;
+static volatile int *krkr_auto_mode_ptr = NULL;
 
 static void *krkr_main(void *data) {
     chdir(krkr_game_path);
@@ -98,7 +103,11 @@ int krkr_init(EngineHandle engine) {
     fprintf(stderr, "krkr_init: pre_init=%p run_main=%p cleanup=%p\n", p_pre_init, p_run_main_loop, p_cleanup);
     krkr_surface_ptr = (void**)dlsym(krkr_dl, "SDL_libretro_surface");
     krkr_surface_updated_ptr = (int*)dlsym(krkr_dl, "SDL_libretro_surface_updated");
-    fprintf(stderr, "krkr_init: surface_ptr=%p\n", krkr_surface_ptr);
+    krkr_auto_mode_ptr = (volatile int*)dlsym(krkr_dl, "krkrsdl2_auto_mode");
+    p_set_fastforward = (krkr_set_flag_t)dlsym(krkr_dl, "krkr_set_fastforward");
+    p_notify_poll = (krkr_notify_poll_t)dlsym(krkr_dl, "krkr_notify_poll");
+    fprintf(stderr, "krkr_init: surface_ptr=%p set_ff=%p notify_poll=%p\n",
+            krkr_surface_ptr, (void*)p_set_fastforward, (void*)p_notify_poll);
     if (!p_run_main_loop) {
         fprintf(stderr, "Failed to find krkrsdl2_run_main_loop\n");
         return -1;
@@ -127,12 +136,18 @@ void krkr_setDebugLevel(EngineHandle engine, int level) {}
 void krkr_setTextSpeed(EngineHandle engine, int speed) {}
 int krkr_getWidth(EngineHandle engine) { return 640; }
 int krkr_getHeight(EngineHandle engine) { return 480; }
-int krkr_isAutoMode(EngineHandle engine) { return 0; }
-int krkr_isSkipMode(EngineHandle engine) { return 0; }
+int krkr_isAutoMode(EngineHandle engine) { return krkr_auto_mode_ptr ? (*krkr_auto_mode_ptr == 2) : 0; }
+int krkr_isSkipMode(EngineHandle engine) { return krkr_auto_mode_ptr ? (*krkr_auto_mode_ptr == 1) : 0; }
 void krkr_dumpState(EngineHandle engine, void *file) {}
 
 void **krkr_get_surface_ptr(void) { return krkr_surface_ptr; }
 int *krkr_get_surface_updated_ptr(void) { return krkr_surface_updated_ptr; }
+volatile int *krkr_get_auto_mode_ptr(void) { return krkr_auto_mode_ptr; }
+
+/* libretro fast-forward: flip the engine's loop flag. Pause needs no explicit
+ * call — the engine infers it from a stale krkr_notify_poll heartbeat. */
+extern "C" void krkr_set_fastforward(int f) { if (p_set_fastforward) p_set_fastforward(f); }
+extern "C" void krkr_notify_poll(long long ms) { if (p_notify_poll) p_notify_poll(ms); }
 
 /* Frontend save directory (RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY), exported to
  * the engine as KRKRSDL2_PERSONAL_PATH so System.personalPath resolves there. */
@@ -254,6 +269,19 @@ void krkr_pump_events(void) {
 #define KRKR_RETRO_DEVICE_ID_MOUSE_LEFT  2
 #define KRKR_RETRO_DEVICE_ID_MOUSE_RIGHT 3
 
+    /* Current engine surface size. The internal rendering resolution is chosen
+     * by the game (or forced via the core option), so it must not be assumed:
+     * read w/h from the live SDL_Surface. Layout on x86-64:
+     * flags(4)+pad(4)+format(8)+w(4)+h(4). Falls back to 800x600 until the
+     * engine has published a surface. */
+    int surf_w = 800, surf_h = 600;
+    if (krkr_surface_ptr && *krkr_surface_ptr) {
+        char *s = (char*)*krkr_surface_ptr;
+        int w = *(int*)(s + 16);
+        int h = *(int*)(s + 20);
+        if (w > 0 && h > 0) { surf_w = w; surf_h = h; }
+    }
+
     int16_t px = krkr_input_state(0, KRKR_RETRO_DEVICE_POINTER, 0, KRKR_RETRO_DEVICE_ID_POINTER_X);
     int16_t py = krkr_input_state(0, KRKR_RETRO_DEVICE_POINTER, 0, KRKR_RETRO_DEVICE_ID_POINTER_Y);
     int16_t rmx = krkr_input_state(0, KRKR_RETRO_DEVICE_MOUSE, 0, KRKR_RETRO_DEVICE_ID_MOUSE_X);
@@ -262,11 +290,11 @@ void krkr_pump_events(void) {
     static int mouse_ax = 400, mouse_ay = 300;   /* integrated position */
     if (rmx || rmy) { mouse_ax += rmx; mouse_ay += rmy; }
     if (px || py) {
-        mouse_ax = (int)((px + 32768) * 800 / 65536);
-        mouse_ay = (int)((py + 32768) * 600 / 65536);
+        mouse_ax = (int)((int)(px + 32768) * surf_w / 65536);
+        mouse_ay = (int)((int)(py + 32768) * surf_h / 65536);
     }
-    if (mouse_ax < 0) mouse_ax = 0; else if (mouse_ax > 799) mouse_ax = 799;
-    if (mouse_ay < 0) mouse_ay = 0; else if (mouse_ay > 599) mouse_ay = 599;
+    if (mouse_ax < 0) mouse_ax = 0; else if (mouse_ax > surf_w - 1) mouse_ax = surf_w - 1;
+    if (mouse_ay < 0) mouse_ay = 0; else if (mouse_ay > surf_h - 1) mouse_ay = surf_h - 1;
     int mx = mouse_ax, my = mouse_ay;
     krkr_mouse_x = mx; krkr_mouse_y = my;
 
@@ -304,7 +332,11 @@ void krkr_pump_events(void) {
     {
         int right = mright;
         if (krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, KRKR_RETRO_DEVICE_ID_JOYPAD_L)) right = 1;
-        int left  = mleft || pressed;   /* absolute pointer presses arrive as POINTER_PRESSED */
+        /* RetroArch reports POINTER_PRESSED for ANY button, so a right-click also
+         * sets `pressed`. Without the !right guard this emitted a spurious LEFT
+         * press alongside the right, and KAG consumed it as a left click
+         * (advance/hide) — defeating the right-click KAG menu. */
+        int left  = mleft || (pressed && !right);
         int btn = 0, is_down = 0;
         if (left != prev_left)        { btn = 1; is_down = left;  prev_left  = left; }
         else if (right != prev_right) { btn = 3; is_down = right; prev_right = right; }
@@ -317,6 +349,9 @@ void krkr_pump_events(void) {
             *(unsigned char*)(ev+18) = 1;                    /* clicks */
             *(int*)(ev+20) = mx;
             *(int*)(ev+24) = my;
+#ifdef KRKR_DEBUG_PROBES
+            { static int n=0; if(n<40){ fprintf(stderr, "krkr_pump: PUSH btn=%d down=%d at (%d,%d)\n", btn, is_down, mx, my); n++; } }
+#endif
             p_SDL_PushEvent(ev);
         }
     }

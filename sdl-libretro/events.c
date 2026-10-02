@@ -153,6 +153,20 @@ static void PumpMouseEvents(void)
   extern float opt_mouse_sensitivity;
   int16_t mx = SDL_libretro_input_state_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
   int16_t my = SDL_libretro_input_state_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
+
+  /* Absolute pointer (lightgun / touchscreen / pointer device): RetroArch
+   * reports X/Y as [-32768..32767] over the whole screen. Map that onto the
+   * engine's *current* surface size — which the game or the internal-resolution
+   * option decides — instead of assuming 640x480. */
+  int16_t ax = SDL_libretro_input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
+  int16_t ay = SDL_libretro_input_state_cb(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
+  if (ax != 0 || ay != 0) {
+    mouse_x = (Sint16)((int)(ax + 32768) * screen->w / 65536);
+    mouse_y = (Sint16)((int)(ay + 32768) * screen->h / 65536);
+    if (mouse_x < 0) mouse_x = 0; else if (mouse_x >= screen->w) mouse_x = screen->w - 1;
+    if (mouse_y < 0) mouse_y = 0; else if (mouse_y >= screen->h) mouse_y = screen->h - 1;
+    have_mouse = true;
+  }
   if (mx != 0 || my != 0) {
     mouse_x += (int16_t)(mx * opt_mouse_sensitivity);
     mouse_y += (int16_t)(my * opt_mouse_sensitivity);

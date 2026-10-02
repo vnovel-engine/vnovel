@@ -118,6 +118,11 @@ endif
 # --- Global defines ---
 DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
 
+# Ad-hoc stderr probes (input diagnostics). `make PROBES=1` to compile them in.
+ifeq ($(PROBES), 1)
+   DEFINES += -DKRKR_DEBUG_PROBES
+endif
+
 # Frame synchronization: remove -DLIBRETRO_FRAME_SYNC to disable 1:1 frame sync.
 
 # --- Build directory (per-platform to avoid object file collisions) ---

@@ -4,6 +4,10 @@ A unified libretro core for playing visual novels built with ONScripter-EN
 and PONScripter in RetroArch. Supports both engines in a single `.so` with
 runtime detection based on script file type.
 
+It also integrates a **KiriKiri (krkrsdl2)** engine as a separately loaded
+shared library (`deps/krkrsdl2`), used for KiriKiri/KAG titles such as
+*The House in Fata Morgana*.
+
 ## Lineage
 
 ```
@@ -16,12 +20,25 @@ ONScripter (Ogapee / Seung-gyu Park)
         └── deps/ponscripter (this project's submodule, fullsrc 20111009)
               ↑ libretro patches by Matcha & Nova
 
+KiriKiri Z (krkrz, W.Dee / krkrsdl2 project)
+  └── deps/krkrsdl2 (this project's submodule; SDL2 port)
+  │     ↑ krkrsdl2 fork of github.com/krkrsdl2/krkrsdl2 by Matcha & Nova
+  │     └── external/krkrz  (submodule; TVP2/KAG runtime)
+  │     │     ↑ fork of github.com/krkrsdl2/krkrz by Matcha & Nova
+  │     └── external/FAudio (submodule; XAudio2 reimpl)
+  │           ↑ fork of github.com/FNA-XNA/FAudio by Matcha & Nova
+  │           ↑ libretro audio capture (SPSC ring) by Matcha & Nova
+  │
 onscripter-en-libretro (this repo, Matcha & Nova, 2026)
   ↑ SDL→libretro bridge derived from:
   onscripter-libretro (iyzsong, archived)
   ↑ Multi-engine architecture, build system, test suite, and engine
     integration by Matcha & Nova
 ```
+
+Each forked component carries a `LINEAGE.md` stating its upstream, fork point,
+and local commits (see `deps/krkrsdl2/LINEAGE.md`, `…/external/krkrz/LINEAGE.md`,
+`…/external/FAudio/LINEAGE.md`).
 
 ### Upstream commits
 
@@ -31,6 +48,9 @@ onscripter-en-libretro (this repo, Matcha & Nova, 2026)
 | PONScripter | Haeleth (fullsrc tarball) | 20111009-fullsrc | https://sekaitranslates.files.wordpress.com/2011/11/ponscripter-20111009-fullsrc1.tar.bz2 |
 | SMPEG | icculus/smpeg | `1e014ee` "Updated email address" (release_0_4_5) | https://github.com/icculus/smpeg/commit/1e014ee6c6f705ad10781a83e303685ff635bfb9 |
 | onscripter-libretro (SDL bridge) | iyzsong/onscripter-libretro | `bfd30f7` "libretro: Update version to 0.3." | https://github.com/iyzsong/onscripter-libretro/commit/bfd30f7 |
+| krkrsdl2 (KiriKiri SDL2 port) | krkrsdl2/krkrsdl2 | `124bdf8` "cleanup: 0/nullptr/NULL comparison and control flow cleanups" (fork point) | https://github.com/krkrsdl2/krkrsdl2 |
+| krkrz (TVP2/KAG runtime) | krkrsdl2/krkrz (`krkrsdl2` branch) | `b11c43a0` "feat: expose BITMAPINFO and BITMAPINFOHEADER on win32" (fork point) | https://github.com/krkrsdl2/krkrz |
+| FAudio (XAudio2 reimpl) | FNA-XNA/FAudio | `e787ed7` "22.08" (fork point) | https://github.com/FNA-XNA/FAudio |
 
 ### Derivative work notice
 

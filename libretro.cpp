@@ -299,9 +299,12 @@ extern "C" {
   int krkr_init(EngineHandle);
   void **krkr_get_surface_ptr(void);
   int *krkr_get_surface_updated_ptr(void);
+  volatile int *krkr_get_auto_mode_ptr(void);
   void krkr_get_mouse_pos(int *x, int *y);
   void krkr_pump_events(void);
   void krkr_set_input_callbacks(retro_input_state_t state_cb, retro_input_poll_t poll_cb);
+  void krkr_set_fastforward(int f);
+  void krkr_notify_poll(long long ms);
   void krkr_push_key(int sym, int down);
   int krkr_get_audio(int16_t *out_buf, int max_frames);
   void krkr_shutdown(void);
@@ -417,6 +420,27 @@ bool retro_load_game(const struct retro_game_info *game){
     opt_debug_level = atoi(dbgvar.value);
   vtable->setDebugLevel(engine, opt_debug_level);
   log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
+
+  // Internal rendering resolution. "native" lets the game/script decide;
+  // otherwise ask the engine to render at a fixed size. Must happen before
+  // init(), which is where the engine sizes its surface.
+  if (vtable->setResolution) {
+    struct retro_variable resvar = {0};
+    resvar.key = "onscripter-en_internal_resolution";
+    int rw = 0, rh = 0;
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
+        strcmp(resvar.value, "native") != 0) {
+      unsigned a = 0, b = 0;
+      if (sscanf(resvar.value, "%ux%u", &a, &b) == 2) { rw = (int)a; rh = (int)b; }
+    }
+    if (rw > 0 && rh > 0) {
+      vtable->setResolution(engine, rw, rh);
+      log_cb(RETRO_LOG_INFO, "Internal resolution: forced %dx%d\n", rw, rh);
+    } else {
+      log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
+    }
+  }
+
   ons_thread = SDL_CreateThread(ons_main, NULL);
 
   return true;
@@ -462,15 +486,27 @@ void retro_run(void)
   // KiriKiri engine path: read from SDL_libretro_surface
   // Use void* to avoid SDL 1.2/SDL2 type conflict
   if (!vtable) {
+    /* Frontend poll heartbeat. RetroArch has no core-visible pause callback
+     * (it never calls retro_run while paused, and 1.22 does not use
+     * retro_pause/retro_unpause), so pause is signalled implicitly: the engine
+     * idles its loop once this stop being refreshed. Stamp it every frame. */
+    { struct timespec hb; clock_gettime(CLOCK_MONOTONIC, &hb);
+      krkr_notify_poll((long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000); }
+    /* libretro fast-forward: lift the engine's frame limiter and skip the
+     * core's own pacing below so it runs unthrottled. */
+    bool kiri_ff = false;
+    environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &kiri_ff);
+    krkr_set_fastforward(kiri_ff ? 1 : 0);
     /* Pace to 60 fps. The engine's fpslimit plugin is a no-op and its main
      * loop has no pacing, so RetroArch would otherwise call retro_run as fast
      * as the video driver allows (600+ fps unlocked), copying and uploading a
      * full 800x600 frame every time. Cap it here; audio is fed from the
-     * engine ring below and RetroArch's audio_sync follows. */
+     * engine ring below and RetroArch's audio_sync follows. Fast-forward
+     * bypasses this pacing. */
     { static struct timespec last = {0,0};
       struct timespec now;
       clock_gettime(CLOCK_MONOTONIC, &now);
-      if (last.tv_sec != 0) {
+      if (!kiri_ff && last.tv_sec != 0) {
         double dt = (now.tv_sec - last.tv_sec) + (now.tv_nsec - last.tv_nsec) / 1e9;
         const double tgt = 1.0 / 60.0;
         if (dt < tgt) {
@@ -502,19 +538,54 @@ void retro_run(void)
       int h = *(int*)(s + 20);
       int pitch = *(int*)(s + 24);
       void *pixels = *(void**)(s + 32);
+      /* retro_get_system_av_info() runs before the engine exists, so it can
+       * only guess 640x480. Report the real (larger) geometry once it is known
+       * so RetroArch presents the native frame (e.g. 800x600) instead of
+       * cropping to 640x480.
+       *
+       * Grow-only: the engine repoints its surface to modal dialogs (a save
+       * confirmation is 317x117), and shrinking the reported geometry would
+       * resize the whole RetroArch window and misalign all further input
+       * coordinates. So only ever report a surface larger than everything seen
+       * so far; anything smaller is a dialog and is ignored. */
+      {
+        static int max_w = 0, max_h = 0;
+        if (w > 0 && h > 0 && (w > max_w || h > max_h)) {
+          struct retro_system_av_info av = {};
+          av.geometry.base_width = w;
+          av.geometry.base_height = h;
+          av.geometry.max_width = w;
+          av.geometry.max_height = h;
+          av.geometry.aspect_ratio = (float)w / (float)h;
+          av.timing.fps = 60.0;
+          av.timing.sample_rate = 48000.0;
+          environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+          max_w = w;
+          max_h = h;
+        }
+      }
       if (pixels) {
+        /* Auto/skip mode badge: mirror of the game's own state (kag.tflags
+         * .autoMode -> krkrsdl2_auto_mode: 0 off, 1 skip, 2 auto), matching the
+         * ons/pons indicators so the same core option applies. */
+        volatile int *am_ptr = krkr_get_auto_mode_ptr();
+        int am = am_ptr ? *am_ptr : 0;
+        bool draw_auto = opt_indicators && am == 2;
+        bool draw_skip = opt_indicators && am == 1;
+        bool draw_ff = opt_indicators && kiri_ff;
         /* Software cursor: the engine renders no pointer (dummy video
          * driver), so overlay one on a shadow copy of the framebuffer. */
-        if (opt_software_cursor) {
+        if (opt_software_cursor || draw_auto || draw_skip || draw_ff) {
           static Uint32 *kshadow = NULL;
           static int kshadow_sz = 0;
           int fb = pitch * h;
           if (fb > kshadow_sz) { kshadow = (Uint32*)realloc(kshadow, fb); kshadow_sz = fb; }
           if (kshadow) {
             memcpy(kshadow, pixels, fb);
+            int kpitch = pitch / 4;
+            if (opt_software_cursor) {
             int cx = 0, cy = 0;
             krkr_get_mouse_pos(&cx, &cy);
-            int kpitch = pitch / 4;
             /* 12x18 arrow cursor; '#' = black, '.' = white outline, ' ' = clear */
             static const char *arrow[18] = {
               "##          ",
@@ -543,6 +614,31 @@ void retro_run(void)
                 int sx = cx + dx, sy = cy + dy;
                 if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
                 kshadow[sy * kpitch + sx] = (c == '#') ? 0xFF000000 : 0xFFFFFFFF;
+              }
+            }
+            } /* opt_software_cursor */
+            /* Mode indicators (top-right), matching the ons/pons colors. */
+            {
+              int bx = w - 12, by = 4;
+              if (draw_auto) {
+                for (int dy = 0; dy < 8; dy++)
+                  for (int dx = 0; dx < 8; dx++)
+                    if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
+                      kshadow[(by+dy) * kpitch + (bx+dx)] = 0xCC22AA22;
+                bx -= 12;
+              }
+              if (draw_skip) {
+                for (int dy = 0; dy < 8; dy++)
+                  for (int dx = 0; dx < 8; dx++)
+                    if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
+                      kshadow[(by+dy) * kpitch + (bx+dx)] = 0xCCAAAA22;
+                bx -= 12;
+              }
+              if (draw_ff) {
+                for (int dy = 0; dy < 8; dy++)
+                  for (int dx = 0; dx < 8; dx++)
+                    if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
+                      kshadow[(by+dy) * kpitch + (bx+dx)] = 0xCC2266FF;
               }
             }
             video_cb(kshadow, w, h, pitch);
@@ -704,6 +800,27 @@ void retro_run(void)
   }
 
   SDL_Surface *screen = SDL_GetVideoSurface();
+  /* retro_get_system_av_info() runs before load_game, when the engine does not
+   * exist yet, so it can only guess. Once the engine's surface is up, report
+   * its real internal resolution (ONScripter/Ponscripter derive it from the
+   * script: commonly 640x480 or 800x600) so RetroArch sizes the viewport
+   * correctly. Scaling/aspect stay RetroArch's decision. */
+  if (screen && screen->w > 0 && screen->h > 0) {
+    static int last_w = 0, last_h = 0;
+    if (screen->w != last_w || screen->h != last_h) {
+      struct retro_system_av_info av;
+      av.geometry.base_width = screen->w;
+      av.geometry.base_height = screen->h;
+      av.geometry.max_width = screen->w;
+      av.geometry.max_height = screen->h;
+      av.geometry.aspect_ratio = (float)screen->w / (float)screen->h;
+      av.timing.fps = 60.0;
+      av.timing.sample_rate = 48000.0;
+      environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+      last_w = screen->w;
+      last_h = screen->h;
+    }
+  }
   SDL_AudioSpec *spec = SDL_libretro_audio_spec;
   static const size_t max_frames = 2048;
   static int16_t stream[max_frames * 2];
@@ -712,15 +829,10 @@ void retro_run(void)
   input_poll_cb();
   SDL_libretro_input_ready = true;
   SDL_libretro_PumpEvents();
-  /* Force RetroArch to recalculate the GL viewport on every frame.
-   * Fixes scaling bug when toggling fullscreen mid-scene. */
-  struct retro_game_geometry geom;
-  geom.base_width = 640;
-  geom.base_height = 480;
-  geom.max_width = 640;
-  geom.max_height = 480;
-  geom.aspect_ratio = 4.0 / 3.0;
-  environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geom);
+  /* Geometry is left to the core's reported values: retro_get_system_av_info()
+   * sizes the window and video_cb() dimensions drive the viewport each frame.
+   * (A hardcoded 640x480 SET_GEOMETRY here would also fight the KiriKiri path,
+   * which reports 800x600, and overrode the user's scaling/aspect settings.) */
 #ifdef LIBRETRO_FRAME_SYNC
   if (pending_snapshot[0]) {
     SDL_Surface *snap_screen = SDL_GetVideoSurface();

@@ -65,9 +65,19 @@ static int ons_isSkipMode(EngineHandle h) {
 static void ons_dumpState(EngineHandle h, void* f) {
     ((ONScripterLabel*)h)->dumpState((FILE*)f);
 }
+static void ons_setResolution(EngineHandle h, int w, int hh) {
+    if (w <= 0 || hh <= 0) return; /* 0/0 = native */
+    /* setPreferredWidth() is the engine's own rescale path (the -window-width
+     * CLI option): it sets screen_ratio1/2 so the whole render is produced at
+     * the requested width, height following the script's aspect. */
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", w);
+    ((ONScripterLabel*)h)->setPreferredWidth(buf);
+}
 
 extern "C" const EngineVTable ons_engine_vtable = {
     ons_create, ons_destroy, ons_init, ons_executeLabel, ons_eventLoop, ons_resetCommand,
     ons_setArchivePath, ons_setSavePath, ons_setKeyEXE, ons_setDebugLevel, ons_setTextSpeed,
-    ons_getWidth, ons_getHeight, ons_isAutoMode, ons_isSkipMode, ons_dumpState
+    ons_getWidth, ons_getHeight, ons_isAutoMode, ons_isSkipMode, ons_dumpState,
+    ons_setResolution
 };

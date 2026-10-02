@@ -35,6 +35,10 @@ typedef struct {
     int          (*isAutoMode)(EngineHandle);
     int          (*isSkipMode)(EngineHandle);
     void         (*dumpState)(EngineHandle, void*);  /* FILE* */
+    /* Optional: force the engine's internal rendering resolution (w/h in
+     * pixels, 0/0 = native, i.e. whatever the game requests). May be NULL.
+     * Must be called before init(). */
+    void         (*setResolution)(EngineHandle, int w, int h);
 } EngineVTable;
 
 extern const EngineVTable ons_engine_vtable;
