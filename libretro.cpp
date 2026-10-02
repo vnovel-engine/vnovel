@@ -247,7 +247,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
   info->geometry.max_height = height;
   info->geometry.aspect_ratio = 4.0 / 3.0;
   info->timing.fps = 60.0;
-  info->timing.sample_rate = 44100.0;
+  info->timing.sample_rate = 48000.0;  /* matches the engine (krkr -wsfreq=48000) */
 }
 
 static void frame_cb(retro_usec_t usec)
@@ -462,6 +462,28 @@ void retro_run(void)
   // KiriKiri engine path: read from SDL_libretro_surface
   // Use void* to avoid SDL 1.2/SDL2 type conflict
   if (!vtable) {
+    /* Pace to 60 fps. The engine's fpslimit plugin is a no-op and its main
+     * loop has no pacing, so RetroArch would otherwise call retro_run as fast
+     * as the video driver allows (600+ fps unlocked), copying and uploading a
+     * full 800x600 frame every time. Cap it here; audio is fed from the
+     * engine ring below and RetroArch's audio_sync follows. */
+    { static struct timespec last = {0,0};
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      if (last.tv_sec != 0) {
+        double dt = (now.tv_sec - last.tv_sec) + (now.tv_nsec - last.tv_nsec) / 1e9;
+        const double tgt = 1.0 / 60.0;
+        if (dt < tgt) {
+          double wait = tgt - dt;
+          struct timespec rem;
+          rem.tv_sec  = (time_t)wait;
+          rem.tv_nsec = (long)((wait - (double)rem.tv_sec) * 1e9);
+          nanosleep(&rem, NULL);
+        }
+      }
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      last = now;
+    }
     static bool kiri_input_wired = false;
     if (!kiri_input_wired && SDL_libretro_input_state_cb && input_poll_cb) {
       krkr_set_input_callbacks(SDL_libretro_input_state_cb, input_poll_cb);
@@ -536,18 +558,16 @@ void retro_run(void)
     } else {
       video_cb(NULL, 0, 0, 0);
     }
-    // Audio: emit a fixed number of frames per video frame so RetroArch's
-    // audio_sync pacing stays stable. Pad with silence when the engine has
-    // produced less (e.g. before FAudio starts or during a pause).
+    // Audio: drain everything the engine has produced this frame and emit
+    // exactly that. RetroArch's audio_sync adapts its pacing to the amount we
+    // submit, so padding to a fixed frame count (previously 735) caused
+    // periodic underruns -> "choppy" playback. The engine runs at 48kHz
+    // (see -wsfreq in engine_kirikiri_cabi.cpp) and we advertise the same.
     {
-      static int16_t audio_buf[8192 * 2];
-      const int target = 44100 / 60;  /* 735 frames per video frame */
-      int got = krkr_get_audio(audio_buf, target);
-      if (got < 0) got = 0;
-      if (got < target)
-        memset(audio_buf + got * 2, 0, (target - got) * 2 * sizeof(int16_t));
-      if (audio_batch_cb)
-        audio_batch_cb(audio_buf, target);
+      static int16_t audio_buf[16384 * 2];
+      int got = krkr_get_audio(audio_buf, 16384);
+      if (got > 0 && audio_batch_cb)
+        audio_batch_cb(audio_buf, got);
     }
     return;
   }

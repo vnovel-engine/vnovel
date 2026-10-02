@@ -40,10 +40,10 @@ static int *krkr_surface_updated_ptr = NULL;
 static void *krkr_main(void *data) {
     chdir(krkr_game_path);
     // Set command line args
-    char *argv[] = {(char*)"krkrsdl2", (char*)"-debugwin", (char*)"-readencoding=Shift_JIS", (char*)"-log", (char*)"-evalcontext=global", NULL};
+    char *argv[] = {(char*)"krkrsdl2", (char*)"-debugwin", (char*)"-readencoding=Shift_JIS", (char*)"-log", (char*)"-evalcontext=global", (char*)"-wsfreq=48000", NULL};
     typedef void (*set_args_t)(int, char**);
     set_args_t p_set_args = (set_args_t)dlsym(krkr_dl, "_Z25krkrsdl2_convert_set_argsiPPc");
-    if (p_set_args) p_set_args(5, argv);
+    if (p_set_args) p_set_args(6, argv);
     /* Save location: the engine resolves System.personalPath (used by the game
      * for its "Fate_Savedata" folder) from this env var, which the frontend
      * fills with RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY. */
@@ -80,12 +80,12 @@ int krkr_init(EngineHandle engine) {
 
     const char *home = getenv("HOME");
     char path[4096];
-    snprintf(path, sizeof(path), "%s/dev/krkrsdl2/build/libkrkrsdl2.so", home);
+    snprintf(path, sizeof(path), "%s/dev/onscripter-en-libretro/deps/krkrsdl2/build/libkrkrsdl2.so", home);
 
-    krkr_dl = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    krkr_dl = dlopen(path, RTLD_NOW | RTLD_DEEPBIND);
     fprintf(stderr, "krkr_init: dlopen=%p path=%s\n", krkr_dl, path);
     if (!krkr_dl) {
-        krkr_dl = dlopen("libkrkrsdl2.so", RTLD_NOW | RTLD_GLOBAL);
+        krkr_dl = dlopen("libkrkrsdl2.so", RTLD_NOW | RTLD_DEEPBIND);
     }
     if (!krkr_dl) {
         fprintf(stderr, "Failed to load libkrkrsdl2.so: %s\n", dlerror());
@@ -304,7 +304,7 @@ void krkr_pump_events(void) {
     {
         int right = mright;
         if (krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, KRKR_RETRO_DEVICE_ID_JOYPAD_L)) right = 1;
-        int left  = mleft;
+        int left  = mleft || pressed;   /* absolute pointer presses arrive as POINTER_PRESSED */
         int btn = 0, is_down = 0;
         if (left != prev_left)        { btn = 1; is_down = left;  prev_left  = left; }
         else if (right != prev_right) { btn = 3; is_down = right; prev_right = right; }

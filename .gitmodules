@@ -10,3 +10,7 @@
 [submodule "deps/ponscripter"]
 	path = deps/ponscripter
 	url = https://gitlab.com/matchaxnb/ponscripter.git
+[submodule "deps/krkrsdl2"]
+	path = deps/krkrsdl2
+	url = https://gitlab.com/matchaxnb/krkrsdl2.git
+	branch = main
