@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 // engine_kirikiri_cabi.cpp — C ABI wrapper for krkrsdl2 engine (dlopen approach)
 //
 // krkrsdl2 is built as a separate shared library (libkrkrsdl2.so) to avoid
@@ -110,9 +113,45 @@ int krkr_init(EngineHandle engine) {
         krkr_dl = dlopen(override, RTLD_NOW | RTLD_DEEPBIND);
         fprintf(stderr, "krkr_init: dlopen(%s)=%p\n", override, krkr_dl);
     }
+    /* Fallback chain for the engine .so. A bare dlopen("libkrkrsdl2.so") only
+     * works if the loader's search path happens to contain it; on this dev
+     * setup it does not, so KiriKiri silently failed to initialise unless the
+     * caller exported KRKRSDL2_LIB_PATH. Try, in order: the directory holding
+     * the running core (where a dev/side-by-side install puts it), the
+     * conventional libretro cores dir, then the system paths. */
     if (!krkr_dl) {
-        krkr_dl = dlopen("libkrkrsdl2.so", RTLD_NOW | RTLD_DEEPBIND);
-        fprintf(stderr, "krkr_init: dlopen(libkrkrsdl2.so)=%p\n", krkr_dl);
+        static const char *cands[] = {
+            "$COREDIR/libkrkrsdl2.so",          /* replaced below */
+            "$HOME/.config/retroarch/cores/libkrkrsdl2.so", /* replaced below */
+            "/usr/lib/libkrkrsdl2.so",
+            "/usr/local/lib/libkrkrsdl2.so",
+            "libkrkrsdl2.so",                   /* loader search path (last) */
+        };
+        char path[4096];
+        /* The core's own directory: dladdr on a symbol in this .so. */
+        char coredir[4096] = "";
+        {
+            Dl_info info;
+            if (dladdr((void*)&krkr_init, &info) && info.dli_fname) {
+                snprintf(coredir, sizeof(coredir), "%s", info.dli_fname);
+                char *slash = strrchr(coredir, '/');
+                if (slash) *slash = '\0'; else coredir[0] = '\0';
+            }
+        }
+        const char *home = getenv("HOME");
+        for (unsigned i = 0; i < sizeof(cands)/sizeof(cands[0]) && !krkr_dl; i++) {
+            if (strncmp(cands[i], "$COREDIR/", 9) == 0) {
+                if (!coredir[0]) continue;
+                snprintf(path, sizeof(path), "%s/%s", coredir, cands[i] + 9);
+            } else if (strncmp(cands[i], "$HOME/", 6) == 0) {
+                if (!home || !*home) continue;
+                snprintf(path, sizeof(path), "%s/%s", home, cands[i] + 6);
+            } else {
+                snprintf(path, sizeof(path), "%s", cands[i]);
+            }
+            krkr_dl = dlopen(path, RTLD_NOW | RTLD_DEEPBIND);
+            if (krkr_dl) fprintf(stderr, "krkr_init: dlopen(%s)=%p\n", path, krkr_dl);
+        }
     }
     if (!krkr_dl) {
         fprintf(stderr, "Failed to load libkrkrsdl2.so: %s\n", dlerror());

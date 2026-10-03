@@ -46,6 +46,10 @@ enum { RIGHTCLICK_NONE = -1 };
 
 /* When true, the engine thread should block (paused by frontend) */
 extern bool SDL_libretro_paused;
+/* True while a core reset is in progress: the engine thread must ignore the
+ * pause gate so it can acknowledge the reset's quit request (otherwise a
+ * reset while paused deadlocks). */
+extern bool SDL_libretro_in_reset;
 /* Monotonic ms of the last retro_run() call. The engine thread treats a stale
  * value as "frontend is not driving us" (menu open / paused) and blocks. */
 extern volatile unsigned long long SDL_libretro_frontend_hb;

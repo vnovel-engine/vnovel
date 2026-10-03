@@ -163,6 +163,23 @@ struct retro_core_option_definition option_defs_us[] = {
       "native"
    },
    {
+      "onscripter_en_text_speed",
+      "Text Speed",
+      "Override the engine's text display speed. 'default' uses the "
+      "game's built-in speed. Slower speeds display characters one by "
+      "one with a longer delay; faster speeds reduce the delay. "
+      "Instant displays all text immediately.",
+      {
+         { "default",  NULL },
+         { "slow",     NULL },
+         { "normal",   NULL },
+         { "fast",     NULL },
+         { "instant",  NULL },
+         { NULL, NULL },
+      },
+      "default"
+   },
+   {
       "onscripter_en_ctrl_tap_frames",
       "Y Button (Ctrl Skip) Duration",
       "The Y button sends Ctrl, which both engines treat as hold-to-skip / "

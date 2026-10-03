@@ -153,6 +153,11 @@ PONS_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.pons.o,$(PONS_CXX)) \
 # Make symlinks first so .o files can find their sources
 all: $(TARGET)
 
+# Include compiler-generated header dependencies (-MMD). If a header changes,
+# the objects that include it rebuild. Missing .d files (first build) are
+# ignored via -include.
+-include $(shell find $(BUILD_DIR) -name '*.d' 2>/dev/null)
+
 # --- Dependency symlinks (deps-overlay provides vendored libs) ---
 DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps/sdl-mixer deps/libretro-common
 
@@ -162,32 +167,40 @@ $(TARGET): $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
 	$(Q)$(CXX) $(fpic) $(SHARED) -Wl,-z,muldefs -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS) -ldl -lpthread
 
 # --- Generic compile rules (output to BUILD_DIR, preserving subdirs) ---
+# -MMD -MP emits a .d per object listing its included headers; those are
+# -included below, so editing any header rebuilds every object that uses it.
+DEPFLAGS := -MMD -MP
+
 $(BUILD_DIR)/%.o: %.c
 	@$(if $(Q),echo "CC $<",)
 	@mkdir -p $(dir $@)
-	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+	$(Q)$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/%.o: %.cpp
 	@$(if $(Q),echo "CXX $<",)
 	@mkdir -p $(dir $@)
-	$(Q)$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(Q)$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # ONScripter-EN (hidden visibility, separate objects)
+# Header dependencies: without these, editing an engine header (e.g.
+# PonscripterLabel.h) does not rebuild the objects that include it, leaving
+# stale objects compiled against the old layout -> ABI mismatch -> corruption
+# at runtime. DEPFLAGS (defined above) adds the header list to each object.
 $(BUILD_DIR)/%.ons.o: %.cpp
 	@echo "CXX(ons) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
+	$(Q)$(CXX) $(CXXFLAGS) $(DEPFLAGS) -fvisibility=hidden -c -o $@ $<
 
 # PONScripter (hidden visibility, separate objects)
 $(BUILD_DIR)/%.pons.o: %.cpp
 	@echo "CXX(pons) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CXX) $(CXXFLAGS) -fvisibility=hidden -c -o $@ $<
+	$(Q)$(CXX) $(CXXFLAGS) $(DEPFLAGS) -fvisibility=hidden -c -o $@ $<
 
 $(BUILD_DIR)/%.pons.o: %.c
 	@echo "CC(pons) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CC) $(CFLAGS) -fvisibility=hidden -c -o $@ $<
+	$(Q)$(CC) $(CFLAGS) $(DEPFLAGS) -fvisibility=hidden -c -o $@ $<
 
 clean:
 	rm -rf build

@@ -776,6 +776,15 @@ void retro_deinit(void)
 
 void retro_reset(void)
 {
+  /* First: unpause. A reset must reach the engine even if the frontend paused
+   * us; otherwise the engine thread sits in SDL_Delay's pause gate and never
+   * returns to its event loop to acknowledge the reset (deadlock). in_reset
+   * additionally suspends the gate for the duration, because the frontend stops
+   * calling retro_run() during the reset so the heartbeat goes stale. */
+  SDL_libretro_paused = false;
+  SDL_libretro_in_reset = true;
+  SDL_libretro_frontend_hb = 0;   /* re-armed by the next retro_run */
+
   /* KiriKiri runs with vtable == NULL and its engine thread lives in the cabi.
    * Reset is a two-part, engine-owned handshake: request that the engine return
    * to initial conditions, then start it again. Both parts are driven here, in
@@ -786,6 +795,7 @@ void retro_reset(void)
     krkr_finish_stop();          /* joins + tears down once the engine unwinds */
     kiri_input_wired = false;    /* new engine: callbacks must be re-installed */
     krkr_start();                /* re-arms + re-creates the engine thread */
+    SDL_libretro_in_reset = false;
     return;
   }
 
@@ -807,6 +817,7 @@ void retro_reset(void)
       ons_thread = SDL_CreateThread(ons_main, NULL);
     }
   }
+  SDL_libretro_in_reset = false;
 }
 
 extern "C" void SDL_ThreadedTimerCheck(void);
@@ -1436,9 +1447,18 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 
 void retro_unload_game(void)
 {
+  /* Force the engine reachable before tearing it down. If the frontend is
+   * paused (or simply stopped calling retro_run), the engine thread is parked
+   * in SDL_Delay's pause gate and would never observe the shutdown request, so
+   * close-content would hang. Same rule as reset: unpause first. */
+  SDL_libretro_paused = false;
+  SDL_libretro_in_reset = true;   /* suspend the pause gate until we're gone */
+  SDL_libretro_frontend_hb = 0;
+
   if (!vtable) {
     // KiriKiri path: shut down the krkrsdl2 engine thread cleanly.
     krkr_shutdown();
+    SDL_libretro_in_reset = false;
     return;
   }
   if (ons_thread) {
@@ -1453,6 +1473,7 @@ void retro_unload_game(void)
   vtable->destroy(engine);
   engine = nullptr;
   SDL_Quit();
+  SDL_libretro_in_reset = false;
 }
 
 unsigned retro_get_region(void)

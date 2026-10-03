@@ -172,6 +172,13 @@ static void DUMMY_UnlockHWSurface(_THIS, SDL_Surface *surface)
 SDL_sem *SDL_libretro_wait_sem = NULL;
 SDL_sem *SDL_libretro_rendered_sem = NULL;
 bool SDL_libretro_paused = false;
+/* Set for the duration of a core reset (retro_reset .. engine restarted). While
+ * set, the engine thread must NOT honour the pause gate: a reset has to reach
+ * the engine so it can acknowledge the quit request, and while a reset runs the
+ * frontend is not calling retro_run(), so the heartbeat is stale and the engine
+ * would otherwise sit blocked in SDL_Delay's pause loop forever (deadlock on
+ * reset-while-paused). */
+bool SDL_libretro_in_reset = false;
 /* Frontend heartbeat, milliseconds on CLOCK_MONOTONIC: retro_run() stamps it
  * every frame. The engine thread treats a stale value as "the frontend stopped
  * feeding us" (its menu is open, the core is paused) and idles — see the
