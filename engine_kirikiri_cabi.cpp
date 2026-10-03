@@ -404,11 +404,16 @@ void krkr_pump_events(void) {
     {
         /* id -> SDL keysym to emit (0 = none). Must be the lower-case SDL
          * letter codes (SDLK_a/s/f = 0x61/0x73/0x66): sdl_key_to_vk_key maps
-         * those to VK_A/VK_S/VK_F, which is exactly what KAG's accelerators
-         * compare against. Upper-case values would match nothing. */
+         * those to VK_A/VK_S/F, which is exactly what KAG's accelerators
+         * compare against. Upper-case values would match nothing.
+         * D-pad must be translated here too: the engine no longer reads the
+         * controller natively (KRKRSDL2_LIBRETRO), so the only way pad arrows
+         * reach KAG menu navigation is this map. SDLK_UP/DOWN/LEFT/RIGHT are
+         * 0x40000000|scancode (SDL_SCANCODE_TO_KEYCODE). */
         static const int KEY_SYM[16] = {
             /* B */ 27, /* Y */ 's', /* SELECT */ 'f', /* START */ 'a',
-            /* UP */ 0, /* DOWN */ 0, /* LEFT */ 0, /* RIGHT */ 0,
+            /* UP */ 0x40000052, /* DOWN */ 0x40000051,
+            /* LEFT */ 0x40000050, /* RIGHT */ 0x4000004F,
             /* A */ 13, /* X */ 0, /* L */ 0, /* R */ 0,
             /* L2 */ 0, /* R2 */ 0, /* L3 */ 0, /* R3 */ 0,
         };
