@@ -142,7 +142,7 @@ static int  opt_pointer_source = POINTER_SOURCE_RIGHT;
  * stick click, so no engine-side change is needed.
  *
  * Whether the pointer is offered, and which stick drives it, are core options
- * (onscripter-en_pointer_enable / _pointer_source): the core cannot know the
+ * (onscripter_en_pointer_enable / _pointer_source): the core cannot know the
  * user's pad, so refusing to guess is the point. */
 static int vlx_pos = -1, vly_pos = -1;   /* virtual pointer accumulator, -1 = unset */
 
@@ -677,7 +677,7 @@ bool retro_load_game(const struct retro_game_info *game){
 
   // Read debug level option before starting engine
   struct retro_variable dbgvar = {0};
-  dbgvar.key = "onscripter-en_debug_level";
+  dbgvar.key = "onscripter_en_debug_level";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
     opt_debug_level = atoi(dbgvar.value);
   vtable->setDebugLevel(engine, opt_debug_level);
@@ -688,7 +688,7 @@ bool retro_load_game(const struct retro_game_info *game){
   // init(), which is where the engine sizes its surface.
   if (vtable->setResolution) {
     struct retro_variable resvar = {0};
-    resvar.key = "onscripter-en_internal_resolution";
+    resvar.key = "onscripter_en_internal_resolution";
     int rw = 0, rh = 0;
     if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
         strcmp(resvar.value, "native") != 0) {
@@ -790,10 +790,10 @@ void retro_run(void)
    * here where every path sees them. */
   {
     struct retro_variable pvar = {0};
-    pvar.key = "onscripter-en_pointer_enable";
+    pvar.key = "onscripter_en_pointer_enable";
     if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
       opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
-    pvar.key = "onscripter-en_pointer_source";
+    pvar.key = "onscripter_en_pointer_source";
     if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
       opt_pointer_source = (strcmp(pvar.value, "left") == 0) ? POINTER_SOURCE_LEFT
                                                              : POINTER_SOURCE_RIGHT;
@@ -1082,7 +1082,7 @@ void retro_run(void)
   // Re-read core options each frame (allows hot-reload from Quick Menu)
   struct retro_variable var = {0};
 
-  var.key = "onscripter-en_frame_sync";
+  var.key = "onscripter_en_frame_sync";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     bool new_sync = (strcmp(var.value, "enabled") == 0);
     if (new_sync != opt_frame_sync) {
@@ -1094,11 +1094,11 @@ void retro_run(void)
     }
   }
 
-  var.key = "onscripter-en_mode_indicators";
+  var.key = "onscripter_en_mode_indicators";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     opt_indicators = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "onscripter-en_debug_level";
+  var.key = "onscripter_en_debug_level";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     int new_debug = atoi(var.value);
     if (new_debug != opt_debug_level) {
@@ -1107,11 +1107,11 @@ void retro_run(void)
     }
   }
 
-  var.key = "onscripter-en_software_cursor";
+  var.key = "onscripter_en_software_cursor";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     opt_software_cursor = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "onscripter-en_text_speed";
+  var.key = "onscripter_en_text_speed";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     int new_speed = -1;
     if (strcmp(var.value, "slow") == 0)        new_speed = 0;
@@ -1125,7 +1125,7 @@ void retro_run(void)
     }
   }
 
-  var.key = "onscripter-en_fastforward_speed";
+  var.key = "onscripter_en_fastforward_speed";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     int mult = 0;
     if (strcmp(var.value, "2x") == 0)       mult = 2;
@@ -1146,7 +1146,7 @@ void retro_run(void)
     }
   }
 
-  var.key = "onscripter-en_mouse_sensitivity";
+  var.key = "onscripter_en_mouse_sensitivity";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     opt_mouse_sensitivity = atof(var.value);
 #endif
@@ -1173,9 +1173,9 @@ void retro_run(void)
     } \
   } while(0)
 
-  PARSE_KEY("onscripter-en_key_lookback", REMAP_LOOKBACK);
-  PARSE_KEY("onscripter-en_key_menu", REMAP_MENU);
-  PARSE_KEY("onscripter-en_key_advance", REMAP_ADVANCE);
+  PARSE_KEY("onscripter_en_key_lookback", REMAP_LOOKBACK);
+  PARSE_KEY("onscripter_en_key_menu", REMAP_MENU);
+  PARSE_KEY("onscripter_en_key_advance", REMAP_ADVANCE);
   // Detect fast-forward mode
   bool ff = false;
   environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &ff);

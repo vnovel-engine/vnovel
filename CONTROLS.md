@@ -66,7 +66,7 @@ the keys they use differ.
 
 ## Key remap options
 
-`onscripter-en_key_lookback`, `_key_menu`, `_key_advance` (and the others in
+`onscripter_en_key_lookback`, `_key_menu`, `_key_advance` (and the others in
 `key_remap.h`) let the user pick which **keyboard** key triggers a semantic
 action, for hosts whose keyboard is bound to the game rather than the pad.
 They are applied to **both** engines: the translation happens wherever keyboard

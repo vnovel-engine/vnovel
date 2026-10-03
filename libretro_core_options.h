@@ -12,7 +12,7 @@ extern "C" {
 
 struct retro_core_option_definition option_defs_us[] = {
    {
-      "onscripter-en_frame_sync",
+      "onscripter_en_frame_sync",
       "Frame Synchronization",
       "When enabled, every screen update is displayed exactly once for "
       "smooth animations and effects. Disable if you experience performance issues.",
@@ -24,7 +24,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "enabled"
    },
    {
-      "onscripter-en_mode_indicators",
+      "onscripter_en_mode_indicators",
       "Mode Indicators",
       "Show on-screen badges for auto mode and skip mode "
       "(green and yellow dots in the top-right corner).",
@@ -36,7 +36,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "enabled"
    },
    {
-      "onscripter-en_debug_level",
+      "onscripter_en_debug_level",
       "Debug Level",
       "Log engine script parsing to RetroArch's log. 0=off, 3=verbose. "
       "Useful for reporting issues with specific visual novels.",
@@ -50,7 +50,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "0"
    },
    {
-      "onscripter-en_software_cursor",
+      "onscripter_en_software_cursor",
       "Software Cursor",
       "Draw a cursor directly on the screen. Enable for fullscreen "
  "where the host cursor is hidden. Disable for windowed mode.",
@@ -62,7 +62,7 @@ struct retro_core_option_definition option_defs_us[] = {
      "enabled"
    },
    {
-      "onscripter-en_pointer_enable",
+      "onscripter_en_pointer_enable",
       "Virtual Pointer",
       "When the frontend reports no real mouse/touch device, drive an "
       "on-screen pointer from a gamepad so pointer-only UIs (modal Yes/No "
@@ -76,7 +76,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "enabled"
    },
    {
-      "onscripter-en_pointer_source",
+      "onscripter_en_pointer_source",
       "Virtual Pointer Stick",
       "Which analog stick moves the virtual pointer. The other stick stays "
       "free for the frontend. Click is always the matching stick button "
@@ -89,24 +89,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "right"
    },
    {
-      "onscripter-en_ff_speed",
-      "Text Speed",
-      "Override the engine's text display speed. 'default' uses the "
-      "game's built-in speed. Slower speeds display characters one by "
-      "one with a longer delay; faster speeds reduce the delay. "
-      "Instant displays all text immediately.",
-      {
-         { "default",  NULL },
-         { "slow",     NULL },
-         { "normal",   NULL },
-         { "fast",     NULL },
-         { "instant",  NULL },
-         { NULL, NULL },
-      },
-      "default"
-   },
-   {
-      "onscripter-en_fastforward_speed",
+      "onscripter_en_fastforward_speed",
       "Fast-Forward Speed",
       "Controls how fast the game advances during fast-forward. "
       "Higher values skip more time per frame, making text, "
@@ -123,7 +106,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "8x"
    },
    {
-      "onscripter-en_mouse_sensitivity",
+      "onscripter_en_mouse_sensitivity",
       "Mouse Sensitivity",
       "Scales mouse movement for the in-game cursor. "
       "Adjust if the software cursor moves faster or slower "
@@ -140,28 +123,28 @@ struct retro_core_option_definition option_defs_us[] = {
       "1.0"
    },
    {
-      "onscripter-en_key_lookback",
+      "onscripter_en_key_lookback",
       "Lookback Key",
       "Key to open the text history / lookback mode.",
       { {"[", NULL}, {"h", NULL}, {"q", NULL}, {"b", NULL}, { NULL, NULL } },
       "["
    },
    {
-      "onscripter-en_key_menu",
+      "onscripter_en_key_menu",
       "Menu Key",
       "Key to open the in-game right-click menu.",
       { {"backspace", NULL}, {"escape", NULL}, {"x", NULL}, { NULL, NULL } },
       "backspace"
    },
    {
-      "onscripter-en_key_advance",
+      "onscripter_en_key_advance",
       "Advance Text Key",
       "Key to advance text / confirm.",
       { {"return", NULL}, {"space", NULL}, {"z", NULL}, { NULL, NULL } },
       "return"
    },
    {
-      "onscripter-en_internal_resolution",
+      "onscripter_en_internal_resolution",
       "Internal Resolution",
       "Rendering resolution produced by the game engine. "
       "'native' uses whatever the game/script requests. A fixed size "
