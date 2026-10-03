@@ -96,6 +96,12 @@ static void PumpKeyboardEvents(void)
 {
   static int16_t keys[RETROK_LAST] = {0};
   static SDL_keysym sym;
+  /* Trace what the core hands the engine. Enable with ONS_INPUT_DEBUG=1.
+   * Prints each pad-button edge and its mapped SDL key, plus remapped
+   * keyboard keys, so a mismatch (e.g. Y -> RCTRL == engine skip modifier)
+   * is visible without guessing. */
+  static int input_dbg = -1;
+  if (input_dbg < 0) { const char *e = getenv("ONS_INPUT_DEBUG"); input_dbg = e && *e && *e != '0'; }
   for (int i = 0; i < RETROK_LAST; ++i) {
     int16_t state = SDL_libretro_input_state_cb(0, RETRO_DEVICE_KEYBOARD, 0, i);
     if (keys[i] != state) {
@@ -109,6 +115,9 @@ static void PumpKeyboardEvents(void)
           break;
         }
       }
+      if (input_dbg)
+        fprintf(stderr, "IPROBE kbd sym=%d -> engine SDLK=%d %s\n",
+                i, sdl_key, state ? "DOWN" : "UP");
       /* Don't forward the fullscreen key to the engine — it changes
        * the SDL video mode resolution, conflicting with RetroArch's
        * own fullscreen. RetroArch handles fullscreen natively. */
@@ -119,11 +128,18 @@ static void PumpKeyboardEvents(void)
   }
 
   static int16_t buttons[16] = {0};
+  static const char *pad_name[16] = {
+    "B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT",
+    "A", "X", "L", "R", "L2", "R2", "L3", "R3"
+  };
   for (int i = 0; i < 16; ++i) {
     int16_t state = SDL_libretro_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, i);
     int k = SDL_libretro_key_from_ons_key(SDL_libretro_pad_mapping[i]);
     if (k && buttons[i] != state) {
       buttons[i] = state;
+      if (input_dbg)
+        fprintf(stderr, "IPROBE pad %s (id=%d) -> engine SDLK=%d %s\n",
+                pad_name[i], i, k, state ? "DOWN" : "UP");
       sym.scancode = k;
       sym.sym = k;
       SDL_PrivateKeyboard(state ? SDL_PRESSED : SDL_RELEASED, &sym);
