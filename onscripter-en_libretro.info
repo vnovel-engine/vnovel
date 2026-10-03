@@ -5,7 +5,7 @@ authors = "Ogapee; Seung Park (lightbinder); Matcha & Nova"
 categories = "Game engine"
 license = "GPLv2"
 permissions = ""
-supported_extensions = "txt|dat|___|ons"
+supported_extensions = "txt|dat|___|ons|xp3"
 
 # Hardware Information
 manufacturer = "ONScripter"

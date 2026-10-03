@@ -41,6 +41,7 @@ static krkr_notify_poll_t p_notify_poll = NULL;
 static void **krkr_surface_ptr = NULL;
 static int *krkr_surface_updated_ptr = NULL;
 static volatile int *krkr_auto_mode_ptr = NULL;
+static volatile int *krkr_engine_stopped_ptr = NULL;
 
 static void *krkr_main(void *data) {
     chdir(krkr_game_path);
@@ -53,6 +54,12 @@ static void *krkr_main(void *data) {
      * for its "Fate_Savedata" folder) from this env var, which the frontend
      * fills with RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY. */
     if (krkr_personal_path[0]) setenv("KRKRSDL2_PERSONAL_PATH", krkr_personal_path, 1);
+    /* Polyfill data dir (system_polyfill/*.tjs + startup.tjs). On the dev
+     * machine the launcher exports this; on a packaged install (e.g. Recalbox)
+     * nothing does, so default to the standard system path the buildroot
+     * package installs to. An explicit env var still wins. */
+    if (!getenv("KRKRSDL2_DATA_PATH"))
+        setenv("KRKRSDL2_DATA_PATH", "/usr/share/krkrsdl2", 1);
     char path_env[4096];
     snprintf(path_env, sizeof(path_env), "%s:%s/system/:%s/plugin/", krkr_game_path, krkr_game_path, krkr_game_path);
     if (p_pre_init) p_pre_init();
@@ -83,14 +90,18 @@ int krkr_init(EngineHandle engine) {
     if (krkr_running) return 0;
     fprintf(stderr, "krkr_init: starting\n");
 
-    const char *home = getenv("HOME");
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/dev/onscripter-en-libretro/deps/krkrsdl2/build/libkrkrsdl2.so", home);
-
-    krkr_dl = dlopen(path, RTLD_NOW | RTLD_DEEPBIND);
-    fprintf(stderr, "krkr_init: dlopen=%p path=%s\n", krkr_dl, path);
+    /* The engine is dlopened (not linked) because it needs SDL2 while this
+     * core links SDL 1.2. On a packaged install libkrkrsdl2.so lives in
+     * /usr/lib (the loader's default search path); a dev tree can point at a
+     * local build via KRKRSDL2_LIB_PATH for convenience. */
+    const char *override = getenv("KRKRSDL2_LIB_PATH");
+    if (override && *override) {
+        krkr_dl = dlopen(override, RTLD_NOW | RTLD_DEEPBIND);
+        fprintf(stderr, "krkr_init: dlopen(%s)=%p\n", override, krkr_dl);
+    }
     if (!krkr_dl) {
         krkr_dl = dlopen("libkrkrsdl2.so", RTLD_NOW | RTLD_DEEPBIND);
+        fprintf(stderr, "krkr_init: dlopen(libkrkrsdl2.so)=%p\n", krkr_dl);
     }
     if (!krkr_dl) {
         fprintf(stderr, "Failed to load libkrkrsdl2.so: %s\n", dlerror());
@@ -104,6 +115,7 @@ int krkr_init(EngineHandle engine) {
     krkr_surface_ptr = (void**)dlsym(krkr_dl, "SDL_libretro_surface");
     krkr_surface_updated_ptr = (int*)dlsym(krkr_dl, "SDL_libretro_surface_updated");
     krkr_auto_mode_ptr = (volatile int*)dlsym(krkr_dl, "krkrsdl2_auto_mode");
+    krkr_engine_stopped_ptr = (volatile int*)dlsym(krkr_dl, "krkrsdl2_engine_stopped");
     p_set_fastforward = (krkr_set_flag_t)dlsym(krkr_dl, "krkr_set_fastforward");
     p_notify_poll = (krkr_notify_poll_t)dlsym(krkr_dl, "krkr_notify_poll");
     fprintf(stderr, "krkr_init: surface_ptr=%p set_ff=%p notify_poll=%p\n",
@@ -143,6 +155,10 @@ void krkr_dumpState(EngineHandle engine, void *file) {}
 void **krkr_get_surface_ptr(void) { return krkr_surface_ptr; }
 int *krkr_get_surface_updated_ptr(void) { return krkr_surface_updated_ptr; }
 volatile int *krkr_get_auto_mode_ptr(void) { return krkr_auto_mode_ptr; }
+
+/* Set by the engine when the game terminated itself (KAG `[close]`): the core
+ * then blanks the video and parks instead of letting the frontend quit. */
+extern "C" volatile int *krkr_get_engine_stopped_ptr(void) { return krkr_engine_stopped_ptr; }
 
 /* libretro fast-forward: flip the engine's loop flag. Pause needs no explicit
  * call — the engine infers it from a stale krkr_notify_poll heartbeat. */

@@ -300,6 +300,7 @@ extern "C" {
   void **krkr_get_surface_ptr(void);
   int *krkr_get_surface_updated_ptr(void);
   volatile int *krkr_get_auto_mode_ptr(void);
+  volatile int *krkr_get_engine_stopped_ptr(void);
   void krkr_get_mouse_pos(int *x, int *y);
   void krkr_pump_events(void);
   void krkr_set_input_callbacks(retro_input_state_t state_cb, retro_input_poll_t poll_cb);
@@ -486,6 +487,18 @@ void retro_run(void)
   // KiriKiri engine path: read from SDL_libretro_surface
   // Use void* to avoid SDL 1.2/SDL2 type conflict
   if (!vtable) {
+    /* The game terminated itself (KAG `[close]` -> engine TVPTerminateAsync).
+     * Per the desired behaviour: pause the core permanently, blank the screen,
+     * reset the state — and do NOT let the frontend quit. The engine already
+     * blanked its surface and is idle; stop polling it and present black. */
+    { volatile int *stopped = krkr_get_engine_stopped_ptr();
+      if (stopped && *stopped) {
+        static uint32_t stopped_black[640 * 480];
+        memset(stopped_black, 0, sizeof(stopped_black));
+        video_cb(stopped_black, 640, 480, 640 * 4);
+        return;
+      }
+    }
     /* Frontend poll heartbeat. RetroArch has no core-visible pause callback
      * (it never calls retro_run while paused, and 1.22 does not use
      * retro_pause/retro_unpause), so pause is signalled implicitly: the engine
