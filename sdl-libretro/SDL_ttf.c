@@ -40,6 +40,61 @@ struct _TTF_Font {
     int freesrc;
 };
 
+/* Last-resort fallback font: stb_truetype has no fontconfig-style substitution,
+ * so a codepoint the primary font lacks (e.g. U+2026 in the Japanese game
+ * fonts) would render as .notdef. When registered, any glyph the primary font
+ * does not carry is taken from here instead. Single, process-wide: the core
+ * registers one at start-up. */
+static struct {
+    stbtt_fontinfo info;
+    SDL_RWops *src;
+    int loaded;
+} s_fallback;
+
+/* Register an in-memory last-resort font (e.g. the embedded ellipsis subset).
+ * The buffer must outlive use; pass NULL/0 to clear. Returns 0 on success.
+ * This stb build reads fonts through SDL_RWops, so wrap the buffer in one. */
+int TTF_SetFallbackFontMem(const unsigned char *data, int size)
+{
+    if (s_fallback.loaded) {
+        if (s_fallback.src) SDL_RWclose(s_fallback.src);
+        s_fallback.src = NULL;
+        s_fallback.loaded = 0;
+    }
+    if (!data || size <= 0) return 0;
+    s_fallback.src = SDL_RWFromConstMem(data, size);
+    if (!s_fallback.src) return -1;
+    if (!stbtt_InitFont(&s_fallback.info, s_fallback.src,
+                        stbtt_GetFontOffsetForIndex(s_fallback.src, 0))) {
+        SDL_RWclose(s_fallback.src);
+        s_fallback.src = NULL;
+        return -1;
+    }
+    s_fallback.loaded = 1;
+    return 0;
+}
+
+/* Pick the font that carries `ch`: the primary, or the fallback if the primary
+ * has no glyph for it. Returns the chosen fontinfo and its pixel scale. */
+static const stbtt_fontinfo *TTF_PickFont(TTF_Font *font, Uint16 ch, int *glyph, float *scale)
+{
+    int g = stbtt_FindGlyphIndex(&font->info, ch);
+    if (g != 0) {
+        *glyph = g; *scale = font->scale;
+        return &font->info;
+    }
+    if (s_fallback.loaded) {
+        int fg = stbtt_FindGlyphIndex(&s_fallback.info, ch);
+        if (fg != 0) {
+            *glyph = fg;
+            *scale = stbtt_ScaleForPixelHeight(&s_fallback.info, font->height);
+            return &s_fallback.info;
+        }
+    }
+    *glyph = g; *scale = font->scale;     /* nothing carries it; render .notdef */
+    return &font->info;
+}
+
 const SDL_version *TTF_Linked_Version(void)
 {
     static SDL_version linked_version;
@@ -164,24 +219,25 @@ int TTF_GlyphMetrics(TTF_Font *font, Uint16 ch,
 {
     int x0, y0, x1, y1;
     int advance_width;
-    int glyph = stbtt_FindGlyphIndex(&font->info, ch);
+    int glyph; float fscale;
+    const stbtt_fontinfo *fi = TTF_PickFont(font, ch, &glyph, &fscale);
     if (glyph == 0) {
         TTF_SetError("Couldn't find glyph");
         return -1;
     }
 
-    stbtt_GetGlyphBox(&font->info, glyph, &x0, &y0, &x1, &y1);
-    stbtt_GetGlyphHMetrics(&font->info, glyph, &advance_width, 0);
+    stbtt_GetGlyphBox(fi, glyph, &x0, &y0, &x1, &y1);
+    stbtt_GetGlyphHMetrics(fi, glyph, &advance_width, 0);
     if (minx)
-        *minx = STBTT_ifloor(x0 * font->scale);
+        *minx = STBTT_ifloor(x0 * fscale);
     if (miny)
-        *miny = STBTT_ifloor(y0 * font->scale);
+        *miny = STBTT_ifloor(y0 * fscale);
     if (maxx)
-        *maxx = STBTT_iceil(x1 * font->scale);
+        *maxx = STBTT_iceil(x1 * fscale);
     if (maxy)
-        *maxy = STBTT_iceil(y1 * font->scale);
+        *maxy = STBTT_iceil(y1 * fscale);
     if (advance)
-        *advance = STBTT_iceil(advance_width * font->scale);
+        *advance = STBTT_iceil(advance_width * fscale);
     return 0;
 }
 
@@ -213,7 +269,8 @@ SDL_Surface* TTF_RenderGlyph_Shaded(TTF_Font* font,
     int rdiff, gdiff, bdiff;
     int width = 0, height = 0;
 
-    int glyph = stbtt_FindGlyphIndex(&font->info, ch);
+    int glyph; float fscale;
+    const stbtt_fontinfo *fi = TTF_PickFont(font, ch, &glyph, &fscale);
     if (glyph == 0) {
         TTF_SetError("Couldn't find glyph");
         return NULL;
@@ -222,7 +279,7 @@ SDL_Surface* TTF_RenderGlyph_Shaded(TTF_Font* font,
     surface = SDL_CreateRGBSurface(SDL_SWSURFACE, 0, 0, 8, 0, 0, 0, 0);
     if (surface == NULL)
         return NULL;
-    surface->pixels = stbtt_GetGlyphBitmap(&font->info, 0.0, font->scale, glyph, &width, &height, 0, 0);
+    surface->pixels = stbtt_GetGlyphBitmap(fi, 0.0, fscale, glyph, &width, &height, 0, 0);
     surface->w = width;
     surface->h = height;
     surface->pitch = width;

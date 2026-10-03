@@ -482,6 +482,16 @@ void retro_init(void)
   };
   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixfmt);
   environ_cb(RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK, &frametime);
+
+  /* The game fonts used by ONScripter have no U+2026, and the bundled
+   * stb_truetype glyph layer has no fontconfig fallback, so a substituted
+   * ellipsis rendered as .notdef. Register the embedded ellipsis subset as the
+   * last-resort font for any codepoint the game font lacks. */
+  {
+    #include "ellipsis_font.h"
+    extern int TTF_SetFallbackFontMem(const unsigned char *data, int size);
+    TTF_SetFallbackFontMem(ellipsis_font_ttf, ellipsis_font_ttf_len);
+  }
 }
 
 static int ons_main(void *data)

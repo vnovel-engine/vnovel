@@ -153,6 +153,11 @@ extern DECLSPEC int SDLCALL TTF_GlyphMetrics(TTF_Font *font, Uint16 ch,
 				     int *minx, int *maxx,
                                      int *miny, int *maxy, int *advance);
 
+/* Register an in-memory last-resort font used for any codepoint the primary
+ * font lacks (stb_truetype has no fontconfig-style fallback). Pass NULL/0 to
+ * clear. Returns 0 on success, -1 if the buffer could not be parsed. */
+extern DECLSPEC int SDLCALL TTF_SetFallbackFontMem(const unsigned char *data, int size);
+
 /* Get the dimensions of a rendered string of text */
 extern DECLSPEC int SDLCALL TTF_SizeText(TTF_Font *font, const char *text, int *w, int *h);
 extern DECLSPEC int SDLCALL TTF_SizeUTF8(TTF_Font *font, const char *text, int *w, int *h);
