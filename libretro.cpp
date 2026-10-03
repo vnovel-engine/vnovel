@@ -707,6 +707,37 @@ void retro_run(void)
       int h = *(int*)(s + 20);
       int pitch = *(int*)(s + 24);
       void *pixels = *(void**)(s + 32);
+      /* Trace every geometry change so we can tell a genuine CRT SuperRez
+       * mode (large but sane, e.g. 1920x240) from a dangling-surface read
+       * (garbage like 2097259x6225971). */
+      {
+        static int tw = -1, th = -1, tp = -1;
+        if (w != tw || h != th || pitch != tp) {
+          audio_logf("KRKR geom surf=%p w=%d h=%d pitch=%d pixels=%p bytes=%lld\n",
+                     *surf_ptr, w, h, pitch, pixels, (long long)pitch * h);
+          tw = w; th = h; tp = pitch;
+        }
+      }
+      /* Sanity-bound the geometry before using it. SDL_libretro_surface is a
+       * pointer the engine publishes from another thread; if it dangles (or
+       * points at a half-freed surface) these fields are garbage and the
+       * downstream pitch*h copy faults. A genuine CRT SuperRez mode has a
+       * large *horizontal* resolution and a small vertical one (e.g.
+       * 1920x240); giant numbers on both axes, and especially a vertical
+       * resolution beyond any real mode, mean the surface is bogus. Drop the
+       * frame rather than trust it. */
+      if (w <= 0 || h <= 0 || w > 8192 || h > 2048 ||
+          pitch < w * 2 || pitch > w * 8) {
+        static int last_dbg = 0;
+        if (last_dbg < 8) {
+          audio_logf("KRKR REJECT geom surf=%p w=%d h=%d pitch=%d pixels=%p\n",
+                     *surf_ptr, w, h, pitch, pixels);
+          fprintf(stderr, "krkr: rejecting implausible surface w=%d h=%d pitch=%d pixels=%p\n",
+                  w, h, pitch, pixels);
+          last_dbg++;
+        }
+        return;
+      }
       /* retro_get_system_av_info() runs before the engine exists, so it can
        * only guess 640x480. Report the real (larger) geometry once it is known
        * so RetroArch presents the native frame (e.g. 800x600) instead of
