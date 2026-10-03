@@ -513,6 +513,7 @@ extern "C" {
   void krkr_set_input_callbacks(retro_input_state_t state_cb, retro_input_poll_t poll_cb);
   void krkr_set_fastforward(int f);
   void krkr_notify_poll(long long ms);
+  void krkr_set_resolution(int w, int h);
   void krkr_push_key(int sym, int down);
   int krkr_get_audio(int16_t *out_buf, int max_frames);
   void krkr_shutdown(void);
@@ -589,6 +590,22 @@ bool retro_load_game(const struct retro_game_info *game){
     fill_pathname_join(game_save_dir, root, base, sizeof(game_save_dir));
   }
 
+  // Internal rendering resolution. "native" lets the game/script decide;
+  // otherwise ask the engine to render at a fixed size. Must happen before
+  // init(), which is where the engine sizes its surface. Read once here so both
+  // engines see the same value: ONS via vtable->setResolution below, KiriKiri
+  // via krkr_set_resolution in its branch.
+  int forced_res_w = 0, forced_res_h = 0;
+  {
+    struct retro_variable resvar = {0};
+    resvar.key = "onscripter_en_internal_resolution";
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
+        strcmp(resvar.value, "native") != 0) {
+      unsigned a = 0, b = 0;
+      if (sscanf(resvar.value, "%ux%u", &a, &b) == 2) { forced_res_w = (int)a; forced_res_h = (int)b; }
+    }
+  }
+
   // Detect engine: KiriKiri for .xp3, PONScripter for pscript.dat, ONScripter-EN otherwise
   char xp3_check[PATH_MAX_LENGTH];
   fill_pathname_join(xp3_check, archive_path, "data.xp3", sizeof(xp3_check));
@@ -602,6 +619,18 @@ bool retro_load_game(const struct retro_game_info *game){
     mkdir_p(game_save_dir);
     krkr_setSavePath(engine, game_save_dir);
     strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
+    /* Force the engine's internal resolution so KiriKiri renders natively at
+     * the target size (no post-scaling by the core). The request is stashed by
+     * the cabi and applied when krkr_init resolves the engine's setter, before
+     * the engine thread builds its main window. 0,0 is a no-op: the game's own
+     * scWidth/scHeight applies. */
+    if (forced_res_w > 0 && forced_res_h > 0) {
+      krkr_set_resolution(forced_res_w, forced_res_h);
+      log_cb(RETRO_LOG_INFO, "Internal resolution: forced %dx%d\n", forced_res_w, forced_res_h);
+    } else {
+      krkr_set_resolution(0, 0);
+      log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
+    }
     krkr_init(engine);
     strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
     return true;
@@ -683,21 +712,11 @@ bool retro_load_game(const struct retro_game_info *game){
   vtable->setDebugLevel(engine, opt_debug_level);
   log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
 
-  // Internal rendering resolution. "native" lets the game/script decide;
-  // otherwise ask the engine to render at a fixed size. Must happen before
-  // init(), which is where the engine sizes its surface.
+  // Internal rendering resolution for the ONS/PONS engines (parsed above).
   if (vtable->setResolution) {
-    struct retro_variable resvar = {0};
-    resvar.key = "onscripter_en_internal_resolution";
-    int rw = 0, rh = 0;
-    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
-        strcmp(resvar.value, "native") != 0) {
-      unsigned a = 0, b = 0;
-      if (sscanf(resvar.value, "%ux%u", &a, &b) == 2) { rw = (int)a; rh = (int)b; }
-    }
-    if (rw > 0 && rh > 0) {
-      vtable->setResolution(engine, rw, rh);
-      log_cb(RETRO_LOG_INFO, "Internal resolution: forced %dx%d\n", rw, rh);
+    if (forced_res_w > 0 && forced_res_h > 0) {
+      vtable->setResolution(engine, forced_res_w, forced_res_h);
+      log_cb(RETRO_LOG_INFO, "Internal resolution: forced %dx%d\n", forced_res_w, forced_res_h);
     } else {
       log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
     }

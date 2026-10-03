@@ -23,6 +23,7 @@ typedef void (*krkrsdl2_run_main_loop_t)();
 typedef void (*krkrsdl2_cleanup_t)();
 typedef void (*krkr_set_flag_t)(int);
 typedef void (*krkr_notify_poll_t)(long long);
+typedef void (*krkr_set_resolution_t)(int, int);
 
 // Global surface pointer — void* to avoid SDL 1.2/SDL2 type conflict
 extern "C" void *SDL_libretro_surface = NULL;
@@ -38,6 +39,9 @@ static krkrsdl2_run_main_loop_t p_run_main_loop = NULL;
 static krkrsdl2_cleanup_t p_cleanup = NULL;
 static krkr_set_flag_t p_set_fastforward = NULL;
 static krkr_notify_poll_t p_notify_poll = NULL;
+static krkr_set_resolution_t p_set_resolution = NULL;
+/* Pending resolution request, applied once the symbol is resolved. */
+static int krkr_req_res_w = 0, krkr_req_res_h = 0;
 static void **krkr_surface_ptr = NULL;
 static int *krkr_surface_updated_ptr = NULL;
 static volatile int *krkr_auto_mode_ptr = NULL;
@@ -118,6 +122,11 @@ int krkr_init(EngineHandle engine) {
     krkr_engine_stopped_ptr = (volatile int*)dlsym(krkr_dl, "krkrsdl2_engine_stopped");
     p_set_fastforward = (krkr_set_flag_t)dlsym(krkr_dl, "krkr_set_fastforward");
     p_notify_poll = (krkr_notify_poll_t)dlsym(krkr_dl, "krkr_notify_poll");
+    p_set_resolution = (krkr_set_resolution_t)dlsym(krkr_dl, "krkr_set_resolution");
+    /* Apply any resolution request made before the engine was loaded, now that
+     * the symbol exists and before the engine thread creates its window. */
+    if (p_set_resolution && (krkr_req_res_w || krkr_req_res_h))
+        p_set_resolution(krkr_req_res_w, krkr_req_res_h);
     fprintf(stderr, "krkr_init: surface_ptr=%p set_ff=%p notify_poll=%p\n",
             krkr_surface_ptr, (void*)p_set_fastforward, (void*)p_notify_poll);
     if (!p_run_main_loop) {
@@ -164,6 +173,15 @@ extern "C" volatile int *krkr_get_engine_stopped_ptr(void) { return krkr_engine_
  * call — the engine infers it from a stale krkr_notify_poll heartbeat. */
 extern "C" void krkr_set_fastforward(int f) { if (p_set_fastforward) p_set_fastforward(f); }
 extern "C" void krkr_notify_poll(long long ms) { if (p_notify_poll) p_notify_poll(ms); }
+
+/* Force the engine's internal resolution (0,0 clears it). The symbol is only
+ * resolved once krkr_init has dlopened the engine, so stash the request here
+ * and let krkr_init apply it (before the engine thread creates its window). */
+extern "C" void krkr_set_resolution(int w, int h) {
+    krkr_req_res_w = w;
+    krkr_req_res_h = h;
+    if (p_set_resolution) p_set_resolution(w, h);
+}
 
 /* Frontend save directory (RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY), exported to
  * the engine as KRKRSDL2_PERSONAL_PATH so System.personalPath resolves there. */
