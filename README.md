@@ -201,25 +201,44 @@ Calling `executeLabel` directly for PONScripter causes the engine thread to
 exit immediately after the first `RET_WAIT`, resulting in a black screen
 with no rendering.
 
-### Frame synchronization
+### Frame synchronization and pacing
 
-The engine thread and RetroArch's `retro_run()` synchronize via the SDL
-event semaphore:
+The engine runs on its own thread. There is no longer an event semaphore
+gating it: `SDL_libretro_event_sem` is created and destroyed but never
+waited on. The engine's own event loop supplies the pacing — PONScripter's
+`eventLoop()` blocks in `SDL_WaitEvent()`, which polls via
+`SDL_Delay(10)`, and `SDL_AddTimer` timers (text/animation) are driven by
+the 1 ms SDL timer thread. `retro_run()` pumps input each frame and
+displays the current framebuffer; `DUMMY_UpdateRects` is a no-op.
 
-1. Engine calls `SDL_WaitEvent` → `SDL_PumpEvents` → `DUMMY_PumpEvents`
-2. `DUMMY_PumpEvents` blocks on `SDL_SemWait(SDL_libretro_event_sem)`
-3. `retro_run()` calls `SDL_libretro_PumpEvents()` which pumps input
-   and posts `SDL_SemPost(SDL_libretro_event_sem)` to unblock the engine
+**Pause.** RetroArch stops calling `retro_run()` entirely while its menu is
+open, so a flag set inside `retro_run()` is never observed by the engine.
+Pause is therefore signalled by a heartbeat: `retro_run()` stamps
+`SDL_libretro_frontend_hb` (monotonic ms) every frame, and `SDL_Delay()`
+blocks while that heartbeat is stale (> 250 ms) or `SDL_libretro_paused` is
+set. Because every engine loop reaches `SDL_Delay`, this freezes text,
+animations and audio at once. `hb == 0` (before the first `retro_run`) is
+treated as running, to avoid a start-up deadlock.
 
-This throttles the engine to one event loop iteration per `retro_run()`
-call (60fps). `DUMMY_UpdateRects` is a no-op — the engine renders freely
-to the framebuffer, and `retro_run()` displays whatever is current.
+**Fast-forward.** `retro_run()` reports fast-forward to the SDL layer, and
+the Fast-Forward Speed core option sets `SDL_libretro_ff_mult` (2…64).
+`SDL_AddTimer` divides its interval by that multiplier so text/animation
+advance at the selected rate. `SDL_GetTicks()` also advances by
+`SDL_libretro_ff_offset`, so script-side timing compresses consistently.
 
-During fast-forward, `DUMMY_PumpEvents` returns immediately (no blocking),
-`SDL_GetTicks()` returns accelerated time, and `SDL_AddTimer` creates 1ms
-timers. During pause, `DUMMY_PumpEvents` returns immediately and
-`retro_run()` doesn't pump events, so the engine idles. Accumulated
-timer events are drained on unpause.
+**Reset.** `retro_reset()` stops the engine thread (posting `SDL_QUIT`),
+destroys the engine, recreates it and re-applies `last_archive_path` /
+`last_save_path`. Both must be recorded for every engine at load time; an
+empty archive path makes PONScripter's `DirPaths::get_all_paths()` walk an
+empty container and abort.
+
+### Crash diagnostics
+
+`retro_init()` installs handlers for `SIGSEGV`/`SIGBUS`/`SIGABRT` that
+write the fault address and a backtrace to `/tmp/ons_crash.log` and then
+re-raise. Without them a core fault reaches the frontend only as
+`Process exitcode: -11`, with no address. Symbolicate with
+`aarch64-…-addr2line -f -C -e onscripter-en_libretro.so`.
 
 ### BGM playback and SMPEG priming
 

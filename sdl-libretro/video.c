@@ -172,9 +172,14 @@ static void DUMMY_UnlockHWSurface(_THIS, SDL_Surface *surface)
 SDL_sem *SDL_libretro_wait_sem = NULL;
 SDL_sem *SDL_libretro_rendered_sem = NULL;
 bool SDL_libretro_paused = false;
+volatile unsigned long long SDL_libretro_frontend_hb = 0;
 bool SDL_libretro_fastforward = false;
 int SDL_libretro_ff_speed = 50;
 Uint32 SDL_libretro_ff_offset = 0;
+/* Fast-forward multiplier from the "Fast-Forward Speed" core option
+ * (1 / 2 / 4 / 8 / 16 / 32 / 64 for 2x..max). Used to scale timer intervals
+ * so text/animation advance at the selected speed instead of always max. */
+int SDL_libretro_ff_mult = 8;
 
 static void DUMMY_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 {

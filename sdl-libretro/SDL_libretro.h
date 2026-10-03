@@ -46,12 +46,16 @@ enum { RIGHTCLICK_NONE = -1 };
 
 /* When true, the engine thread should block (paused by frontend) */
 extern bool SDL_libretro_paused;
+/* Monotonic ms of the last retro_run() call. The engine thread treats a stale
+ * value as "frontend is not driving us" (menu open / paused) and blocks. */
+extern volatile unsigned long long SDL_libretro_frontend_hb;
 /* Get current mouse position (tracked by PumpMouseEvents) */
 void SDL_libretro_get_mouse_pos(int *x, int *y);
 /* When true, fast-forward is active — timers fire immediately */
 extern bool SDL_libretro_fastforward;
 /* Fast-forward time acceleration (ms added per SDL_GetTicks call) */
 extern int SDL_libretro_ff_speed;
+extern int SDL_libretro_ff_mult;
 /* Fast-forward time offset (accumulated once per frame in retro_run) */
 extern Uint32 SDL_libretro_ff_offset;
 

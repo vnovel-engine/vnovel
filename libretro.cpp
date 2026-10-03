@@ -7,6 +7,45 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <time.h>
+
+/* Crash diagnostics: on SIGSEGV/SIGBUS/SIGABRT dump the fault address and a
+ * symbolicated backtrace to /tmp/ons_crash.log, then re-raise so the default
+ * action still kills the process. Core crashes otherwise surface only as
+ * RetroArch's "Process exitcode: -11" with no address; this makes them
+ * diagnosable (`aarch64-…-addr2line -f -C -e onscripter-en_libretro.so`). */
+static void ons_crash_handler(int sig, siginfo_t *si, void *ctx)
+{
+  (void)ctx;
+  static volatile int reentry = 0;
+  if (reentry) { signal(sig, SIG_DFL); raise(sig); return; }
+  reentry = 1;
+
+  int fd = open("/tmp/ons_crash.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd >= 0) {
+    char buf[256];
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    int n = snprintf(buf, sizeof buf,
+                     "=== signal %d (%s) addr=%p at %lld.%03lds ===\n",
+                     sig,
+                     sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" :
+                     sig == SIGABRT ? "SIGABRT" : "signal",
+                     si ? si->si_addr : NULL,
+                     (long long)ts.tv_sec, ts.tv_nsec / 1000000);
+    if (n > 0) write(fd, buf, n);
+    void *bt[64];
+    int frames = backtrace(bt, 64);
+    backtrace_symbols_fd(bt, frames, fd);
+    close(fd);
+  }
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
 
 #include "libretro_core_options.h"
 #include "engine_cabi.h"
@@ -300,6 +339,16 @@ static void frame_cb(retro_usec_t usec)
 
 void retro_init(void)
 {
+  { /* Install crash diagnostics so a core fault leaves a backtrace instead of
+     * only RetroArch's bare "Process exitcode: -11". */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = ons_crash_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+  }
   enum retro_pixel_format pixfmt = RETRO_PIXEL_FORMAT_XRGB8888;
   struct retro_frame_time_callback frametime = {
     .callback = frame_cb,
@@ -433,6 +482,10 @@ bool retro_load_game(const struct retro_game_info *game){
     audio_logf("ENGINE=ONScripter-EN (nscript.dat) save=%s\n", game_save_dir);
   }
   vtable->setArchivePath(engine, archive_path);
+  /* Remember it: retro_reset() recreates the engine and re-applies this.
+   * (The KiriKiri branch above sets it too, but returns early.) */
+  strncpy(last_archive_path, archive_path, sizeof(last_archive_path) - 1);
+  last_archive_path[sizeof(last_archive_path) - 1] = '\0';
 
   // Per-game save directory (see above). Fall back to the game dir if
   // RetroArch gave us no save directory at all.
@@ -578,6 +631,15 @@ extern "C" void SDL_ThreadedTimerCheck(void);
 
 void retro_run(void)
 {
+  /* Frontend heartbeat for the ONS/PONS engine thread. RetroArch stops
+   * calling retro_run entirely while its menu is open, so a paused flag set
+   * here would never be observed. The engine thread instead watches this
+   * timestamp: SDL_Delay() blocks when the heartbeat goes stale (see
+   * SDL_systimer.c), which freezes text/animation exactly like a pause. */
+  { struct timespec hb; clock_gettime(CLOCK_MONOTONIC, &hb);
+    SDL_libretro_frontend_hb =
+        (unsigned long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000; }
+
   // KiriKiri engine path: read from SDL_libretro_surface
   // Use void* to avoid SDL 1.2/SDL2 type conflict
   if (!vtable) {
@@ -849,12 +911,12 @@ void retro_run(void)
 
   var.key = "onscripter-en_fastforward_speed";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    if (strcmp(var.value, "2x") == 0)       SDL_libretro_ff_speed = 10;
-    else if (strcmp(var.value, "4x") == 0)  SDL_libretro_ff_speed = 25;
-    else if (strcmp(var.value, "8x") == 0)  SDL_libretro_ff_speed = 50;
-    else if (strcmp(var.value, "16x") == 0) SDL_libretro_ff_speed = 100;
-    else if (strcmp(var.value, "32x") == 0) SDL_libretro_ff_speed = 200;
-    else if (strcmp(var.value, "max") == 0)  SDL_libretro_ff_speed = 1000;
+    if (strcmp(var.value, "2x") == 0)       { SDL_libretro_ff_mult = 2;  SDL_libretro_ff_speed = 10; }
+    else if (strcmp(var.value, "4x") == 0)  { SDL_libretro_ff_mult = 4;  SDL_libretro_ff_speed = 25; }
+    else if (strcmp(var.value, "8x") == 0)  { SDL_libretro_ff_mult = 8;  SDL_libretro_ff_speed = 50; }
+    else if (strcmp(var.value, "16x") == 0) { SDL_libretro_ff_mult = 16; SDL_libretro_ff_speed = 100; }
+    else if (strcmp(var.value, "32x") == 0) { SDL_libretro_ff_mult = 32; SDL_libretro_ff_speed = 200; }
+    else if (strcmp(var.value, "max") == 0) { SDL_libretro_ff_mult = 64; SDL_libretro_ff_speed = 400; }
   }
 
   var.key = "onscripter-en_mouse_sensitivity";
