@@ -40,6 +40,13 @@ static krkrsdl2_cleanup_t p_cleanup = NULL;
 static krkr_set_flag_t p_set_fastforward = NULL;
 static krkr_notify_poll_t p_notify_poll = NULL;
 static krkr_set_resolution_t p_set_resolution = NULL;
+/* Engine restart hook (krkrsdl2_prepare_restart). Resolved and invoked inside
+ * krkr_init, before the engine thread starts. */
+static void (*p_prepare_restart)(void) = NULL;
+/* Engine quit-request entry. Resolved while the handle is live (krkr_shutdown
+ * drops krkr_dl), so krkr_shutdown can post the request without poking engine
+ * state. */
+static void (*p_request_quit)(void) = NULL;
 /* Pending resolution request, applied once the symbol is resolved. */
 static int krkr_req_res_w = 0, krkr_req_res_h = 0;
 static void **krkr_surface_ptr = NULL;
@@ -123,6 +130,16 @@ int krkr_init(EngineHandle engine) {
     p_set_fastforward = (krkr_set_flag_t)dlsym(krkr_dl, "krkr_set_fastforward");
     p_notify_poll = (krkr_notify_poll_t)dlsym(krkr_dl, "krkr_notify_poll");
     p_set_resolution = (krkr_set_resolution_t)dlsym(krkr_dl, "krkr_set_resolution");
+    p_prepare_restart = (void (*)(void))dlsym(krkr_dl, "krkrsdl2_prepare_restart");
+    p_request_quit = (void (*)(void))dlsym(krkr_dl, "krkrsdl2_request_quit");
+    /* Re-arm the engine's process-global one-shot latches before the new thread
+     * starts. On the very first load the engine is fresh and every reset below
+     * is a no-op; on a restart (the .so stays mapped, so the previous run's
+     * globals survive) this is what lets StartApplication run a second time.
+     * The engine owns the individual flags; we call one entry point. */
+    if (p_prepare_restart) p_prepare_restart();
+    if (p_request_quit == NULL)
+        fprintf(stderr, "krkr_init: engine lacks krkrsdl2_request_quit\n");
     /* Apply any resolution request made before the engine was loaded, now that
      * the symbol exists and before the engine thread creates its window. */
     if (p_set_resolution && (krkr_req_res_w || krkr_req_res_h))
@@ -195,36 +212,92 @@ extern "C" void krkr_set_save_path(const char *path) {
 int krkr_mouse_x = -1, krkr_mouse_y = -1;
 extern "C" void krkr_get_mouse_pos(int *x, int *y) { if (x) *x = krkr_mouse_x; if (y) *y = krkr_mouse_y; }
 
-extern "C" void krkr_shutdown(void) {
+/* --- Reset as a two-phase, engine-owned handshake -------------------------
+ * The core posts a REQUEST to return the engine to initial conditions and
+ * polls for acknowledgement; it never tears engine state down itself.
+ *
+ *   Phase 1 (stop): krkr_request_stop() asks the engine thread to unwind;
+ *     krkr_finish_stop() waits (bounded) for that acknowledgement, then joins
+ *     and tears the application down — only after the thread has exited, so it
+ *     is safe.
+ *   Phase 2 (start): krkr_start() re-arms the engine's process-global latches
+ *     (the .so is never unmapped — glibc retains libkrkrsdl2, a relocation
+ *     dependency of libz/libpng/libogg/libstdc++) and re-creates the thread.
+ *
+ * krkr_shutdown() is the blocking form for permanent teardown (unload/deinit),
+ * kept separate so a frontend exit still completes in one call.
+ */
+extern "C" void krkr_request_stop(void) {
     if (!krkr_dl) return;
-    fprintf(stderr, "krkr_shutdown: terminating\n");
     /* Ask the engine to quit even if it is paused/idle (frontend stopped
      * polling): the engine loop checks this before its pause gate, so it can
      * always reach the terminate path. Do NOT call Application::Terminate()
-     * from this thread — the engine thread reads the same flag and tears itself
+     * from this thread — the engine thread reads the request and tears itself
      * down (TVPSystemUninit / delete TVPSystemControl); a concurrent Terminate
-     * here races that teardown and can deadlock. */
-    volatile int *quit_flag = (volatile int*)dlsym(krkr_dl, "krkrsdl2_quit_requested");
-    if (quit_flag) *quit_flag = 1;
-    /* Bounded wait for the engine thread to finish its own unwind. */
+     * here races that teardown and can deadlock. The flag itself is engine
+     * state; we only post the request. */
+    if (p_request_quit) p_request_quit();
+}
+
+/* Complete phase 1 if the engine thread has exited. Returns 1 when the engine
+ * is fully stopped (joined + torn down + unpublished), 0 while it is still
+ * unwinding. Idempotent-ish: only acts while an engine is loaded. */
+extern "C" int krkr_finish_stop(void) {
+    if (!krkr_dl) return 1;
+    if (krkr_running) {
+        /* Bounded wait for the engine thread to acknowledge and unwind. */
+        struct timespec ts = {0, 5 * 1000 * 1000};
+        for (int i = 0; i < 400 && krkr_running; i++) nanosleep(&ts, NULL);
+    }
+    if (krkr_running) {
+        fprintf(stderr, "krkr_finish_stop: engine thread did not exit; not joining\n");
+        return 0;
+    }
+    if (p_cleanup) { try { p_cleanup(); } catch(...) {} }
+    void *ret = NULL;
+    pthread_join(krkr_thread, &ret);
+    krkr_dl = NULL;
+    /* Unpublish the engine's pointers: they point into the (still-mapped)
+     * engine, but the surface/application behind them is being torn down and
+     * rebuilt. retro_run() reads them from the frontend thread while the next
+     * run rebuilds the engine, so NULL makes it skip the KiriKiri video path
+     * until krkr_start() republishes them. Function pointers are cleared too so
+     * pump/notify/fastforward calls in that window are no-ops. */
+    krkr_surface_ptr = NULL;
+    krkr_surface_updated_ptr = NULL;
+    krkr_auto_mode_ptr = NULL;
+    krkr_engine_stopped_ptr = NULL;
+    p_set_fastforward = NULL;
+    p_notify_poll = NULL;
+    p_prepare_restart = NULL;
+    p_request_quit = NULL;
+    return 1;
+}
+
+/* Permanent teardown (unload/deinit): request, bounded-wait, then finish. */
+extern "C" void krkr_shutdown(void) {
+    if (!krkr_dl) return;
+    krkr_request_stop();
     if (krkr_running) {
         struct timespec ts = {0, 5 * 1000 * 1000};
         for (int i = 0; i < 400 && krkr_running; i++) nanosleep(&ts, NULL);
     }
-    if (!krkr_running) {
-        /* Thread has exited: it is now safe to tear down the application from
-         * here, and to join. */
-        if (p_cleanup) { try { p_cleanup(); } catch(...) {} }
-        void *ret = NULL;
-        pthread_join(krkr_thread, &ret);
-    } else {
-        /* The engine thread did not unwind in time: return anyway so the
-         * frontend can finish exiting (its requirement). Process teardown
-         * reclaims the thread. */
-        fprintf(stderr, "krkr_shutdown: engine thread did not exit; returning\n");
-    }
-    krkr_running = false;
+    if (!krkr_running) krkr_finish_stop();
+    else fprintf(stderr, "krkr_shutdown: engine thread did not exit; returning\n");
+    /* finish_stop() already cleared krkr_dl; ensure it here too for the
+     * timeout path so a later load re-inits cleanly. */
     krkr_dl = NULL;
+}
+
+/* Phase 2: begin a fresh run from initial conditions. krkr_init re-arms the
+ * engine's one-shot latches (krkrsdl2 keeps its .so mapped across a reset, so
+ * the previous run's process globals survive) and re-creates the thread. */
+extern "C" void krkr_start(void) {
+    if (!krkr_game_path[0]) {
+        fprintf(stderr, "krkr_start: no game path; ignoring\n");
+        return;
+    }
+    krkr_init((EngineHandle)1);
 }
 
 /* Input state callback from libretro (set by libretro.cpp) */

@@ -343,6 +343,7 @@ static struct retro_input_descriptor input_descs[] = {
   { 0, 0, 0, 0, NULL },
 };
 
+static bool kiri_input_wired = false;  /* reset clears this so a new engine re-wires */
 static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t);
 
 void retro_set_environment(retro_environment_t cb)
@@ -514,6 +515,9 @@ extern "C" {
   void krkr_set_fastforward(int f);
   void krkr_notify_poll(long long ms);
   void krkr_set_resolution(int w, int h);
+  void krkr_request_stop(void);
+  int  krkr_finish_stop(void);
+  void krkr_start(void);
   void krkr_push_key(int sym, int down);
   int krkr_get_audio(int16_t *out_buf, int max_frames);
   void krkr_shutdown(void);
@@ -768,6 +772,19 @@ void retro_deinit(void)
 
 void retro_reset(void)
 {
+  /* KiriKiri runs with vtable == NULL and its engine thread lives in the cabi.
+   * Reset is a two-part, engine-owned handshake: request that the engine return
+   * to initial conditions, then start it again. Both parts are driven here, in
+   * order, with a bounded wait for the engine to acknowledge the stop — the
+   * core never tears engine state down itself and never pokes engine flags. */
+  if (!vtable) {
+    krkr_request_stop();
+    krkr_finish_stop();          /* joins + tears down once the engine unwinds */
+    kiri_input_wired = false;    /* new engine: callbacks must be re-installed */
+    krkr_start();                /* re-arms + re-creates the engine thread */
+    return;
+  }
+
   stop_engine_thread();
 #ifdef LIBRETRO_FRAME_SYNC
   SDL_libretro_wait_sem = NULL;
@@ -870,7 +887,6 @@ void retro_run(void)
       clock_gettime(CLOCK_MONOTONIC, &now);
       last = now;
     }
-    static bool kiri_input_wired = false;
     if (!kiri_input_wired && SDL_libretro_input_state_cb && input_poll_cb) {
       krkr_set_input_callbacks(SDL_libretro_input_state_cb, input_poll_cb);
       kiri_input_wired = true;
