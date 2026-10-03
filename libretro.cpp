@@ -310,26 +310,29 @@ unsigned retro_api_version(void)
   return RETRO_API_VERSION;
 }
 
-/* Fixed RetroPad → ONScripter key mapping.
- * Users remap at the RetroArch Controls level (Quick Menu → Controls),
- * which maps physical buttons to RetroPad buttons. The core always reads
- * RetroPad buttons the same way — RetroArch handles the rest. */
+/* RetroPad -> semantic action. This is the contract the user sees in
+ * RetroArch's Controls screen and it must read the same for every engine; the
+ * per-engine key/mouse translation lives in sdl-libretro/events.c (ONScripter)
+ * and engine_kirikiri_cabi.cpp (KiriKiri). See CONTROLS.md. Users remap at the
+ * RetroArch Controls level, which maps physical buttons to these RetroPad ids;
+ * the core always reads the ids the same way. */
 static struct retro_input_descriptor input_descs[] = {
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "Up" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "Down" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "Left" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "Right" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "Confirm / Advance" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "Skip Text" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Back / Menu" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Hide Text Window" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "Open Save Menu" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "Save" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,     "Scroll Back" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "Scroll Forward" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "Reading Speed" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Quick Save" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Auto Mode" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "Focus Previous" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "Focus Next" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "Focus Previous" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "Focus Next" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "Advance / Confirm" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "Cancel / Back" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Hide Text Window" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Save" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Skip (toggle)" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Auto Mode (toggle)" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "History Back" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "History Forward" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,     "History Back" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "History Forward" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "Pointer Click (Left)" },
+  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Pointer Click (Right)" },
   { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X,      "Mouse X" },
   { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y,      "Mouse Y" },
   { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT,   "Click" },
@@ -515,10 +518,26 @@ extern "C" {
   void krkr_shutdown(void);
 }
 
-/* RetroArch keyboard callback -> engine key queue. Also feed the SDL2
- * compat path (SDL_libretro_keyboard_event) used by ONScripter engines. */
+/* RetroArch keyboard callback -> engine key queue (KiriKiri). Also feeds the
+ * SDL2 compat path used by ONScripter engines.
+ *
+ * The key-remap core options are semantic: the user picks which keyboard key
+ * triggers Advance / Menu / Lookback etc. ONScripter applies that mapping in
+ * sdl-libretro/events.c; KiriKiri gets its keys here, so the same options are
+ * translated to KAG's accelerators (see kk_engine_keys) before queueing.
+ * Without this the options did nothing for KiriKiri games. */
 static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
 {
+  /* Translate a remapped function key to what KAG expects. Keys here are
+   * ASCII/control codes, where RETROK_* and SDLK_* coincide. */
+  if (vtable == NULL) {
+    for (int r = 0; r < REMAP_COUNT; r++) {
+      if ((int)keycode == remap_keys[r] && remap_keys[r] != kk_engine_keys[r]) {
+        keycode = (unsigned)kk_engine_keys[r];
+        break;
+      }
+    }
+  }
   /* RetroArch's keyboard callback may deliver only the release (up) without a
    * matching press. KAG's scenario drivers advance in onKeyDown, so synthesize
    * the missing keydown immediately before an unmatched keyup. */

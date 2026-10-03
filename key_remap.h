@@ -52,6 +52,22 @@ static const int engine_keys[REMAP_COUNT] = {
     [REMAP_FULLSCREEN]    = SDLK_f,         // Engine uses f for fullscreen
 };
 
+/* What key the *KiriKiri/KAG* engine expects for the same functions. KAG's
+ * accelerators differ from ONScripter's (notably skip is 'f', not 's'), so the
+ * key-remap options must be translated per engine or they silently do the
+ * wrong thing. Backlog has no universal KAG key ("r" is the common convention,
+ * and what The House in Fata Morgana uses); it stays game-dependent. */
+static const int kk_engine_keys[REMAP_COUNT] = {
+    [REMAP_ADVANCE]       = SDLK_RETURN,
+    [REMAP_MENU]          = SDLK_ESCAPE,
+    [REMAP_SKIP]          = SDLK_f,         // KAG skip accelerator
+    [REMAP_AUTO]          = SDLK_a,         // KAG auto accelerator
+    [REMAP_LOOKBACK]      = SDLK_r,         // common KAG backlog key (game-dependent)
+    [REMAP_PAGE_FORWARD]  = SDLK_l,
+    [REMAP_TEXT_SPEED]    = SDLK_0,
+    [REMAP_FULLSCREEN]    = SDLK_f,
+};
+
 /* Current remapped keys (set from core options in libretro.cpp,
  * read by events.c). Defined as extern here, instantiated in libretro.cpp. */
 extern int remap_keys[REMAP_COUNT];
