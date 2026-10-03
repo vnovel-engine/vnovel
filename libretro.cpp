@@ -2,6 +2,7 @@
 #include <retro_miscellaneous.h>
 #include <file/file_path.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -111,6 +112,40 @@ static SDL_Thread                 *ons_thread;
 static uint32_t                    delta;
 static char last_archive_path[PATH_MAX_LENGTH];
 static char last_save_path[PATH_MAX_LENGTH];
+
+/* Dedicated audio diagnostic log. The launcher pipes the core's stderr into a
+ * buffer that is only flushed to es_launch_stderr.log when the game *exits*,
+ * so live diagnostics are invisible during a session. Write to a fixed file
+ * instead (tmpfs -> always writable) so tests can read it live:
+ * /tmp/ons_audio.log */
+static FILE *audio_log = NULL;
+static void audio_logf(const char *fmt, ...)
+{
+  if (!audio_log) {
+    audio_log = fopen("/tmp/ons_audio.log", "w");
+    if (!audio_log) return;
+  }
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(audio_log, fmt, ap);
+  va_end(ap);
+  fflush(audio_log);   /* live-readable */
+}
+
+/* Recursive mkdir (all components). Needed because per-game save dirs are
+ * nested: <savedir>/<game>/ and ons_mkdir() is a plain single-level mkdir. */
+static void mkdir_p(const char *path)
+{
+  char tmp[PATH_MAX_LENGTH];
+  size_t len = strlen(path);
+  if (len == 0 || len >= sizeof(tmp)) return;
+  memcpy(tmp, path, len + 1);
+  for (char *p = tmp + 1; *p; p++) {
+    if (*p == '/') { *p = '\0'; ons_mkdir(tmp); *p = '/'; }
+  }
+  ons_mkdir(tmp);
+}
+
 
 static void show_message(const char *msg)
 {
@@ -247,7 +282,14 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
   info->geometry.max_height = height;
   info->geometry.aspect_ratio = 4.0 / 3.0;
   info->timing.fps = 60.0;
-  info->timing.sample_rate = 48000.0;  /* matches the engine (krkr -wsfreq=48000) */
+  /* Guess only: the engine isn't created yet (retro_get_system_av_info runs
+   * before retro_load_game). ONS/PONScripter default to 44100; the KiriKiri
+   * path re-emits 48000 via SET_SYSTEM_AV_INFO once its surface is up, and the
+   * ONS/PONS path re-emits the real spec->freq in retro_run. So this value is
+   * only in effect for the first frame or two. */
+  info->timing.sample_rate = 44100.0;
+  fprintf(stderr, "ons_audio: get_system_av_info: initial sample_rate=44100 (engine not up yet)\n");
+  audio_logf("get_system_av_info: initial sample_rate=44100 (engine not up yet)\n");
 }
 
 static void frame_cb(retro_usec_t usec)
@@ -338,6 +380,26 @@ bool retro_load_game(const struct retro_game_info *game){
   const char *save_dir = NULL;
   environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir);
 
+  /* Per-game save isolation. RetroArch/ES give us a *per-system* directory
+   * (savefile_directory = /recalbox/share/saves/vnovel), which is shared by
+   * every game in that system. Without a per-game subdir, Tsukihime and Le
+   * sanglot des cigales would overwrite each other's save1.dat/gloval.sav.
+   * Derive a stable name from the game folder (the parent dir of the ROM)
+   * and nest under it. */
+  char game_save_dir[PATH_MAX_LENGTH];
+  {
+    /* archive_path is like ".../vnovel/Tsukihime/" -> take the last component */
+    char trimmed[PATH_MAX_LENGTH];
+    strncpy(trimmed, archive_path, sizeof(trimmed) - 1);
+    trimmed[sizeof(trimmed) - 1] = '\0';
+    size_t tl = strlen(trimmed);
+    while (tl > 0 && trimmed[tl - 1] == '/') trimmed[--tl] = '\0';
+    const char *base = strrchr(trimmed, '/');
+    base = base ? base + 1 : trimmed;
+    const char *root = (save_dir && save_dir[0]) ? save_dir : archive_path;
+    fill_pathname_join(game_save_dir, root, base, sizeof(game_save_dir));
+  }
+
   // Detect engine: KiriKiri for .xp3, PONScripter for pscript.dat, ONScripter-EN otherwise
   char xp3_check[PATH_MAX_LENGTH];
   fill_pathname_join(xp3_check, archive_path, "data.xp3", sizeof(xp3_check));
@@ -346,8 +408,11 @@ bool retro_load_game(const struct retro_game_info *game){
     fclose(xp3_fp);
     engine = krkr_create();
     log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (data.xp3)\n");
+    audio_logf("ENGINE=KiriKiri (data.xp3) save=%s\n", game_save_dir);
     krkr_setArchivePath(engine, archive_path);
-    krkr_setSavePath(engine, save_dir ? save_dir : archive_path);
+    mkdir_p(game_save_dir);
+    krkr_setSavePath(engine, game_save_dir);
+    strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
     krkr_init(engine);
     strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
     return true;
@@ -361,20 +426,21 @@ bool retro_load_game(const struct retro_game_info *game){
     fclose(pscript_fp);
     vtable = &pons_engine_vtable; engine = vtable->create();
     log_cb(RETRO_LOG_INFO, "Using PONScripter engine (pscript.dat)\n");
+    audio_logf("ENGINE=PONScripter (pscript.dat) save=%s\n", game_save_dir);
   } else {
     vtable = &ons_engine_vtable; engine = vtable->create();
     log_cb(RETRO_LOG_INFO, "Using ONScripter-EN engine (nscript.dat)\n");
+    audio_logf("ENGINE=ONScripter-EN (nscript.dat) save=%s\n", game_save_dir);
   }
   vtable->setArchivePath(engine, archive_path);
 
-  // Honor RetroArch's save directory; fall back to game directory
+  // Per-game save directory (see above). Fall back to the game dir if
+  // RetroArch gave us no save directory at all.
   if (save_dir && save_dir[0]) {
-    char save_path[PATH_MAX_LENGTH];
-    fill_pathname_join(save_path, save_dir, "onscripter-en", sizeof(save_path));
-    ons_mkdir(save_path);
-    vtable->setSavePath(engine, save_path);
-    strncpy(last_save_path, save_path, sizeof(last_save_path));
-    test_output_dir = strdup(save_path);
+    mkdir_p(game_save_dir);
+    vtable->setSavePath(engine, game_save_dir);
+    strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
+    test_output_dir = strdup(game_save_dir);
   } else {
     vtable->setSavePath(engine, archive_path);
     strncpy(last_save_path, archive_path, sizeof(last_save_path));
@@ -451,16 +517,44 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
 {
 }
 
+/* Stop the engine thread cooperatively.
+ *
+ * The ONS/PONS eventLoop blocks in SDL_WaitEvent() and leaves on SDL_QUIT
+ * (both engines call endCommand() on SDL_QUIT). SDL_KillThread() would instead
+ * leave that thread mid-wait with SDL's event/mixer state inconsistent, which
+ * makes the *frontend* spin on shutdown. So: post an SDL_QUIT event (waking
+ * SDL_WaitEvent), then join with a timeout. */
+static void stop_engine_thread(void)
+{
+  if (!ons_thread) return;
+  if (vtable) {
+    /* Unblock any engine-side waits, then wake the event loop. */
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SDL_QUIT;
+    SDL_PushEvent(&ev);
+  }
+  /* Wait up to ~2s for a clean return. SDL 1.2 has no timed join, so poll. */
+  for (int i = 0; i < 200; i++) {
+    if (!engine_running) break;
+    SDL_Delay(10);
+  }
+  if (!engine_running) {
+    SDL_WaitThread(ons_thread, NULL);
+  } else {
+    /* Last resort: the engine ignored SDL_QUIT (e.g. stuck in a script). */
+    SDL_KillThread(ons_thread);
+  }
+  ons_thread = nullptr;
+}
+
 void retro_deinit(void)
 {
 }
 
 void retro_reset(void)
 {
-  if (ons_thread) {
-    SDL_KillThread(ons_thread);
-    ons_thread = nullptr;
-  }
+  stop_engine_thread();
 #ifdef LIBRETRO_FRAME_SYNC
   SDL_libretro_wait_sem = NULL;
 #endif
@@ -573,6 +667,7 @@ void retro_run(void)
           av.timing.fps = 60.0;
           av.timing.sample_rate = 48000.0;
           environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+          fprintf(stderr, "krkr_audio: SET_SYSTEM_AV_INFO %dx%d @ 48000 Hz\n", w, h);
           max_w = w;
           max_h = h;
         }
@@ -817,10 +912,20 @@ void retro_run(void)
    * exist yet, so it can only guess. Once the engine's surface is up, report
    * its real internal resolution (ONScripter/Ponscripter derive it from the
    * script: commonly 640x480 or 800x600) so RetroArch sizes the viewport
-   * correctly. Scaling/aspect stay RetroArch's decision. */
+   * correctly. Scaling/aspect stay RetroArch's decision.
+   *
+   * Sample rate: report the rate the engine actually negotiated with SDL
+   * (spec->freq), NOT a hardcoded value. ONScripter/PONScripter open at 44100;
+   * advertising 48000 here made RetroArch consume 800 samples/frame while the
+   * core only submitted 736 (round-up of 44100/60) — a 64-sample/frame
+   * deficit that drained RetroArch's audio buffer and caused periodic BGM
+   * underruns. Re-emit whenever the rate appears too, since the engine may
+   * open audio after the first frame without the geometry changing. */
+  SDL_AudioSpec *spec = SDL_libretro_audio_spec;
   if (screen && screen->w > 0 && screen->h > 0) {
-    static int last_w = 0, last_h = 0;
-    if (screen->w != last_w || screen->h != last_h) {
+    static int last_w = 0, last_h = 0, last_rate = 0;
+    int rate = (spec && spec->freq > 0) ? spec->freq : 44100;
+    if (screen->w != last_w || screen->h != last_h || rate != last_rate) {
       struct retro_system_av_info av;
       av.geometry.base_width = screen->w;
       av.geometry.base_height = screen->h;
@@ -828,13 +933,17 @@ void retro_run(void)
       av.geometry.max_height = screen->h;
       av.geometry.aspect_ratio = (float)screen->w / (float)screen->h;
       av.timing.fps = 60.0;
-      av.timing.sample_rate = 48000.0;
+      av.timing.sample_rate = (double)rate;
       environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+      fprintf(stderr, "ons_audio: SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d Hz)\n",
+              screen->w, screen->h, rate, last_rate);
+      audio_logf("SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d) frames/frame=%zu\n",
+                 screen->w, screen->h, rate, last_rate, ((size_t)rate / 60 / 32 + 1) * 32);
       last_w = screen->w;
       last_h = screen->h;
+      last_rate = rate;
     }
   }
-  SDL_AudioSpec *spec = SDL_libretro_audio_spec;
   static const size_t max_frames = 2048;
   static int16_t stream[max_frames * 2];
   size_t frames = (spec ? spec->freq : 44100) / 60;
@@ -935,13 +1044,42 @@ void retro_run(void)
   /* Audio: call mixer callback directly. No lock — the engine rarely
  * holds the mixer lock (only during Mix_PlayChannel etc.), and the
  * callback is fast. This avoids ring buffer underruns. */
-  if (spec && SDL_GetAudioStatus() == SDL_AUDIO_PLAYING && frames <= max_frames) {
-    memset(stream, 0, frames * 4);
-    { static int tc = 0; Uint32 t0 = SDL_GetTicks();
-    spec->callback(NULL, (uint8_t *)stream, frames * 4);
-    Uint32 t1 = SDL_GetTicks();
-    if (tc < 20) { log_cb(RETRO_LOG_INFO, "[%u] audio: mix=%dms frames=%zu\n", t0, t1-t0, frames); tc++; } }
-    audio_batch_cb(stream, frames);
+  {
+    SDL_audiostatus ast = SDL_GetAudioStatus();
+    static SDL_audiostatus last_ast = SDL_AUDIO_STOPPED;
+    static int hb = 0;
+    if (ast != last_ast) {
+      fprintf(stderr, "ons_audio: status %d (spec=%p freq=%d frames=%zu) engine_running=%d\n",
+              (int)ast, (void*)spec, spec ? spec->freq : -1, frames, engine_running);
+      audio_logf("STATUS %d (spec=%p freq=%d ch=%d frames=%zu) engine_running=%d\n",
+                 (int)ast, (void*)spec, spec ? spec->freq : -1,
+                 spec ? spec->channels : -1, frames, engine_running);
+      last_ast = ast;
+    }
+    /* Heartbeat every ~120 frames: is the mixer open, and does the callback
+     * actually produce samples (non-silence)? */
+    if (++hb >= 120) {
+      hb = 0;
+      audio_logf("HB status=%d spec=%p freq=%d ch=%d frames=%zu running=%d\n",
+                 (int)ast, (void*)spec, spec ? spec->freq : -1,
+                 spec ? spec->channels : -1, frames, engine_running);
+    }
+    if (spec && ast == SDL_AUDIO_PLAYING && frames <= max_frames) {
+      memset(stream, 0, frames * 4);
+      { static int tc = 0; Uint32 t0 = SDL_GetTicks();
+      spec->callback(NULL, (uint8_t *)stream, frames * 4);
+      Uint32 t1 = SDL_GetTicks();
+      /* peak sample of this batch: 0 => silent (mixer produced nothing) */
+      { int peak = 0;
+        for (size_t i = 0; i < frames * 2; i++) { int v = stream[i]; if (v < 0) v = -v; if (v > peak) peak = v; }
+        static int pc = 0;
+        if (tc < 20 || (pc < 40 && peak > 0)) {
+          audio_logf("[%u] mix=%dms frames=%zu freq=%d peak=%d\n", t0, t1-t0, frames, spec->freq, peak);
+          pc++; tc++;
+        } else if (tc < 20) tc++;
+      } }
+      audio_batch_cb(stream, frames);
+    }
   }
 }
 size_t retro_serialize_size(void)
@@ -975,8 +1113,7 @@ void retro_unload_game(void)
     return;
   }
   if (ons_thread) {
-    SDL_KillThread(ons_thread);
-    ons_thread = nullptr;
+    stop_engine_thread();
   }
   SDL_DestroySemaphore(SDL_libretro_event_sem);
   SDL_libretro_event_sem = nullptr;
