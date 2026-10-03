@@ -34,6 +34,10 @@ struct _TTF_Font {
     stbtt_fontinfo info;
     float scale;
     int ascent, descent, height;
+    /* -1 unknown; 0 = game font's Latin is proportional; 1 = every sampled
+     * ASCII advance is identical (a designed monospace Latin face). Computed
+     * lazily; when 1, ASCII is rendered with the proportional fallback font. */
+    int latin_monospace;
 
     /* We are responsible for closing the font stream */
     SDL_RWops *src;
@@ -81,11 +85,36 @@ int TTF_SetFallbackFontMem(const unsigned char *data, int size)
  * currently U+2026 (the ellipsis, which CJK fonts carry in a full-width centred
  * form) — plus a general last-resort for anything the game font entirely lacks. */
 #define TTF_FALLBACK_CODEPOINT(cp) ((cp) == 0x2026)
+/* A font whose ASCII advances are all identical renders Latin monospaced; in
+ * that case substitute the proportional fallback for ASCII so dialog is
+ * readable. CJK fonts commonly ship such a fixed-pitch Latin face. Cached per
+ * font (advances never change). */
+static int TTF_LatinIsMonospace(const stbtt_fontinfo *info)
+{
+    static const char sample[] = "ilemWaAcdg0O2 ";
+    int advance = -1;
+    for (const char *p = sample; *p; ++p) {
+        int g = stbtt_FindGlyphIndex(info, (unsigned char)*p);
+        if (g == 0) continue;
+        int a;
+        stbtt_GetGlyphHMetrics(info, g, &a, 0);
+        if (advance < 0) advance = a;
+        else if (a != advance) return 0;
+    }
+    return advance >= 0;
+}
+
 static const stbtt_fontinfo *TTF_PickFont(TTF_Font *font, Uint16 ch, int *glyph, float *scale)
 {
     if (s_fallback.loaded) {
         int g = stbtt_FindGlyphIndex(&font->info, ch);
-        if (TTF_FALLBACK_CODEPOINT(ch) || g == 0) {
+        int use_fb = TTF_FALLBACK_CODEPOINT(ch) || g == 0;
+        if (!use_fb && ch >= 0x20 && ch <= 0x7e) {
+            if (font->latin_monospace < 0)
+                font->latin_monospace = TTF_LatinIsMonospace(&font->info);
+            use_fb = font->latin_monospace;
+        }
+        if (use_fb) {
             int fg = stbtt_FindGlyphIndex(&s_fallback.info, ch);
             if (fg != 0) {
                 *glyph = fg;
@@ -138,6 +167,7 @@ TTF_Font* TTF_OpenFontIndexDPIRW(SDL_RWops *src, int freesrc, int ptsize, long i
         return NULL;
     }
     memset(font, 0, sizeof(*font));
+    font->latin_monospace = -1;
 
     stbtt_InitFont(&font->info, src, stbtt_GetFontOffsetForIndex(src, index));
     stbtt_GetFontVMetrics(&font->info, &font->ascent, &font->descent, NULL);
