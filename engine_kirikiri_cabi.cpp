@@ -303,16 +303,27 @@ void krkr_pump_events(void) {
     int16_t rmx = krkr_input_state(0, KRKR_RETRO_DEVICE_MOUSE, 0, KRKR_RETRO_DEVICE_ID_MOUSE_X);
     int16_t rmy = krkr_input_state(0, KRKR_RETRO_DEVICE_MOUSE, 0, KRKR_RETRO_DEVICE_ID_MOUSE_Y);
 
-    static int mouse_ax = 400, mouse_ay = 300;   /* integrated position */
-    if (rmx || rmy) { mouse_ax += rmx; mouse_ay += rmy; }
+    /* Pointer position: starts "unset" (negative) rather than at the centre of
+     * the screen — with no real pointer input the core must not park the
+     * software cursor dead-centre of the game. It becomes visible only once
+     * the frontend actually reports pointer/mouse input (or the stick moves,
+     * via the core's RetroPad->pointer synthesis). */
+    static int mouse_ax = -1, mouse_ay = -1;   /* integrated position; -1 = unset */
+    if (rmx || rmy) {
+        if (mouse_ax < 0) { mouse_ax = surf_w / 2; mouse_ay = surf_h / 2; }
+        mouse_ax += rmx; mouse_ay += rmy;
+    }
     if (px || py) {
         mouse_ax = (int)((int)(px + 32768) * surf_w / 65536);
         mouse_ay = (int)((int)(py + 32768) * surf_h / 65536);
     }
-    if (mouse_ax < 0) mouse_ax = 0; else if (mouse_ax > surf_w - 1) mouse_ax = surf_w - 1;
-    if (mouse_ay < 0) mouse_ay = 0; else if (mouse_ay > surf_h - 1) mouse_ay = surf_h - 1;
     int mx = mouse_ax, my = mouse_ay;
-    krkr_mouse_x = mx; krkr_mouse_y = my;
+    if (mx >= 0 && my >= 0) {
+        if (mx > surf_w - 1) mx = surf_w - 1;
+        if (my > surf_h - 1) my = surf_h - 1;
+        mouse_ax = mx; mouse_ay = my;
+        krkr_mouse_x = mx; krkr_mouse_y = my;
+    }
 
     /* pressed: pointer-pressed, or the mouse LEFT/right buttons */
     int16_t pressed = krkr_input_state(0, KRKR_RETRO_DEVICE_POINTER, 0, KRKR_RETRO_DEVICE_ID_POINTER_PRESSED);
@@ -323,8 +334,9 @@ void krkr_pump_events(void) {
     static int prev_mx = -1, prev_my = -1;
     static int prev_left = 0, prev_right = 0;
 
-    /* Push mouse motion event if position changed */
-    if (mx != prev_mx || my != prev_my) {
+    /* Push mouse motion event if position changed (only once the pointer has
+     * been set by real input — mx/my are -1 until then). */
+    if (mx >= 0 && my >= 0 && (mx != prev_mx || my != prev_my)) {
         /* SDL_MouseMotionEvent: type(4) ts(4) win(4) which(4) state(4) x(4) y(4) xrel(4) yrel(4) = 36 bytes */
         char ev[64];
         memset(ev, 0, sizeof(ev));
@@ -356,7 +368,9 @@ void krkr_pump_events(void) {
         int btn = 0, is_down = 0;
         if (left != prev_left)        { btn = 1; is_down = left;  prev_left  = left; }
         else if (right != prev_right) { btn = 3; is_down = right; prev_right = right; }
-        if (btn) {
+        if (btn && mx >= 0 && my >= 0) {
+            /* mx/my are set only after real pointer input; never inject a
+             * click at the unset (-1) position. */
             char ev[64];
             memset(ev, 0, sizeof(ev));
             *(unsigned int*)(ev+0) = is_down ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;

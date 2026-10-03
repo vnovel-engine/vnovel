@@ -101,7 +101,70 @@ extern "C" void retro_request_dumpstate(const char *name)
 #include <ONScripterLabel.h>
 
 retro_input_state_t  SDL_libretro_input_state_cb;
+static retro_input_state_t frontend_input_state_cb;   /* the real frontend callback */
 bool SDL_libretro_input_ready = false;
+
+/* Engine-agnostic RetroPad -> pointer synthesis.
+ *
+ * RetroArch has no built-in pad-to-pointer mapping (its per-port "Mouse Index"
+ * only binds real mouse devices), and some visual-novel UIs — modal Yes/No
+ * dialogs in particular — are effectively pointer-only. Rather than patch each
+ * engine, wrap the frontend's input callback once, in the core: drive a virtual
+ * pointer from the left analog stick and click with L3 (stick click). Both the
+ * ONScripter path (via the SDL1.2 overlay) and the KiriKiri path (via
+ * krkr_set_input_callbacks) call SDL_libretro_input_state_cb, so both get it.
+ *
+ * The wrapper reports MOUSE deltas (which both engines already integrate) and
+ * MOUSE_LEFT presses for L3, so no engine-side change is needed. */
+static int vlx_pos = -1, vly_pos = -1;   /* virtual pointer, -1 = unset */
+static int vptr_prev_l3 = 0;
+
+static int16_t pointer_synth_input_state(unsigned port, unsigned device,
+                                          unsigned index, unsigned id)
+{
+  /* Skewed wiring: a frontend with no pointer device reports 0,0 for the
+   * absolute pointer, which both engines would interpret as the screen
+   * centre — parking the software cursor dead-centre of the game. Treat
+   * "no pointer" as "no pointer input" (0,0 is otherwise the centre). */
+  if (port == 0 && device == RETRO_DEVICE_POINTER &&
+      (id == RETRO_DEVICE_ID_POINTER_X || id == RETRO_DEVICE_ID_POINTER_Y))
+  {
+    if (frontend_input_state_cb(0, RETRO_DEVICE_POINTER, 0,
+                                RETRO_DEVICE_ID_POINTER_COUNT) == 0)
+      return 0;
+  }
+
+  /* Only synthesize for the mouse/pointer device queries. */
+  if (port == 0 && (device == RETRO_DEVICE_MOUSE ||
+                    device == RETRO_DEVICE_POINTER))
+  {
+    int16_t lx = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
+                       RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
+    int16_t ly = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
+                       RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
+    int16_t l3 = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                       RETRO_DEVICE_ID_JOYPAD_L3);
+    int moved = 0;
+    if (lx > 4000 || lx < -4000) { vlx_pos = (vlx_pos < 0 ? 0 : vlx_pos) + lx / 4096; moved = 1; }
+    if (ly > 4000 || ly < -4000) { vly_pos = (vly_pos < 0 ? 0 : vly_pos) + ly / 4096; moved = 1; }
+
+    if (device == RETRO_DEVICE_MOUSE)
+    {
+      if (id == RETRO_DEVICE_ID_MOUSE_X) {
+        int16_t r = frontend_input_state_cb(port, device, index, id);
+        return r ? r : (moved ? (int16_t)(lx / 4096) : 0);
+      }
+      if (id == RETRO_DEVICE_ID_MOUSE_Y) {
+        int16_t r = frontend_input_state_cb(port, device, index, id);
+        return r ? r : (moved ? (int16_t)(ly / 4096) : 0);
+      }
+      if (id == RETRO_DEVICE_ID_MOUSE_LEFT) {
+        return frontend_input_state_cb(port, device, index, id) || l3;
+      }
+    }
+  }
+  return frontend_input_state_cb(port, device, index, id);
+}
 SDL_AudioSpec       *SDL_libretro_audio_spec = NULL;
 SDL_sem             *SDL_libretro_event_sem  = NULL;
 /* Frame sync: when enabled, DUMMY_UpdateRects blocks on this semaphore
@@ -290,7 +353,9 @@ void retro_set_input_poll(retro_input_poll_t cb)
 
 void retro_set_input_state(retro_input_state_t cb)
 {
-  SDL_libretro_input_state_cb = cb;
+  /* Capture the real frontend callback and route all engine input reads
+   * through the pad->pointer synthesizer (installed in retro_load_game). */
+  frontend_input_state_cb = cb;
 }
 
 void retro_get_system_info(struct retro_system_info *info)
@@ -422,6 +487,12 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
 bool retro_load_game(const struct retro_game_info *game){
   if (!game)
     return false;
+
+  /* Install the pad->pointer synthesizer for every input read by either
+   * engine (ONScripter drives it through the SDL1.2 overlay; KiriKiri through
+   * krkr_set_input_callbacks). Installed here because it needs the game's
+   * surface size to clamp the virtual pointer. */
+  SDL_libretro_input_state_cb = pointer_synth_input_state;
 
   char archive_path[PATH_MAX_LENGTH];
   fill_pathname_basedir(archive_path, game->path, sizeof(archive_path));
@@ -787,6 +858,9 @@ void retro_run(void)
             if (opt_software_cursor) {
             int cx = 0, cy = 0;
             krkr_get_mouse_pos(&cx, &cy);
+            /* cx/cy are negative until real pointer input arrives; draw
+             * nothing then (a clipped arrow would otherwise appear at the
+             * top-left corner). */
             /* 12x18 arrow cursor; '#' = black, '.' = white outline, ' ' = clear */
             static const char *arrow[18] = {
               "##          ",
@@ -808,7 +882,7 @@ void retro_run(void)
               " #..#       ",
               "  ##        ",
             };
-            for (int dy = 0; dy < 18; dy++) {
+            for (int dy = 0; dy < 18 && cx >= 0 && cy >= 0; dy++) {
               for (int dx = 0; dx < 12; dx++) {
                 char c = arrow[dy][dx];
                 if (c == ' ') continue;
@@ -1118,7 +1192,8 @@ void retro_run(void)
     if (opt_software_cursor) {
       int cx, cy;
       SDL_libretro_get_mouse_pos(&cx, &cy);
-      for (int dy = 0; dy < 12; dy++) {
+      /* Off-screen (negative) until real pointer input: draw nothing then. */
+      for (int dy = 0; dy < 12 && cx >= 0 && cy >= 0; dy++) {
         for (int dx = 0; dx < 12; dx++) {
           int sx = cx + dx, sy = cy + dy;
           if (sx >= 0 && sx < w && sy >= 0 && sy < h) {

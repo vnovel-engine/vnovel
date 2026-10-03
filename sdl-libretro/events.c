@@ -129,8 +129,8 @@ static Uint8 to_button(int16_t pressed)
   return 0;
 }
 
-static Sint16 mouse_x = 0;
-static Sint16 mouse_y = 0;
+static Sint16 mouse_x = -1;
+static Sint16 mouse_y = -1;
 
 void SDL_libretro_get_mouse_pos(int *x, int *y)
 {
