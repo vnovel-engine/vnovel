@@ -180,17 +180,31 @@ extern "C" void krkr_get_mouse_pos(int *x, int *y) { if (x) *x = krkr_mouse_x; i
 extern "C" void krkr_shutdown(void) {
     if (!krkr_dl) return;
     fprintf(stderr, "krkr_shutdown: terminating\n");
-    typedef void (*terminate_t)();
-    terminate_t p_terminate = (terminate_t)dlsym(krkr_dl, "_ZN15tTVPApplication9TerminateEv");
-    if (p_terminate) { try { p_terminate(); } catch(...) {} }
-    /* Wait for the engine thread's run loop to exit before cleanup. */
+    /* Ask the engine to quit even if it is paused/idle (frontend stopped
+     * polling): the engine loop checks this before its pause gate, so it can
+     * always reach the terminate path. Do NOT call Application::Terminate()
+     * from this thread — the engine thread reads the same flag and tears itself
+     * down (TVPSystemUninit / delete TVPSystemControl); a concurrent Terminate
+     * here races that teardown and can deadlock. */
+    volatile int *quit_flag = (volatile int*)dlsym(krkr_dl, "krkrsdl2_quit_requested");
+    if (quit_flag) *quit_flag = 1;
+    /* Bounded wait for the engine thread to finish its own unwind. */
     if (krkr_running) {
-        struct timespec ts = {0, 10 * 1000 * 1000};
-        for (int i = 0; i < 500 && krkr_running; i++) nanosleep(&ts, NULL);
+        struct timespec ts = {0, 5 * 1000 * 1000};
+        for (int i = 0; i < 400 && krkr_running; i++) nanosleep(&ts, NULL);
     }
-    if (p_cleanup) { try { p_cleanup(); } catch(...) {} }
-    void *ret = NULL;
-    pthread_join(krkr_thread, &ret);
+    if (!krkr_running) {
+        /* Thread has exited: it is now safe to tear down the application from
+         * here, and to join. */
+        if (p_cleanup) { try { p_cleanup(); } catch(...) {} }
+        void *ret = NULL;
+        pthread_join(krkr_thread, &ret);
+    } else {
+        /* The engine thread did not unwind in time: return anyway so the
+         * frontend can finish exiting (its requirement). Process teardown
+         * reclaims the thread. */
+        fprintf(stderr, "krkr_shutdown: engine thread did not exit; returning\n");
+    }
     krkr_running = false;
     krkr_dl = NULL;
 }
