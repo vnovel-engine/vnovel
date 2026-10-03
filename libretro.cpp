@@ -116,52 +116,52 @@ bool SDL_libretro_input_ready = false;
  *
  * The wrapper reports MOUSE deltas (which both engines already integrate) and
  * MOUSE_LEFT presses for L3, so no engine-side change is needed. */
-static int vlx_pos = -1, vly_pos = -1;   /* virtual pointer, -1 = unset */
-static int vptr_prev_l3 = 0;
+static int vlx_pos = -1, vly_pos = -1;   /* virtual pointer accumulator, -1 = unset */
 
 static int16_t pointer_synth_input_state(unsigned port, unsigned device,
                                           unsigned index, unsigned id)
 {
-  /* Skewed wiring: a frontend with no pointer device reports 0,0 for the
-   * absolute pointer, which both engines would interpret as the screen
-   * centre — parking the software cursor dead-centre of the game. Treat
-   * "no pointer" as "no pointer input" (0,0 is otherwise the centre). */
-  if (port == 0 && device == RETRO_DEVICE_POINTER &&
-      (id == RETRO_DEVICE_ID_POINTER_X || id == RETRO_DEVICE_ID_POINTER_Y))
-  {
-    if (frontend_input_state_cb(0, RETRO_DEVICE_POINTER, 0,
-                                RETRO_DEVICE_ID_POINTER_COUNT) == 0)
-      return 0;
-  }
-
-  /* Only synthesize for the mouse/pointer device queries. */
+  /* Cores/frontends with no physical pointer still need a way to work
+   * pointer-only UIs (modal dialogs). RetroArch has no built-in pad-to-pointer
+   * mapping, so synthesize one here: the RIGHT analog stick moves the pointer
+   * and R3 (right-stick click) clicks. Right stick is the conventional choice
+   * (mirrors how handheld/touch cores emulate a mouse) and leaves the left
+   * stick free for the frontend/other uses. */
   if (port == 0 && (device == RETRO_DEVICE_MOUSE ||
                     device == RETRO_DEVICE_POINTER))
   {
-    int16_t lx = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
-                       RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
-    int16_t ly = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
-                       RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
-    int16_t l3 = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
-                       RETRO_DEVICE_ID_JOYPAD_L3);
+    int16_t rx = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
+                       RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X);
+    int16_t ry = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
+                       RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y);
+    int16_t r3 = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                       RETRO_DEVICE_ID_JOYPAD_R3);
     int moved = 0;
-    if (lx > 4000 || lx < -4000) { vlx_pos = (vlx_pos < 0 ? 0 : vlx_pos) + lx / 4096; moved = 1; }
-    if (ly > 4000 || ly < -4000) { vly_pos = (vly_pos < 0 ? 0 : vly_pos) + ly / 4096; moved = 1; }
+    if (rx > 4000 || rx < -4000) { vlx_pos = (vlx_pos < 0 ? 0 : vlx_pos) + rx / 4096; moved = 1; }
+    if (ry > 4000 || ry < -4000) { vly_pos = (vly_pos < 0 ? 0 : vly_pos) + ry / 4096; moved = 1; }
 
     if (device == RETRO_DEVICE_MOUSE)
     {
       if (id == RETRO_DEVICE_ID_MOUSE_X) {
         int16_t r = frontend_input_state_cb(port, device, index, id);
-        return r ? r : (moved ? (int16_t)(lx / 4096) : 0);
+        return r ? r : (moved ? (int16_t)(rx / 4096) : 0);
       }
       if (id == RETRO_DEVICE_ID_MOUSE_Y) {
         int16_t r = frontend_input_state_cb(port, device, index, id);
-        return r ? r : (moved ? (int16_t)(ly / 4096) : 0);
+        return r ? r : (moved ? (int16_t)(ry / 4096) : 0);
       }
       if (id == RETRO_DEVICE_ID_MOUSE_LEFT) {
-        return frontend_input_state_cb(port, device, index, id) || l3;
+        return frontend_input_state_cb(port, device, index, id) || r3;
       }
     }
+    /* A frontend with no pointer device reports 0,0 for the absolute pointer,
+     * which the engines would read as the screen centre; treat that as "no
+     * pointer input". */
+    if (device == RETRO_DEVICE_POINTER &&
+        (id == RETRO_DEVICE_ID_POINTER_X || id == RETRO_DEVICE_ID_POINTER_Y) &&
+        frontend_input_state_cb(0, RETRO_DEVICE_POINTER, 0,
+                                RETRO_DEVICE_ID_POINTER_COUNT) == 0)
+      return 0;
   }
   return frontend_input_state_cb(port, device, index, id);
 }

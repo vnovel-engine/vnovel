@@ -386,41 +386,74 @@ void krkr_pump_events(void) {
         }
     }
 
-    /* Forward keyboard / joypad-confirm input as SDL key events.
-     * The engine's window handler consumes SDL_KEYDOWN / SDL_KEYUP and maps
-     * keysym.sym through sdl_key_to_vk_key(). Without this the port can only
-     * be advanced with the mouse, which KAG scenarios generally ignore. */
+    /* Forward keyboard / joypad input as synthetic SDL events.
+     * The engine's window handler consumes SDL_KEYDOWN/UP and maps
+     * keysym.sym through sdl_key_to_vk_key(); without this the port can only
+     * be advanced with the mouse, which KAG scenarios generally ignore.
+     *
+     * Canonical pad mapping (kept consistent with the ONScripter engine):
+     *   Start = auto toggle      (KAG accelerator 'A')
+     *   Select= skip toggle      (KAG accelerator 'F')
+     *   A     = advance/confirm  (Return)
+     *   B     = cancel/menu      (Escape)
+     *   X     = hide graphics    (right-click in KAG)
+     *   Y     = save             (KAG accelerator 'S')
+     *   L/R/L2/R2 = scroll up/down (mouse wheel)
+     *   R3    = pointer click    (handled by the core's pad->pointer synth)
+     * D-pad is left to the frontend. */
     {
-        /* RetroArch joypad ids (RETRO_DEVICE_JOYPAD): B=0, START=3, A=8 */
-        static const unsigned CONFIRM_IDS[] = { 8 /*A*/, 0 /*B*/, 3 /*START*/ };
-        static const unsigned CANCEL_IDS[]  = { 1 /*Y*/, 2 /*SELECT*/ };
-        int confirm = 0, cancel = 0;
-        for (unsigned k = 0; k < sizeof(CONFIRM_IDS)/sizeof(CONFIRM_IDS[0]); k++)
-            if (krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, CONFIRM_IDS[k])) { confirm = 1; break; }
-        for (unsigned k = 0; k < sizeof(CANCEL_IDS)/sizeof(CANCEL_IDS[0]); k++)
-            if (krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, CANCEL_IDS[k]))  { cancel  = 1; break; }
-
-        /* SDLK_RETURN=13, SDLK_ESCAPE=27 */
-        static int prev_confirm = 0, prev_cancel = 0;
-        static long key_ev_count = 0;
-
-        if (confirm != prev_confirm) {
-            char ev[64]; memset(ev, 0, sizeof(ev));
-            *(unsigned int*)(ev+0)  = confirm ? KRKR_SDL_KEYDOWN : KRKR_SDL_KEYUP;
-            *(unsigned char*)(ev+12)  = confirm ? 1 : 0;      /* state: SDL_PRESSED/RELEASED */
-            *(int*)(ev+20)    = 13;                   /* keysym.sym = SDLK_RETURN */
-            p_SDL_PushEvent(ev);
-            if (key_ev_count < 20) { fprintf(stderr, "krkr_pump: KEY %s RETURN\n", confirm?"DOWN":"UP"); key_ev_count++; }
-            prev_confirm = confirm;
-        }
-        if (cancel != prev_cancel) {
-            char ev[64]; memset(ev, 0, sizeof(ev));
-            *(unsigned int*)(ev+0)  = cancel ? KRKR_SDL_KEYDOWN : KRKR_SDL_KEYUP;
-            *(unsigned char*)(ev+12)  = cancel ? 1 : 0;
-            *(int*)(ev+20)    = 27;                   /* keysym.sym = SDLK_ESCAPE */
-            p_SDL_PushEvent(ev);
-            if (key_ev_count < 20) { fprintf(stderr, "krkr_pump: KEY %s ESCAPE\n", cancel?"DOWN":"UP"); key_ev_count++; }
-            prev_cancel = cancel;
+        /* id -> SDL keysym to emit (0 = none). Must be the lower-case SDL
+         * letter codes (SDLK_a/s/f = 0x61/0x73/0x66): sdl_key_to_vk_key maps
+         * those to VK_A/VK_S/VK_F, which is exactly what KAG's accelerators
+         * compare against. Upper-case values would match nothing. */
+        static const int KEY_SYM[16] = {
+            /* B */ 27, /* Y */ 's', /* SELECT */ 'f', /* START */ 'a',
+            /* UP */ 0, /* DOWN */ 0, /* LEFT */ 0, /* RIGHT */ 0,
+            /* A */ 13, /* X */ 0, /* L */ 0, /* R */ 0,
+            /* L2 */ 0, /* R2 */ 0, /* L3 */ 0, /* R3 */ 0,
+        };
+        static const int WHEEL[16] = { 0,0,0,0, 0,0,0,0, 0,0, 4,5, 4,5, 0,0 };
+        static int prev[16];
+        static int prev_wheel[16];
+        for (int i = 0; i < 16; i++) {
+            int st = krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, (unsigned)i);
+            /* X = hide graphics: KAG does this on right-click. */
+            if (i == 9 /*X*/) {
+                if (st != prev[i]) {
+                    char ev[64]; memset(ev, 0, sizeof(ev));
+                    *(unsigned int*)(ev+0) = st ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;
+                    *(unsigned char*)(ev+16) = 3;  /* right */
+                    *(unsigned char*)(ev+17) = st ? 1 : 0;
+                    *(unsigned char*)(ev+18) = 1;
+                    if (mx >= 0) { *(int*)(ev+20) = mx; *(int*)(ev+24) = my; }
+                    p_SDL_PushEvent(ev);
+                    prev[i] = st;
+                }
+                continue;
+            }
+            /* Scroll wheels (L/R/L2/R2): button 4 = up, 5 = down. */
+            if (WHEEL[i]) {
+                if (st != prev_wheel[i]) {
+                    char ev[64]; memset(ev, 0, sizeof(ev));
+                    *(unsigned int*)(ev+0) = st ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;
+                    *(unsigned char*)(ev+16) = (unsigned char)WHEEL[i];
+                    *(unsigned char*)(ev+17) = st ? 1 : 0;
+                    *(unsigned char*)(ev+18) = 1;
+                    p_SDL_PushEvent(ev);
+                    prev_wheel[i] = st;
+                }
+                continue;
+            }
+            int sym = KEY_SYM[i];
+            if (!sym) { prev[i] = st; continue; }
+            if (st != prev[i]) {
+                char ev[64]; memset(ev, 0, sizeof(ev));
+                *(unsigned int*)(ev+0)  = st ? KRKR_SDL_KEYDOWN : KRKR_SDL_KEYUP;
+                *(unsigned char*)(ev+12) = st ? 1 : 0;
+                *(int*)(ev+20)          = sym;
+                p_SDL_PushEvent(ev);
+                prev[i] = st;
+            }
         }
     }
 }

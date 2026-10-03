@@ -37,25 +37,36 @@ static void maybe_inject_autoclick(void)
   }
 }
 
-/* Fixed RetroPad → ONScripter key mapping.
- * Users remap at the RetroArch Controls level, not here. */
+/* RetroPad → ONScripter key mapping. There is no ONScripter-side way to set
+ * the pad map (the game owns its key semantics), so this is chosen to match
+ * the same portability layer used by the KiriKiri engine where the games
+ * share key semantics ('s'=skip toggle, 'a'=auto toggle, 'o'=one-page, 'v'=
+ * volume editor, Return=advance, Escape=menu, PageUp/Down=history scroll).
+ * Directional d-pad is REMAPPED by the ONScripter engine into cursor keys, so
+ * we pass UP/DOWN/LEFT/RIGHT straight through.
+ *
+ * Canonical semantics (kept identical across engines where games allow):
+ *   Start->auto  Select->skip  A->advance/confirm  B->cancel/menu
+ *   X->hide graphics  Y->quicksave  L/R->scroll  R3->pointer click
+ * Title-specific keys ('s','a','o','v') are the engines' portable set; pad
+ * buttons are wired to those. */
 ons_key_t SDL_libretro_pad_mapping[16] = {
-  [RETRO_DEVICE_ID_JOYPAD_B]      = ONS_KEY_SPACE,
-  [RETRO_DEVICE_ID_JOYPAD_Y]      = ONS_KEY_RCTRL,
-  [RETRO_DEVICE_ID_JOYPAD_SELECT] = ONS_KEY_s,
-  [RETRO_DEVICE_ID_JOYPAD_START]  = ONS_KEY_a,
+  [RETRO_DEVICE_ID_JOYPAD_B]      = ONS_KEY_SPACE,   /* B  cancel/back */
+  [RETRO_DEVICE_ID_JOYPAD_Y]      = ONS_KEY_RCTRL,   /* Y  quicksave (ONS RCtrl = save) */
+  [RETRO_DEVICE_ID_JOYPAD_SELECT] = ONS_KEY_s,       /* Select  skip toggle ('s') */
+  [RETRO_DEVICE_ID_JOYPAD_START]  = ONS_KEY_a,       /* Start   auto toggle ('a') */
   [RETRO_DEVICE_ID_JOYPAD_UP]     = ONS_KEY_UP,
   [RETRO_DEVICE_ID_JOYPAD_DOWN]   = ONS_KEY_DOWN,
   [RETRO_DEVICE_ID_JOYPAD_LEFT]   = ONS_KEY_LEFT,
   [RETRO_DEVICE_ID_JOYPAD_RIGHT]  = ONS_KEY_RIGHT,
-  [RETRO_DEVICE_ID_JOYPAD_A]      = ONS_KEY_RETURN,
-  [RETRO_DEVICE_ID_JOYPAD_X]      = ONS_KEY_ESCAPE,
-  [RETRO_DEVICE_ID_JOYPAD_L]      = ONS_KEY_o,
-  [RETRO_DEVICE_ID_JOYPAD_R]      = ONS_KEY_s,
+  [RETRO_DEVICE_ID_JOYPAD_A]      = ONS_KEY_RETURN,  /* A  advance/confirm */
+  [RETRO_DEVICE_ID_JOYPAD_X]      = ONS_KEY_ESCAPE,  /* X  cancel/menu (hide) */
+  [RETRO_DEVICE_ID_JOYPAD_L]      = ONS_KEY_PAGEUP,  /* L  scroll up   (history) */
+  [RETRO_DEVICE_ID_JOYPAD_R]      = ONS_KEY_PAGEDOWN,/* R  scroll down (history) */
   [RETRO_DEVICE_ID_JOYPAD_L2]     = ONS_KEY_PAGEUP,
   [RETRO_DEVICE_ID_JOYPAD_R2]     = ONS_KEY_PAGEDOWN,
-  [RETRO_DEVICE_ID_JOYPAD_L3]     = ONS_KEY_TAB,
-  [RETRO_DEVICE_ID_JOYPAD_R3]     = ONS_KEY_q,
+  [RETRO_DEVICE_ID_JOYPAD_L3]     = ONS_KEY_NONE,
+  [RETRO_DEVICE_ID_JOYPAD_R3]     = ONS_KEY_NONE,    /* R3 = pointer click, handled in the core */
 };
 
 int SDL_libretro_key_from_ons_key(ons_key_t k)
