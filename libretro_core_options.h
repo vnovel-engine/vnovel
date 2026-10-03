@@ -162,6 +162,26 @@ struct retro_core_option_definition option_defs_us[] = {
       },
       "native"
    },
+   {
+      "onscripter_en_ctrl_tap_frames",
+      "Y Button (Ctrl Skip) Duration",
+      "The Y button sends Ctrl, which both engines treat as hold-to-skip / "
+      "fast-forward. Held Ctrl skips instantly and is hard to control, so Y is "
+      "delivered as a bounded tap: press skips for this many frames, then Ctrl "
+      "releases automatically. 0 = legacy behaviour (Ctrl held while Y is held).",
+      {
+         { "0",  NULL },
+         { "5",  NULL },
+         { "10", NULL },
+         { "15", NULL },
+         { "20", NULL },
+         { "30", NULL },
+         { "45", NULL },
+         { "60", NULL },
+         { NULL, NULL },
+      },
+      "20"
+   },
    { NULL, NULL, NULL, {{0}}, NULL },
 };
 

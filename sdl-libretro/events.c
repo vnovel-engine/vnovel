@@ -132,10 +132,58 @@ static void PumpKeyboardEvents(void)
     "B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT",
     "A", "X", "L", "R", "L2", "R2", "L3", "R3"
   };
+  /* Y emits ctrl (the engines' fast-forward modifier). Held ctrl is an
+   * instant, unmanageable skip, so Y is delivered as a bounded ctrl TAP: press
+   * skips for ctrl_tap_frames frames, then ctrl is released automatically even
+   * if Y is still held. A fresh press restarts the tap.
+   *
+   * Length comes from the core option onscripter_en_ctrl_tap_frames (default
+   * 20, 0 = legacy held behaviour); ONS_CTRL_TAP_FRAMES overrides it for
+   * testing. Read once and cached. */
+  static int ctrl_tap_frames = -1;
+  static int ctrl_frames_left = 0;
+  if (ctrl_tap_frames < 0) {
+    const char *e = getenv("ONS_CTRL_TAP_FRAMES");
+    if (e) {
+      ctrl_tap_frames = atoi(e);
+    } else {
+      ctrl_tap_frames = 20;
+      extern retro_environment_t environ_cb_global;
+      struct retro_variable v = {0};
+      v.key = "onscripter_en_ctrl_tap_frames";
+      if (environ_cb_global && environ_cb_global(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value)
+        ctrl_tap_frames = atoi(v.value);
+    }
+    if (ctrl_tap_frames < 0) ctrl_tap_frames = 0;
+  }
   for (int i = 0; i < 16; ++i) {
     int16_t state = SDL_libretro_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, i);
     int k = SDL_libretro_key_from_ons_key(SDL_libretro_pad_mapping[i]);
-    if (k && buttons[i] != state) {
+    if (!k) continue;
+    if (ctrl_tap_frames > 0 && k == SDLK_RCTRL) {
+      if (state && !buttons[i]) {
+        /* Rising edge: (re)start the tap. */
+        buttons[i] = 1;
+        ctrl_frames_left = ctrl_tap_frames;
+        if (input_dbg)
+          fprintf(stderr, "IPROBE pad %s (id=%d) -> SDLK=%d TAP DOWN (%d frames)\n",
+                  pad_name[i], i, k, ctrl_frames_left);
+        sym.scancode = k; sym.sym = k;
+        SDL_PrivateKeyboard(SDL_PRESSED, &sym);
+      } else if (ctrl_frames_left > 0) {
+        /* Tap running: emit one more skipped frame, then release. */
+        if (--ctrl_frames_left == 0) {
+          if (input_dbg)
+            fprintf(stderr, "IPROBE pad %s (id=%d) -> SDLK=%d TAP UP\n", pad_name[i], i, k);
+          sym.scancode = k; sym.sym = k;
+          SDL_PrivateKeyboard(SDL_RELEASED, &sym);
+        }
+      }
+      /* Held past the tap: ignore until Y is released (button re-arms below). */
+      if (!state) buttons[i] = 0;
+      continue;
+    }
+    if (buttons[i] != state) {
       buttons[i] = state;
       if (input_dbg)
         fprintf(stderr, "IPROBE pad %s (id=%d) -> engine SDLK=%d %s\n",

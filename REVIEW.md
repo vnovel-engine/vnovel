@@ -181,18 +181,18 @@ to reach a more perfect form.
 1027:   var.key = "onscripter-en_mouse_sensitivity";
 ```
 
-#### Line 1353
+#### Line 1357
 
 yes, thanks.
 
 ```cpp context
-1350:       int cx, cy;
-1351:       SDL_libretro_get_mouse_pos(&cx, &cy);
-1352:       /* Off-screen (negative) until real pointer input: draw nothing then. */
-1353:       for (int dy = 0; dy < 12 && cx >= 0 && cy >= 0; dy++) {
-1354:         for (int dx = 0; dx < 12; dx++) {
-1355:           int sx = cx + dx, sy = cy + dy;
-1356:           if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+1354:       int cx, cy;
+1355:       SDL_libretro_get_mouse_pos(&cx, &cy);
+1356:       /* Off-screen (negative) until real pointer input: draw nothing then. */
+1357:       for (int dy = 0; dy < 12 && cx >= 0 && cy >= 0; dy++) {
+1358:         for (int dx = 0; dx < 12; dx++) {
+1359:           int sx = cx + dx, sy = cy + dy;
+1360:           if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
 ```
 
 ---

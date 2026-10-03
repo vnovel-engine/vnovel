@@ -242,6 +242,9 @@ static retro_video_refresh_t       video_cb;
 static retro_input_poll_t          input_poll_cb;
 static retro_audio_sample_batch_t  audio_batch_cb;
 static retro_environment_t         environ_cb;
+/* Same handle, exported so the SDL events layer (events.c) can read core
+ * options without a separate plumbing path. */
+extern "C" retro_environment_t     environ_cb_global = nullptr;
 static EngineHandle engine = nullptr;
 static const EngineVTable *vtable = nullptr;
 static volatile bool engine_running = false;
@@ -350,6 +353,7 @@ void retro_set_environment(retro_environment_t cb)
 {
   static struct retro_log_callback log;
   environ_cb = cb;
+  environ_cb_global = cb;
   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
     log_cb = log.log;
   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_descs);

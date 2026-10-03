@@ -25,7 +25,7 @@ RetroPad button without adding its row here.
 | A | Advance / Confirm |
 | B | Cancel / Back |
 | X | Hide Text Window |
-| Y | Save |
+| Y | Hold-to-skip / fast-forward (Ctrl; bounded tap — see below) |
 | SELECT | Skip (toggle) |
 | START | Auto mode (toggle) |
 | L / R | History Back / Forward |
@@ -47,7 +47,7 @@ the keys they use differ.
 | Skip (toggle) | `s` | |
 | Auto (toggle) | `a` | |
 | History Back / Forward | PageUp / PageDown | |
-| Save | RCtrl | ONS's save accelerator |
+| Save / Load | (system menu) | reachable via the right-click system menu; **no engine-level save key exists** |
 | Hide Text Window | right mouse | ONS's native "menu" gesture doubles as hide in many games |
 | Focus previous/next | Up/Left, Down/Right | arrow keys drive ONS button focus |
 
@@ -60,9 +60,20 @@ the keys they use differ.
 | Skip (toggle) | `f` | KAG's skip accelerator |
 | Auto (toggle) | `a` | KAG's auto accelerator |
 | History Back / Forward | mouse wheel up/down | KAG backlog |
-| Save | `s` | KAG's save accelerator |
+| Save / Load | (system menu / right-click) | no engine-level save key; use the menu |
 | Hide Text Window | right mouse | KAG "toggle text boxes" |
 | Focus previous/next | Up/Left, Down/Right | arrow keys drive KAG focus |
+
+### Y = Ctrl hold-to-skip (both engines)
+
+Y sends **Ctrl**, which ONS and PON both treat as the hold-to-skip /
+fast-forward modifier (`ctrl_pressed_status`) — it is *not* a save key in
+either engine, and no engine-level save key exists. Held Ctrl skips instantly
+and is hard to control, so Y is delivered as a **bounded tap**: pressing Y skips
+for `onscripter_en_ctrl_tap_frames` frames (default 20 ≈ ⅓ s) and then Ctrl
+releases automatically even if Y stays held. A fresh press restarts the tap.
+Set the option to `0` for the legacy "held = skip" behaviour. (The tap is
+applied in the core's pad layer, so it is identical on both engines.)
 
 ## Key remap options
 
