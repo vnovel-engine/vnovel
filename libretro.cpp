@@ -12,6 +12,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+/* Vendored fallback font, generated from resources/fonts/ by the Makefile;
+ * registered in retro_init for glyphs the game fonts lack. */
+#include "fallback_font.h"
 
 /* Crash diagnostics: on SIGSEGV/SIGBUS/SIGABRT dump the fault address and a
  * symbolicated backtrace to the crash log, then re-raise so the default
@@ -485,12 +488,12 @@ void retro_init(void)
 
   /* The game fonts used by ONScripter have no U+2026, and the bundled
    * stb_truetype glyph layer has no fontconfig fallback, so a substituted
-   * ellipsis rendered as .notdef. Register the embedded ellipsis subset as the
-   * last-resort font for any codepoint the game font lacks. */
+   * ellipsis rendered as .notdef. Register the vendored fallback font
+   * (resources/fonts/, OFL — embedded by the Makefile) for any codepoint the
+   * game font lacks. */
   {
-    #include "ellipsis_font.h"
     extern int TTF_SetFallbackFontMem(const unsigned char *data, int size);
-    TTF_SetFallbackFontMem(ellipsis_font_ttf, ellipsis_font_ttf_len);
+    TTF_SetFallbackFontMem(fallback_font_ttf, fallback_font_ttf_len);
   }
 }
 

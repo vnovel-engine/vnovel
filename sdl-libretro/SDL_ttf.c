@@ -74,24 +74,31 @@ int TTF_SetFallbackFontMem(const unsigned char *data, int size)
     return 0;
 }
 
-/* Pick the font that carries `ch`: the primary, or the fallback if the primary
- * has no glyph for it. Returns the chosen fontinfo and its pixel scale. */
+/* Pick the font for `ch`. The engine lays text out in fixed half-width cells
+ * and places glyphs using the game font's ascent, so substituting a
+ * proportional Latin font for ordinary text breaks inheriting advance/metrics.
+ * Only the codepoints the game font renders wrongly go through the fallback —
+ * currently U+2026 (the ellipsis, which CJK fonts carry in a full-width centred
+ * form) — plus a general last-resort for anything the game font entirely lacks. */
+#define TTF_FALLBACK_CODEPOINT(cp) ((cp) == 0x2026)
 static const stbtt_fontinfo *TTF_PickFont(TTF_Font *font, Uint16 ch, int *glyph, float *scale)
 {
-    int g = stbtt_FindGlyphIndex(&font->info, ch);
-    if (g != 0) {
-        *glyph = g; *scale = font->scale;
+    if (s_fallback.loaded) {
+        int g = stbtt_FindGlyphIndex(&font->info, ch);
+        if (TTF_FALLBACK_CODEPOINT(ch) || g == 0) {
+            int fg = stbtt_FindGlyphIndex(&s_fallback.info, ch);
+            if (fg != 0) {
+                *glyph = fg;
+                *scale = stbtt_ScaleForPixelHeight(&s_fallback.info, font->height);
+                return &s_fallback.info;
+            }
+        }
+        *glyph = g;
+        *scale = font->scale;
         return &font->info;
     }
-    if (s_fallback.loaded) {
-        int fg = stbtt_FindGlyphIndex(&s_fallback.info, ch);
-        if (fg != 0) {
-            *glyph = fg;
-            *scale = stbtt_ScaleForPixelHeight(&s_fallback.info, font->height);
-            return &s_fallback.info;
-        }
-    }
-    *glyph = g; *scale = font->scale;     /* nothing carries it; render .notdef */
+    *glyph = stbtt_FindGlyphIndex(&font->info, ch);
+    *scale = font->scale;
     return &font->info;
 }
 

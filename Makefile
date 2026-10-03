@@ -150,8 +150,25 @@ ONS_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.ons.o,$(ONS_CXX))
 PONS_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.pons.o,$(PONS_CXX)) \
              $(patsubst %.c,$(BUILD_DIR)/%.pons.o,$(PONS_C))
 
+# Vendored fallback font (stb_truetype has no fontconfig fallback); embedded as
+# a C header at build time. The TTF + its OFL licence live in resources/fonts/.
+FALLBACK_FONT      := resources/fonts/FiraSans-Regular.ttf
+FALLBACK_FONT_HDR  := resources/fonts/fallback_font.h
+
 # Make symlinks first so .o files can find their sources
-all: $(TARGET)
+all: $(FALLBACK_FONT_HDR) $(TARGET)
+
+# --- Embedded fallback font --------------------------------------------------
+# Generate a C header from the vendored TTF at build time (the 480 KB font stays
+# a normal file in resources/fonts/, with its OFL licence alongside).
+$(FALLBACK_FONT_HDR): $(FALLBACK_FONT)
+	@echo "EMBED $(FALLBACK_FONT)"
+	$(Q)python3 tools/embed_font.py $(FALLBACK_FONT) $@
+
+# libretro.cpp includes the generated header; CORE_DIR is ".", so its object is
+# build/$(platform)/./libretro.o. Make the header before it compiles (the .d
+# file already tracks the header's contents after that).
+$(BUILD_DIR)/./libretro.o: $(FALLBACK_FONT_HDR)
 
 # Include compiler-generated header dependencies (-MMD). If a header changes,
 # the objects that include it rebuild. Missing .d files (first build) are
@@ -162,7 +179,7 @@ all: $(TARGET)
 DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps/sdl-mixer deps/libretro-common
 
 
-$(TARGET): $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
+$(TARGET): $(FALLBACK_FONT_HDR) $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
 	@$(if $(Q),echo "LD $@",)
 	$(Q)$(CXX) $(fpic) $(SHARED) -Wl,-z,muldefs -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS) -ldl -lpthread
 

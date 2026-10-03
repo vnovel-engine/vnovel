@@ -25,6 +25,7 @@ INCFLAGS := \
   -I$(DEPS_DIR) \
   -I$(DEPS_DIR)/sdl-mixer \
   -I$(CORE_DIR) \
+  -I$(CORE_DIR)/resources/fonts \
   -I$(SMPEG_DIR)
 
 CFLAGS   += $(INCFLAGS)
