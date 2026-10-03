@@ -220,6 +220,21 @@ During fast-forward, `DUMMY_PumpEvents` returns immediately (no blocking),
 timers. During pause, `DUMMY_PumpEvents` returns immediately and
 `retro_run()` doesn't pump events, so the engine idles. Accumulated
 timer events are drained on unpause.
+
+### BGM playback and SMPEG priming
+
+Both engines play streamed BGM through SDL_mixer's music hook and treat a
+decoder callback that produces no bytes as "track finished", after which
+they `stopBGM()` and restart. This is safe for Ogg but **not** for MPEG
+audio: the vendored SMPEG returns 0 for the first one or two callbacks
+while a stream primes, with `SMPEG_status()` still `SMPEG_PLAYING`. A
+bare `== 0` check therefore restarts the BGM before it produces any audio
+— silent music plus a runaway restart loop (and eventually a crash from
+deleting a sample the audio thread is inside). PONScripter's `mp3callback`
+guards the restart on `SMPEG_status(...) != SMPEG_PLAYING` so only a real
+end-of-stream restarts the track. Any future change to the callback must
+keep that guard.
+
 ### Geometry reporting
 
 `retro_get_system_av_info()` is called by RetroArch before the engine
