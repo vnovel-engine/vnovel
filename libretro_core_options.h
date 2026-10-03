@@ -146,10 +146,10 @@ struct retro_core_option_definition option_defs_us[] = {
    {
       "onscripter_en_internal_resolution",
       "Internal Resolution",
-      "Rendering resolution produced by the game engine. "
-      "'native' uses whatever the game/script requests. A fixed size "
-      "scales the engine's own framebuffer before it reaches RetroArch "
-      "(RetroArch's scaling settings still apply on top).",
+      "Resolution the game engine renders at. 'native' uses whatever the "
+      "game/script requests. A fixed size makes the engine produce that size "
+      "directly, so the frame needs no scaling before it reaches RetroArch "
+      "(RetroArch's own scaling settings still apply on top).",
       {
          { "native",   NULL },
          { "640x480",  NULL },
