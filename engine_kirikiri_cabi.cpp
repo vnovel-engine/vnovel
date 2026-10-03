@@ -244,6 +244,23 @@ extern "C" void krkr_push_key(int sym, int down) {
 #define KRKR_SDL_KEYDOWN         0x300
 #define KRKR_SDL_KEYUP           0x301
 
+/* SDL2 keysyms the pad dispatch emits. This file does not include the SDL2
+ * headers (it dlopen()s the engine's own SDL2; see the RTLD_DEEPBIND note at
+ * the top), so spell the ABI values as named constants instead of guessing
+ * them inline. In SDL2's keysym layout, keys below 0x40000000 are effectively
+ * ASCII, and keys with no character carry bit 30 over their scancode:
+ * SDLK_UP/DOWN/LEFT/RIGHT = 0x40000000 | SDL_SCANCODE_{UP,DOWN,LEFT,RIGHT}
+ * (= SDL_SCANCODE_TO_KEYCODE). */
+#define KRKR_SDLK_RETURN  0x0d                      /* SDLK_RETURN */
+#define KRKR_SDLK_ESCAPE  0x1b                      /* SDLK_ESCAPE */
+#define KRKR_SDLK_a       0x61                      /* SDLK_a */
+#define KRKR_SDLK_s       0x73                      /* SDLK_s */
+#define KRKR_SDLK_f       0x66                      /* SDLK_f */
+#define KRKR_SDLK_UP      (int)(0x40000000u | 82u)  /* SDL_SCANCODE_UP */
+#define KRKR_SDLK_DOWN    (int)(0x40000000u | 81u)  /* SDL_SCANCODE_DOWN */
+#define KRKR_SDLK_LEFT    (int)(0x40000000u | 80u)  /* SDL_SCANCODE_LEFT */
+#define KRKR_SDLK_RIGHT   (int)(0x40000000u | 79u)  /* SDL_SCANCODE_RIGHT */
+
 /* Called from retro_run each frame to keep engine alive and forward input.
  * The dummy video driver doesn't generate events, so we inject SDL2 events. */
 void krkr_pump_events(void) {
@@ -414,65 +431,66 @@ void krkr_pump_events(void) {
      *   Y     = save             (KAG accelerator 'S')
      *   L/R/L2/R2 = scroll up/down (mouse wheel)
      *   R3    = pointer click    (handled by the core's pad->pointer synth)
-     * D-pad is left to the frontend. */
+     *   D-pad = KAG menu navigation (UP/DOWN/LEFT/RIGHT keys) */
     {
-        /* id -> SDL keysym to emit (0 = none). Must be the lower-case SDL
-         * letter codes (SDLK_a/s/f = 0x61/0x73/0x66): sdl_key_to_vk_key maps
-         * those to VK_A/VK_S/F, which is exactly what KAG's accelerators
-         * compare against. Upper-case values would match nothing.
-         * D-pad must be translated here too: the engine no longer reads the
-         * controller natively (KRKRSDL2_LIBRETRO), so the only way pad arrows
-         * reach KAG menu navigation is this map. SDLK_UP/DOWN/LEFT/RIGHT are
-         * 0x40000000|scancode (SDL_SCANCODE_TO_KEYCODE). */
-        static const int KEY_SYM[16] = {
-            /* B */ 27, /* Y */ 's', /* SELECT */ 'f', /* START */ 'a',
-            /* UP */ 0x40000052, /* DOWN */ 0x40000051,
-            /* LEFT */ 0x40000050, /* RIGHT */ 0x4000004F,
-            /* A */ 13, /* X */ 0, /* L */ 0, /* R */ 0,
-            /* L2 */ 0, /* R2 */ 0, /* L3 */ 0, /* R3 */ 0,
+        /* One row per RetroPad button id (RETRO_DEVICE_ID_JOYPAD_*): what to
+         * emit when it is pressed. A single table keeps the three emission
+         * styles together instead of a key map, a wheel map and an inline
+         * special case that had to agree with each other. Keys must use the
+         * lower-case SDL letter codes: sdl_key_to_vk_key maps those to
+         * VK_A/VK_S/F, which is what KAG's accelerators compare against.
+         * D-pad is translated here too — the engine no longer reads the
+         * controller natively (KRKRSDL2_LIBRETRO), so this is the only route
+         * pad arrows take to KAG menu navigation. */
+        enum { EMIT_NONE, EMIT_KEY, EMIT_WHEEL, EMIT_RIGHTCLICK };
+        struct { int mode; int code; } const PAD[16] = {
+            /*  id            mode            code (SDL keysym or mouse button) */
+            /*  B      */ { EMIT_KEY,         KRKR_SDLK_ESCAPE }, /* cancel/menu   */
+            /*  Y      */ { EMIT_KEY,         KRKR_SDLK_s },      /* KAG accel 'S' */
+            /*  SELECT */ { EMIT_KEY,         KRKR_SDLK_f },      /* KAG accel 'F' */
+            /*  START  */ { EMIT_KEY,         KRKR_SDLK_a },      /* KAG accel 'A' */
+            /*  UP     */ { EMIT_KEY,         KRKR_SDLK_UP },
+            /*  DOWN   */ { EMIT_KEY,         KRKR_SDLK_DOWN },
+            /*  LEFT   */ { EMIT_KEY,         KRKR_SDLK_LEFT },
+            /*  RIGHT  */ { EMIT_KEY,         KRKR_SDLK_RIGHT },
+            /*  A      */ { EMIT_KEY,         KRKR_SDLK_RETURN }, /* advance       */
+            /*  X      */ { EMIT_RIGHTCLICK, 3 },                 /* hide graphics */
+            /*  L      */ { EMIT_WHEEL,       4 },                 /* scroll up     */
+            /*  R      */ { EMIT_WHEEL,       5 },                 /* scroll down   */
+            /*  L2     */ { EMIT_WHEEL,       4 },
+            /*  R2     */ { EMIT_WHEEL,       5 },
+            /*  L3     */ { EMIT_NONE,        0 },
+            /*  R3     */ { EMIT_NONE,        0 },                 /* pointer click */
         };
-        static const int WHEEL[16] = { 0,0,0,0, 0,0,0,0, 0,0, 4,5, 4,5, 0,0 };
         static int prev[16];
-        static int prev_wheel[16];
         for (int i = 0; i < 16; i++) {
             int st = krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, (unsigned)i);
-            /* X = hide graphics: KAG does this on right-click. */
-            if (i == 9 /*X*/) {
-                if (st != prev[i]) {
-                    char ev[64]; memset(ev, 0, sizeof(ev));
-                    *(unsigned int*)(ev+0) = st ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;
-                    *(unsigned char*)(ev+16) = 3;  /* right */
-                    *(unsigned char*)(ev+17) = st ? 1 : 0;
-                    *(unsigned char*)(ev+18) = 1;
-                    if (mx >= 0) { *(int*)(ev+20) = mx; *(int*)(ev+24) = my; }
-                    p_SDL_PushEvent(ev);
-                    prev[i] = st;
-                }
-                continue;
-            }
-            /* Scroll wheels (L/R/L2/R2): button 4 = up, 5 = down. */
-            if (WHEEL[i]) {
-                if (st != prev_wheel[i]) {
-                    char ev[64]; memset(ev, 0, sizeof(ev));
-                    *(unsigned int*)(ev+0) = st ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;
-                    *(unsigned char*)(ev+16) = (unsigned char)WHEEL[i];
-                    *(unsigned char*)(ev+17) = st ? 1 : 0;
-                    *(unsigned char*)(ev+18) = 1;
-                    p_SDL_PushEvent(ev);
-                    prev_wheel[i] = st;
-                }
-                continue;
-            }
-            int sym = KEY_SYM[i];
-            if (!sym) { prev[i] = st; continue; }
-            if (st != prev[i]) {
-                char ev[64]; memset(ev, 0, sizeof(ev));
+            if (PAD[i].mode == EMIT_NONE) { prev[i] = st; continue; }
+            if (st == prev[i]) continue;
+            char ev[64];
+            memset(ev, 0, sizeof(ev));
+            switch (PAD[i].mode) {
+            case EMIT_KEY:
                 *(unsigned int*)(ev+0)  = st ? KRKR_SDL_KEYDOWN : KRKR_SDL_KEYUP;
                 *(unsigned char*)(ev+12) = st ? 1 : 0;
-                *(int*)(ev+20)          = sym;
-                p_SDL_PushEvent(ev);
-                prev[i] = st;
+                *(int*)(ev+20)          = PAD[i].code;
+                break;
+            case EMIT_WHEEL:
+                *(unsigned int*)(ev+0)  = st ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;
+                *(unsigned char*)(ev+16) = (unsigned char)PAD[i].code;  /* 4 = up, 5 = down */
+                *(unsigned char*)(ev+17) = st ? 1 : 0;
+                *(unsigned char*)(ev+18) = 1;
+                break;
+            case EMIT_RIGHTCLICK:
+                *(unsigned int*)(ev+0)  = st ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;
+                *(unsigned char*)(ev+16) = 3;  /* SDL button: right */
+                *(unsigned char*)(ev+17) = st ? 1 : 0;
+                *(unsigned char*)(ev+18) = 1;
+                if (mx >= 0) { *(int*)(ev+20) = mx; *(int*)(ev+24) = my; }
+                break;
             }
+            p_SDL_PushEvent(ev);
+            prev[i] = st;
         }
     }
 }

@@ -14,10 +14,27 @@
 #include <time.h>
 
 /* Crash diagnostics: on SIGSEGV/SIGBUS/SIGABRT dump the fault address and a
- * symbolicated backtrace to /tmp/ons_crash.log, then re-raise so the default
+ * symbolicated backtrace to the crash log, then re-raise so the default
  * action still kills the process. Core crashes otherwise surface only as
  * RetroArch's "Process exitcode: -11" with no address; this makes them
  * diagnosable (`aarch64-…-addr2line -f -C -e onscripter-en_libretro.so`). */
+/* Portable crash-log path. Hardcoding "/tmp/..." is not portable (Windows and
+ * some sandboxed frontends have no /tmp); prefer the core's writable save
+ * directory, which the frontend provides and which exists on every platform,
+ * and keep a fixed relative name as a last-resort fallback. Computed once at
+ * load time so the handler itself does no work beyond formatting and writing.
+ *
+ * Signal-safety caveat: format/write/backtrace_symbols_fd are not
+ * async-signal-safe (they may allocate), so this is best-effort; a fault
+ * inside the handler loses the dump by design, which is acceptable for a
+ * diagnostic path. */
+static char ons_crash_log_path[PATH_MAX_LENGTH] = "ons_crash.log";
+static void ons_set_crash_log_path(const char *dir)
+{
+  if (dir && dir[0])
+    fill_pathname_join(ons_crash_log_path, dir, "ons_crash.log", sizeof(ons_crash_log_path));
+}
+
 static void ons_crash_handler(int sig, siginfo_t *si, void *ctx)
 {
   (void)ctx;
@@ -25,7 +42,7 @@ static void ons_crash_handler(int sig, siginfo_t *si, void *ctx)
   if (reentry) { signal(sig, SIG_DFL); raise(sig); return; }
   reentry = 1;
 
-  int fd = open("/tmp/ons_crash.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  int fd = open(ons_crash_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd >= 0) {
     char buf[256];
     struct timespec ts;
@@ -104,66 +121,91 @@ retro_input_state_t  SDL_libretro_input_state_cb;
 static retro_input_state_t frontend_input_state_cb;   /* the real frontend callback */
 bool SDL_libretro_input_ready = false;
 
+/* Virtual pointer (pad->pointer synthesis) options. Declared before the
+ * synthesizer that reads them: enabled by default so pointer-only UIs stay
+ * reachable out of the box; the stick follows the usual right-stick
+ * convention. */
+enum { POINTER_SOURCE_RIGHT = 0, POINTER_SOURCE_LEFT = 1 };
+static bool opt_pointer_enable = true;
+static int  opt_pointer_source = POINTER_SOURCE_RIGHT;
+
 /* Engine-agnostic RetroPad -> pointer synthesis.
  *
  * RetroArch has no built-in pad-to-pointer mapping (its per-port "Mouse Index"
- * only binds real mouse devices), and some visual-novel UIs — modal Yes/No
- * dialogs in particular — are effectively pointer-only. Rather than patch each
- * engine, wrap the frontend's input callback once, in the core: drive a virtual
- * pointer from the left analog stick and click with L3 (stick click). Both the
- * ONScripter path (via the SDL1.2 overlay) and the KiriKiri path (via
- * krkr_set_input_callbacks) call SDL_libretro_input_state_cb, so both get it.
+ * only binds real mouse devices, and its only synthesized pointer source is
+ * touch -> vmouse), and some visual-novel UIs — modal Yes/No dialogs in
+ * particular — are effectively pointer-only. Rather than patch each engine,
+ * synthesize one here, in the core. Both the ONScripter path (via the SDL1.2
+ * overlay) and the KiriKiri path (via krkr_set_input_callbacks) call
+ * SDL_libretro_input_state_cb, so both get it. The synthesizer reports MOUSE
+ * deltas (which both engines already integrate) and a MOUSE_LEFT press for the
+ * stick click, so no engine-side change is needed.
  *
- * The wrapper reports MOUSE deltas (which both engines already integrate) and
- * MOUSE_LEFT presses for L3, so no engine-side change is needed. */
+ * Whether the pointer is offered, and which stick drives it, are core options
+ * (onscripter-en_pointer_enable / _pointer_source): the core cannot know the
+ * user's pad, so refusing to guess is the point. */
 static int vlx_pos = -1, vly_pos = -1;   /* virtual pointer accumulator, -1 = unset */
 
+/* Synthesize pointer/mouse reads from the stick chosen by opt_pointer_source.
+ * Returns the value for (device,id), or defers to the frontend. Clicking uses
+ * the matching stick button (L3 for the left stick, R3 for the right), so the
+ * "click" input follows the stick the user picked. */
 static int16_t pointer_synth_input_state(unsigned port, unsigned device,
                                           unsigned index, unsigned id)
 {
-  /* Cores/frontends with no physical pointer still need a way to work
-   * pointer-only UIs (modal dialogs). RetroArch has no built-in pad-to-pointer
-   * mapping, so synthesize one here: the RIGHT analog stick moves the pointer
-   * and R3 (right-stick click) clicks. Right stick is the conventional choice
-   * (mirrors how handheld/touch cores emulate a mouse) and leaves the left
-   * stick free for the frontend/other uses. */
-  if (port == 0 && (device == RETRO_DEVICE_MOUSE ||
-                    device == RETRO_DEVICE_POINTER))
-  {
-    int16_t rx = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
-                       RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X);
-    int16_t ry = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG,
-                       RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y);
-    int16_t r3 = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
-                       RETRO_DEVICE_ID_JOYPAD_R3);
-    int moved = 0;
-    if (rx > 4000 || rx < -4000) { vlx_pos = (vlx_pos < 0 ? 0 : vlx_pos) + rx / 4096; moved = 1; }
-    if (ry > 4000 || ry < -4000) { vly_pos = (vly_pos < 0 ? 0 : vly_pos) + ry / 4096; moved = 1; }
+  if (!opt_pointer_enable || port != 0 ||
+      (device != RETRO_DEVICE_MOUSE && device != RETRO_DEVICE_POINTER))
+    return frontend_input_state_cb(port, device, index, id);
 
-    if (device == RETRO_DEVICE_MOUSE)
-    {
-      if (id == RETRO_DEVICE_ID_MOUSE_X) {
-        int16_t r = frontend_input_state_cb(port, device, index, id);
-        return r ? r : (moved ? (int16_t)(rx / 4096) : 0);
-      }
-      if (id == RETRO_DEVICE_ID_MOUSE_Y) {
-        int16_t r = frontend_input_state_cb(port, device, index, id);
-        return r ? r : (moved ? (int16_t)(ry / 4096) : 0);
-      }
-      if (id == RETRO_DEVICE_ID_MOUSE_LEFT) {
-        return frontend_input_state_cb(port, device, index, id) || r3;
-      }
+  bool left_stick = (opt_pointer_source == POINTER_SOURCE_LEFT);
+  unsigned analog_index = left_stick ? RETRO_DEVICE_INDEX_ANALOG_LEFT
+                                     : RETRO_DEVICE_INDEX_ANALOG_RIGHT;
+  unsigned stick_btn    = left_stick ? RETRO_DEVICE_ID_JOYPAD_L3
+                                     : RETRO_DEVICE_ID_JOYPAD_R3;
+
+  int16_t sx = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG, analog_index,
+                     RETRO_DEVICE_ID_ANALOG_X);
+  int16_t sy = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG, analog_index,
+                     RETRO_DEVICE_ID_ANALOG_Y);
+  int16_t click = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, stick_btn);
+  int moved = 0;
+  if (sx > 4000 || sx < -4000) { vlx_pos = (vlx_pos < 0 ? 0 : vlx_pos) + sx / 4096; moved = 1; }
+  if (sy > 4000 || sy < -4000) { vly_pos = (vly_pos < 0 ? 0 : vly_pos) + sy / 4096; moved = 1; }
+
+  if (device == RETRO_DEVICE_MOUSE)
+  {
+    if (id == RETRO_DEVICE_ID_MOUSE_X) {
+      int16_t r = frontend_input_state_cb(port, device, index, id);
+      return r ? r : (moved ? (int16_t)(sx / 4096) : 0);
     }
-    /* A frontend with no pointer device reports 0,0 for the absolute pointer,
-     * which the engines would read as the screen centre; treat that as "no
-     * pointer input". */
-    if (device == RETRO_DEVICE_POINTER &&
-        (id == RETRO_DEVICE_ID_POINTER_X || id == RETRO_DEVICE_ID_POINTER_Y) &&
-        frontend_input_state_cb(0, RETRO_DEVICE_POINTER, 0,
-                                RETRO_DEVICE_ID_POINTER_COUNT) == 0)
-      return 0;
+    if (id == RETRO_DEVICE_ID_MOUSE_Y) {
+      int16_t r = frontend_input_state_cb(port, device, index, id);
+      return r ? r : (moved ? (int16_t)(sy / 4096) : 0);
+    }
+    if (id == RETRO_DEVICE_ID_MOUSE_LEFT)
+      return frontend_input_state_cb(port, device, index, id) || click;
   }
+  /* A frontend with no pointer device reports 0,0 for the absolute pointer,
+   * which the engines would read as the screen centre; treat that as "no
+   * pointer input". */
+  if (device == RETRO_DEVICE_POINTER &&
+      (id == RETRO_DEVICE_ID_POINTER_X || id == RETRO_DEVICE_ID_POINTER_Y) &&
+      frontend_input_state_cb(0, RETRO_DEVICE_POINTER, 0,
+                              RETRO_DEVICE_ID_POINTER_COUNT) == 0)
+    return 0;
+
   return frontend_input_state_cb(port, device, index, id);
+}
+
+/* The one callback installed into every input path. Keeps the synthesizer
+ * optional and clearly separated from plain forwarding: this dispatcher owns
+ * "how the core answers an input read", and pointer_synth_input_state owns the
+ * one synthesized source. Future sources (e.g. a keyboard-to-pad shim) belong
+ * next to it, composed here, not by growing the synthesizer. */
+static int16_t core_input_state_cb(unsigned port, unsigned device,
+                                   unsigned index, unsigned id)
+{
+  return pointer_synth_input_state(port, device, index, id);
 }
 SDL_AudioSpec       *SDL_libretro_audio_spec = NULL;
 SDL_sem             *SDL_libretro_event_sem  = NULL;
@@ -182,7 +224,6 @@ static bool opt_indicators = true;
 static int  opt_debug_level = 0;
 static bool opt_software_cursor = true;
 static int  opt_text_speed = -1;
-static int  opt_ff_speed = 50;
 float opt_mouse_sensitivity = 1.0;
 /* Key remap state */
 #include "key_remap.h"
@@ -405,7 +446,14 @@ static void frame_cb(retro_usec_t usec)
 void retro_init(void)
 {
   { /* Install crash diagnostics so a core fault leaves a backtrace instead of
-     * only RetroArch's bare "Process exitcode: -11". */
+     * only RetroArch's bare "Process exitcode: -11". Resolve the portable log
+     * location first: unlike retro_init, retro_load_game has the save
+     * directory, and it runs after this per load — but RETRO_ENVIRONMENT_GET_
+     * SAVE_DIRECTORY is valid as soon as the environment is set, so ask here
+     * and let retro_load_game refresh it if the directory changes. */
+    const char *save_dir = NULL;
+    if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir))
+      ons_set_crash_log_path(save_dir);
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = ons_crash_handler;
@@ -488,17 +536,19 @@ bool retro_load_game(const struct retro_game_info *game){
   if (!game)
     return false;
 
-  /* Install the pad->pointer synthesizer for every input read by either
-   * engine (ONScripter drives it through the SDL1.2 overlay; KiriKiri through
-   * krkr_set_input_callbacks). Installed here because it needs the game's
-   * surface size to clamp the virtual pointer. */
-  SDL_libretro_input_state_cb = pointer_synth_input_state;
+  /* Install the composed dispatcher for every input read by either engine
+   * (ONScripter drives it through the SDL1.2 overlay; KiriKiri through
+   * krkr_set_input_callbacks). Installed here because the pointer synthesis it
+   * owns needs the game's surface size to clamp the virtual pointer. */
+  SDL_libretro_input_state_cb = core_input_state_cb;
 
   char archive_path[PATH_MAX_LENGTH];
   fill_pathname_basedir(archive_path, game->path, sizeof(archive_path));
   // Get save directory early (needed for KiriKiri path)
   const char *save_dir = NULL;
   environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir);
+  /* Follow the save directory the frontend actually gave us for this load. */
+  ons_set_crash_log_path(save_dir);
 
   /* Per-game save isolation. RetroArch/ES give us a *per-system* directory
    * (savefile_directory = /recalbox/share/saves/vnovel), which is shared by
@@ -553,7 +603,9 @@ bool retro_load_game(const struct retro_game_info *game){
     audio_logf("ENGINE=ONScripter-EN (nscript.dat) save=%s\n", game_save_dir);
   }
   vtable->setArchivePath(engine, archive_path);
-  /* Remember it: retro_reset() recreates the engine and re-applies this.
+  /* Remember the last archive that was run, so later comparisons (a restart
+   * vs. a genuine content change) have something to compare against:
+   * retro_reset() recreates the engine and re-applies last_archive_path.
    * (The KiriKiri branch above sets it too, but returns early.) */
   strncpy(last_archive_path, archive_path, sizeof(last_archive_path) - 1);
   last_archive_path[sizeof(last_archive_path) - 1] = '\0';
@@ -707,9 +759,26 @@ void retro_run(void)
    * here would never be observed. The engine thread instead watches this
    * timestamp: SDL_Delay() blocks when the heartbeat goes stale (see
    * SDL_systimer.c), which freezes text/animation exactly like a pause. */
-  { struct timespec hb; clock_gettime(CLOCK_MONOTONIC, &hb);
+  {
+    struct timespec hb;
+    clock_gettime(CLOCK_MONOTONIC, &hb);
     SDL_libretro_frontend_hb =
-        (unsigned long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000; }
+        (unsigned long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000;
+  }
+
+  /* Pointer options drive the input callback for *both* engines, and the
+   * KiriKiri branch below returns before the main option block, so read them
+   * here where every path sees them. */
+  {
+    struct retro_variable pvar = {0};
+    pvar.key = "onscripter-en_pointer_enable";
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
+      opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
+    pvar.key = "onscripter-en_pointer_source";
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
+      opt_pointer_source = (strcmp(pvar.value, "left") == 0) ? POINTER_SOURCE_LEFT
+                                                             : POINTER_SOURCE_RIGHT;
+  }
 
   // KiriKiri engine path: read from SDL_libretro_surface
   // Use void* to avoid SDL 1.2/SDL2 type conflict
@@ -729,9 +798,12 @@ void retro_run(void)
     /* Frontend poll heartbeat. RetroArch has no core-visible pause callback
      * (it never calls retro_run while paused, and 1.22 does not use
      * retro_pause/retro_unpause), so pause is signalled implicitly: the engine
-     * idles its loop once this stop being refreshed. Stamp it every frame. */
-    { struct timespec hb; clock_gettime(CLOCK_MONOTONIC, &hb);
-      krkr_notify_poll((long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000); }
+     * idles its loop once this stops being refreshed. Stamp it every frame. */
+    {
+      struct timespec hb;
+      clock_gettime(CLOCK_MONOTONIC, &hb);
+      krkr_notify_poll((long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000);
+    }
     /* libretro fast-forward: lift the engine's frame limiter and skip the
      * core's own pacing below so it runs unthrottled. */
     bool kiri_ff = false;
@@ -778,9 +850,11 @@ void retro_run(void)
       int h = *(int*)(s + 20);
       int pitch = *(int*)(s + 24);
       void *pixels = *(void**)(s + 32);
-      /* Trace every geometry change so we can tell a genuine CRT SuperRez
-       * mode (large but sane, e.g. 1920x240) from a dangling-surface read
-       * (garbage like 2097259x6225971). */
+      /* Trace every geometry change. Two things appear here: a genuine CRT
+       * SuperRez mode (large but sane, e.g. 1920x240) versus a dangling-surface
+       * read (garbage like 2097259x6225971), and a surface being replaced by
+       * another one that took over rendering (a modal/dialog, say) — which is
+       * exactly why the code below only ever *grows* the reported geometry. */
       {
         static int tw = -1, th = -1, tp = -1;
         if (w != tw || h != th || pitch != tp) {
@@ -792,12 +866,15 @@ void retro_run(void)
       /* Sanity-bound the geometry before using it. SDL_libretro_surface is a
        * pointer the engine publishes from another thread; if it dangles (or
        * points at a half-freed surface) these fields are garbage and the
-       * downstream pitch*h copy faults. A genuine CRT SuperRez mode has a
-       * large *horizontal* resolution and a small vertical one (e.g.
-       * 1920x240); giant numbers on both axes, and especially a vertical
-       * resolution beyond any real mode, mean the surface is bogus. Drop the
-       * frame rather than trust it. */
-      if (w <= 0 || h <= 0 || w > 8192 || h > 2048 ||
+       * downstream pitch*h copy faults. A genuine CRT SuperRez mode is wide
+       * and short (e.g. 1920x240), so the horizontal cap is generous (8192)
+       * while the vertical one stays at real 4K-vertical (2160); garbage is
+       * overwhelmingly negative or gigantic (2097259x6225971 above), so
+       * bounds that are merely a bit loose still catch the vast majority.
+       * Note the caps are asymmetric on purpose: a square 8192x8192 surface
+       * would be 256 MiB at 32bpp, which is not a frame anyone ships. Drop
+       * the frame rather than trust it. */
+      if (w <= 0 || h <= 0 || w > 8192 || h > 2160 ||
           pitch < w * 2 || pitch > w * 8) {
         static int last_dbg = 0;
         if (last_dbg < 8) {
@@ -856,41 +933,56 @@ void retro_run(void)
             memcpy(kshadow, pixels, fb);
             int kpitch = pitch / 4;
             if (opt_software_cursor) {
-            int cx = 0, cy = 0;
-            krkr_get_mouse_pos(&cx, &cy);
-            /* cx/cy are negative until real pointer input arrives; draw
-             * nothing then (a clipped arrow would otherwise appear at the
-             * top-left corner). */
-            /* 12x18 arrow cursor; '#' = black, '.' = white outline, ' ' = clear */
-            static const char *arrow[18] = {
-              "##          ",
-              "#.#         ",
-              "#..#        ",
-              "#...#       ",
-              "#....#      ",
-              "#.....#     ",
-              "#......#    ",
-              "#.......#   ",
-              "#........#  ",
-              "#.........# ",
-              "#..........#",
-              "#.....######",
-              "#..#.#      ",
-              "#.#..#      ",
-              "##...#      ",
-              "#....#      ",
-              " #..#       ",
-              "  ##        ",
-            };
-            for (int dy = 0; dy < 18 && cx >= 0 && cy >= 0; dy++) {
-              for (int dx = 0; dx < 12; dx++) {
-                char c = arrow[dy][dx];
-                if (c == ' ') continue;
-                int sx = cx + dx, sy = cy + dy;
-                if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
-                kshadow[sy * kpitch + sx] = (c == '#') ? 0xFF000000 : 0xFFFFFFFF;
+              int cx = 0, cy = 0;
+              krkr_get_mouse_pos(&cx, &cy);
+              /* cx/cy are negative until real pointer input arrives; nothing
+               * is drawn then (a clipped arrow would otherwise appear at the
+               * top-left corner). */
+              /* Pre-rendered 12x18 cursor sprite: the art below is interpreted
+               * once, into opaque pixels (0 = transparent), then each frame is
+               * a straight blit instead of a character test per pixel. '#' =
+               * black body, '.' = white outline, ' ' = clear. The stem is
+               * offset from the tip, classic Windows-arrow shape. */
+              #define ONS_CURSOR_ART \
+                "##          ", \
+                "#.#         ", \
+                "#..#        ", \
+                "#...#       ", \
+                "#....#      ", \
+                "#.....#     ", \
+                "#......#    ", \
+                "#.......#   ", \
+                "#........#  ", \
+                "#.........# ", \
+                "#..........#", \
+                "#.....######", \
+                " #..#.#     ", \
+                " #.#..#     ", \
+                " ##...#     ", \
+                " #....#     ", \
+                "  #..#      ", \
+                "   ##       "
+              static Uint32 cursor_sprite[18 * 12];
+              static bool   cursor_ready = false;
+              if (!cursor_ready) {
+                static const char *const cursor_art[18] = { ONS_CURSOR_ART };
+                for (int dy = 0; dy < 18; dy++)
+                  for (int dx = 0; dx < 12; dx++) {
+                    char ch = cursor_art[dy][dx];
+                    cursor_sprite[dy * 12 + dx] = (ch == '#') ? 0xFF000000u
+                                                : (ch == '.') ? 0xFFFFFFFFu : 0u;
+                  }
+                cursor_ready = true;
               }
-            }
+              for (int dy = 0; dy < 18 && cx >= 0 && cy >= 0; dy++) {
+                for (int dx = 0; dx < 12; dx++) {
+                  Uint32 v = cursor_sprite[dy * 12 + dx];
+                  if (!v) continue;
+                  int sx = cx + dx, sy = cy + dy;
+                  if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+                  kshadow[sy * kpitch + sx] = v;
+                }
+              }
             } /* opt_software_cursor */
             /* Mode indicators (top-right), matching the ons/pons colors. */
             {
@@ -1016,12 +1108,23 @@ void retro_run(void)
 
   var.key = "onscripter-en_fastforward_speed";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    if (strcmp(var.value, "2x") == 0)       { SDL_libretro_ff_mult = 2;  SDL_libretro_ff_speed = 10; }
-    else if (strcmp(var.value, "4x") == 0)  { SDL_libretro_ff_mult = 4;  SDL_libretro_ff_speed = 25; }
-    else if (strcmp(var.value, "8x") == 0)  { SDL_libretro_ff_mult = 8;  SDL_libretro_ff_speed = 50; }
-    else if (strcmp(var.value, "16x") == 0) { SDL_libretro_ff_mult = 16; SDL_libretro_ff_speed = 100; }
-    else if (strcmp(var.value, "32x") == 0) { SDL_libretro_ff_mult = 32; SDL_libretro_ff_speed = 200; }
-    else if (strcmp(var.value, "max") == 0) { SDL_libretro_ff_mult = 64; SDL_libretro_ff_speed = 400; }
+    int mult = 0;
+    if (strcmp(var.value, "2x") == 0)       mult = 2;
+    else if (strcmp(var.value, "4x") == 0)  mult = 4;
+    else if (strcmp(var.value, "8x") == 0)  mult = 8;
+    else if (strcmp(var.value, "16x") == 0) mult = 16;
+    else if (strcmp(var.value, "32x") == 0) mult = 32;
+    else if (strcmp(var.value, "max") == 0) mult = 64;
+    if (mult) {
+      /* Two independent mechanisms, pinned in a fixed ratio so they cannot
+       * drift apart: ff_mult divides the SDL timer interval (SDL_timer.c:
+       * interval / ff_mult), while ff_speed is milliseconds of game time
+       * added per frame (SDL_systimer.c reads ff_offset, accumulated in
+       * retro_run as ff_offset += ff_speed). 6 ms per unit keeps the "Nx"
+       * label roughly honest across the whole range. */
+      SDL_libretro_ff_mult  = mult;
+      SDL_libretro_ff_speed = mult * 6;
+    }
   }
 
   var.key = "onscripter-en_mouse_sensitivity";

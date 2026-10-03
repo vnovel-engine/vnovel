@@ -59,10 +59,37 @@ struct retro_core_option_definition option_defs_us[] = {
          { "disabled", NULL },
          { NULL, NULL },
       },
+     "enabled"
+   },
+   {
+      "onscripter-en_pointer_enable",
+      "Virtual Pointer",
+      "When the frontend reports no real mouse/touch device, drive an "
+      "on-screen pointer from a gamepad so pointer-only UIs (modal Yes/No "
+      "dialogs) are reachable. Enable this only where the pad would "
+      "otherwise be the only input.",
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL },
+      },
       "enabled"
    },
    {
-      "onscripter-en_text_speed",
+      "onscripter-en_pointer_source",
+      "Virtual Pointer Stick",
+      "Which analog stick moves the virtual pointer. The other stick stays "
+      "free for the frontend. Click is always the matching stick button "
+      "(L3/R3).",
+      {
+         { "right", NULL },
+         { "left",  NULL },
+         { NULL, NULL },
+      },
+      "right"
+   },
+   {
+      "onscripter-en_ff_speed",
       "Text Speed",
       "Override the engine's text display speed. 'default' uses the "
       "game's built-in speed. Slower speeds display characters one by "

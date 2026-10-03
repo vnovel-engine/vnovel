@@ -172,6 +172,12 @@ static void DUMMY_UnlockHWSurface(_THIS, SDL_Surface *surface)
 SDL_sem *SDL_libretro_wait_sem = NULL;
 SDL_sem *SDL_libretro_rendered_sem = NULL;
 bool SDL_libretro_paused = false;
+/* Frontend heartbeat, milliseconds on CLOCK_MONOTONIC: retro_run() stamps it
+ * every frame. The engine thread treats a stale value as "the frontend stopped
+ * feeding us" (its menu is open, the core is paused) and idles — see the
+ * SDL_Delay path in SDL_systimer.c. This is how core pause is signalled at all,
+ * since RetroArch calls no core-visible pause callback and simply stops calling
+ * retro_run. 0 = never stamped. */
 volatile unsigned long long SDL_libretro_frontend_hb = 0;
 bool SDL_libretro_fastforward = false;
 int SDL_libretro_ff_speed = 50;
