@@ -828,6 +828,30 @@ void retro_reset(void)
 
 extern "C" void SDL_ThreadedTimerCheck(void);
 
+/* Read the Fast-Forward Speed option and install it as the game clock's rate.
+ * Both the KiriKiri and ONS paths need this: the KiriKiri branch returns before
+ * the per-frame option block that owns the parse, so without an explicit call
+ * there `opt_ff_scale` stays 1.0 and FF never dilates KiriKiri's timed work. */
+static void read_ff_speed_option(void)
+{
+  struct retro_variable var = {0};
+  var.key = "onscripter_en_fastforward_speed";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+    int mult = 0;
+    if (strcmp(var.value, "2x") == 0)       mult = 2;
+    else if (strcmp(var.value, "4x") == 0)  mult = 4;
+    else if (strcmp(var.value, "8x") == 0)  mult = 8;
+    else if (strcmp(var.value, "16x") == 0) mult = 16;
+    else if (strcmp(var.value, "32x") == 0) mult = 32;
+    else if (strcmp(var.value, "max") == 0) mult = 64;
+    /* The multiplier is the FF RATE for the single game clock: the clock
+     * dilates by `mult` while FF is on, so every timed engine event (ONS/PON
+     * timers via SDL_GetTicks, KiriKiri timers via the installed clock)
+     * accelerates by the same factor. */
+    opt_ff_scale = mult > 0 ? (double)mult : 1.0;
+  }
+}
+
 void retro_run(void)
 {
   /* Frontend heartbeat for the ONS/PONS engine thread. RetroArch stops
@@ -885,6 +909,29 @@ void retro_run(void)
     bool kiri_ff = false;
     environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &kiri_ff);
     krkr_set_fastforward(kiri_ff ? 1 : 0);
+    /* Drive the single game clock. The `!vtable` KiriKiri branch returns before
+     * the install block further down, so the rate must be set here too — without
+     * this the clock stays at 1.0 for KiriKiri and all timed work (typewriter,
+     * transitions, script waits) ignores fast-forward even though frame-driven
+     * work speeds up. Same cached compare as the other branch. */
+    {
+      read_ff_speed_option();               /* KiriKiri returns before the main option block */
+      double want = kiri_ff ? opt_ff_scale : 1.0;
+      if (want != clock_scale_applied) {
+        clock_scale_applied = want;
+        ons_libretro_clock_set(want);
+      }
+      static int kcdbg = -1;
+      if (kcdbg < 0) kcdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
+      if (kcdbg) {
+        static int kcdbg_count = 0;
+        if (++kcdbg_count >= 30) {
+          kcdbg_count = 0;
+          fprintf(stderr, "[clock] kiri ff=%d scale=%.3f t=%lldms\n",
+                  (int)kiri_ff, clock_scale_applied, ons_libretro_game_clock_ms());
+        }
+      }
+    }
     /* Pace to 60 fps. The engine's fpslimit plugin is a no-op and its main
      * loop has no pacing, so RetroArch would otherwise call retro_run as fast
      * as the video driver allows (600+ fps unlocked), copying and uploading a
@@ -1181,21 +1228,7 @@ void retro_run(void)
     }
   }
 
-  var.key = "onscripter_en_fastforward_speed";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    int mult = 0;
-    if (strcmp(var.value, "2x") == 0)       mult = 2;
-    else if (strcmp(var.value, "4x") == 0)  mult = 4;
-    else if (strcmp(var.value, "8x") == 0)  mult = 8;
-    else if (strcmp(var.value, "16x") == 0) mult = 16;
-    else if (strcmp(var.value, "32x") == 0) mult = 32;
-    else if (strcmp(var.value, "max") == 0) mult = 64;
-    /* The multiplier is the fast-forward RATE for the single game clock: the
-     * clock dilates by `mult` while FF is on, so every timed engine event
-     * (ONS/PON timers via SDL_GetTicks, KiriKiri timers via the installed
-     * clock) accelerates by the same factor. */
-    opt_ff_scale = mult > 0 ? (double)mult : 1.0;
-  }
+  read_ff_speed_option();   /* shared with the KiriKiri branch (line ~917) */
 
   var.key = "onscripter_en_mouse_sensitivity";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1240,6 +1273,18 @@ void retro_run(void)
     if (want != clock_scale_applied) {
       clock_scale_applied = want;
       ons_libretro_clock_set(want);
+    }
+    /* ONS_CLOCK_DEBUG: ~2 Hz trace of the live clock so a human can watch the
+     * bias grow at (scale-1)x while FF is on and freeze when it is off. */
+    static int cdbg = -1;
+    if (cdbg < 0) cdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
+    if (cdbg) {
+      static int cdbg_count = 0;
+      if (++cdbg_count >= 30) {
+        cdbg_count = 0;
+        fprintf(stderr, "[clock] ff=%d scale=%.3f t=%lldms\n",
+                (int)ff, clock_scale_applied, ons_libretro_game_clock_ms());
+      }
     }
   }
   if (!engine || !vtable) return;
@@ -1464,6 +1509,12 @@ void retro_unload_game(void)
   SDL_libretro_paused = false;
   SDL_libretro_in_reset = true;   /* suspend the pause gate until we're gone */
   SDL_libretro_frontend_hb = 0;
+  /* Close content ends this run: drop the FF epoch/bias and rebase the clock so
+   * the next load starts on a fresh timeline (retro_load_game is not guaranteed
+   * to follow a reset, and a frozen bias would otherwise leak into the new
+   * game). Mirrors retro_reset(). */
+  ons_libretro_clock_reset();
+  clock_scale_applied = -1.0;     /* force retro_run to re-install the rate */
 
   if (!vtable) {
     // KiriKiri path: shut down the krkrsdl2 engine thread cleanly.

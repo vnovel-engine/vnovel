@@ -238,6 +238,9 @@ long long ons_libretro_game_clock_ms(void)
 void ons_libretro_clock_set(double scale)
 {
   clock_scale = (scale > 1.0) ? scale : 1.0;
+  if (getenv("ONS_CLOCK_DEBUG"))
+    fprintf(stderr, "[clock] set scale=%.3f (bias=%lld epoch=%lld)\n",
+            clock_scale, clock_bias_ms, clock_epoch_ms);
 }
 
 /* Restart the clock (e.g. on core reset). A reset begins a new run: the wall
@@ -250,6 +253,7 @@ void ons_libretro_clock_reset(void)
   clock_epoch_bias = 0;
   clock_bias_ms    = 0;
   clock_base_ms    = 0;   /* nonzero check in game_clock_ms rebases on next call */
+  if (getenv("ONS_CLOCK_DEBUG")) fprintf(stderr, "[clock] reset\n");
 }
 
 static void DUMMY_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
