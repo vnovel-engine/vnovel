@@ -1,4 +1,5 @@
 #include <SDL_libretro.h>
+#include <time.h>
 #include <sdl/src/video/SDL_pixels_c.h>
 #include <sdl/src/video/dummy/SDL_nullvideo.h>
 #include <sdl/src/video/dummy/SDL_nullevents_c.h>
@@ -187,12 +188,69 @@ bool SDL_libretro_in_reset = false;
  * retro_run. 0 = never stamped. */
 volatile unsigned long long SDL_libretro_frontend_hb = 0;
 bool SDL_libretro_fastforward = false;
-int SDL_libretro_ff_speed = 50;
-Uint32 SDL_libretro_ff_offset = 0;
-/* Fast-forward multiplier from the "Fast-Forward Speed" core option
- * (1 / 2 / 4 / 8 / 16 / 32 / 64 for 2x..max). Used to scale timer intervals
- * so text/animation advance at the selected speed instead of always max. */
-int SDL_libretro_ff_mult = 8;
+
+/* ---- The single game clock ------------------------------------------------
+ * Engines must not each invent their own fast-forward time dilation: that is
+ * how ONS and KiriKiri drifted (different rate definitions, one frame-count
+ * based and one wall-time based). Instead the core owns one clock and every
+ * engine reads it — ONS through SDL_GetTicks() (same .so), KiriKiri through a
+ * callback installed with krkr_set_clock() (separate .so, cdecl function
+ * pointer is safe across the dlopen boundary).
+ *
+ * Definition: real monotonic time, plus a bias that grows at (scale-1)x while
+ * fast-forward is on, derived from an epoch so it never depends on frame rate
+ * or per-iteration rounding. On release the bias freezes, so the clock stays
+ * monotonic and deltas remain correct.
+ *
+ * The core drives the state with ons_libretro_clock_set()/_reset(); scale 1
+ * means no acceleration. */
+static long long clock_bias_ms   = 0;   /* accumulated virtual ms */
+static double    clock_scale     = 1.0; /* current fast-forward multiplier */
+static long long clock_epoch_ms  = -1;  /* FF-on epoch (monotonic), -1 = off */
+static long long clock_epoch_bias= 0;   /* bias captured at FF-on */
+static long long clock_base_ms   = 0;   /* offset subtracted so the first
+                                         * returned value starts near 0 */
+
+static long long mono_ms(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+long long ons_libretro_game_clock_ms(void)
+{
+  long long now = mono_ms();
+  if (clock_scale > 1.0)                          /* fast-forward active */
+  {
+    if (clock_epoch_ms < 0) { clock_epoch_ms = now; clock_epoch_bias = clock_bias_ms; }
+    clock_bias_ms = clock_epoch_bias
+                  + (long long)((now - clock_epoch_ms) * (clock_scale - 1.0));
+  }
+  else
+  {
+    clock_epoch_ms = -1;                          /* freeze the bias */
+  }
+  if (clock_base_ms == 0) clock_base_ms = now;    /* first call: start at 0 */
+  return (now - clock_base_ms) + clock_bias_ms;
+}
+
+void ons_libretro_clock_set(double scale)
+{
+  clock_scale = (scale > 1.0) ? scale : 1.0;
+}
+
+/* Restart the clock (e.g. on core reset). A reset begins a new run: the wall
+ * clock rebases to ~0 and any fast-forward bias is dropped, so the restarted
+ * engine reads a fresh timeline instead of the previous run's elapsed time.
+ * The scale is left to the core's FF state (retro_run re-sets it on change). */
+void ons_libretro_clock_reset(void)
+{
+  clock_epoch_ms   = -1;
+  clock_epoch_bias = 0;
+  clock_bias_ms    = 0;
+  clock_base_ms    = 0;   /* nonzero check in game_clock_ms rebases on next call */
+}
 
 static void DUMMY_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 {

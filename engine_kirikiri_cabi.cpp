@@ -14,6 +14,9 @@ typedef unsigned int Uint32;
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+/* The core's single game clock (sdl-libretro/video.c); installed into the
+ * engine via krkr_set_clock. C linkage — defined in C, consumed from C++. */
+extern "C" long long ons_libretro_game_clock_ms(void);
 /* libretro input device constants (from libretro.h) */
 #define KRKR_RETRO_DEVICE_POINTER 6        /* RETRO_DEVICE_POINTER (was wrongly 0x104) */
 #define KRKR_RETRO_DEVICE_JOYPAD  1
@@ -171,6 +174,16 @@ int krkr_init(EngineHandle engine) {
     p_set_resolution = (krkr_set_resolution_t)dlsym(krkr_dl, "krkr_set_resolution");
     p_prepare_restart = (void (*)(void))dlsym(krkr_dl, "krkrsdl2_prepare_restart");
     p_request_quit = (void (*)(void))dlsym(krkr_dl, "krkrsdl2_request_quit");
+    /* Install the core's single game clock into the engine: every KiriKiri
+     * timer/transition/script wait then reads the same dilated time the core
+     * computes (fast-forward included), instead of the engine keeping its own
+     * clock state. Must happen before the engine thread starts. */
+    {
+        void (*p_set_clock)(long long (*)(void)) =
+            (void (*)(long long (*)(void)))dlsym(krkr_dl, "krkr_set_clock");
+        if (p_set_clock) p_set_clock(ons_libretro_game_clock_ms);
+        else fprintf(stderr, "krkr_init: engine lacks krkr_set_clock\n");
+    }
     /* Re-arm the engine's process-global one-shot latches before the new thread
      * starts. On the very first load the engine is fresh and every reset below
      * is a no-op; on a restart (the .so stays mapped, so the previous run's

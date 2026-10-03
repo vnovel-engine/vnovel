@@ -224,6 +224,11 @@ static bool opt_indicators = true;
 static int  opt_debug_level = 0;
 static bool opt_software_cursor = true;
 static int  opt_text_speed = -1;
+/* Fast-forward rate for the single game clock (1.0 = off, N = "Nx"). */
+static double opt_ff_scale = 1.0;
+/* Rate currently installed in the clock; cached so retro_run only calls
+ * ons_libretro_clock_set() when it actually changes. */
+static double clock_scale_applied = -1.0;
 float opt_mouse_sensitivity = 1.0;
 /* Key remap state */
 #include "key_remap.h"
@@ -784,6 +789,7 @@ void retro_reset(void)
   SDL_libretro_paused = false;
   SDL_libretro_in_reset = true;
   SDL_libretro_frontend_hb = 0;   /* re-armed by the next retro_run */
+  ons_libretro_clock_reset();     /* drop any in-flight FF epoch */
 
   /* KiriKiri runs with vtable == NULL and its engine thread lives in the cabi.
    * Reset is a two-part, engine-owned handshake: request that the engine return
@@ -1184,16 +1190,11 @@ void retro_run(void)
     else if (strcmp(var.value, "16x") == 0) mult = 16;
     else if (strcmp(var.value, "32x") == 0) mult = 32;
     else if (strcmp(var.value, "max") == 0) mult = 64;
-    if (mult) {
-      /* Two independent mechanisms, pinned in a fixed ratio so they cannot
-       * drift apart: ff_mult divides the SDL timer interval (SDL_timer.c:
-       * interval / ff_mult), while ff_speed is milliseconds of game time
-       * added per frame (SDL_systimer.c reads ff_offset, accumulated in
-       * retro_run as ff_offset += ff_speed). 6 ms per unit keeps the "Nx"
-       * label roughly honest across the whole range. */
-      SDL_libretro_ff_mult  = mult;
-      SDL_libretro_ff_speed = mult * 6;
-    }
+    /* The multiplier is the fast-forward RATE for the single game clock: the
+     * clock dilates by `mult` while FF is on, so every timed engine event
+     * (ONS/PON timers via SDL_GetTicks, KiriKiri timers via the installed
+     * clock) accelerates by the same factor. */
+    opt_ff_scale = mult > 0 ? (double)mult : 1.0;
   }
 
   var.key = "onscripter_en_mouse_sensitivity";
@@ -1230,8 +1231,17 @@ void retro_run(void)
   bool ff = false;
   environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &ff);
   SDL_libretro_fastforward = ff;
-  if (ff) SDL_libretro_ff_offset += SDL_libretro_ff_speed;
-  else SDL_libretro_ff_offset = 0;
+  /* Drive the single game clock. Only touch it when the effective rate
+   * actually changes (FF on/off, or the option changed) — a plain double
+   * compare per frame, no store, no call in the common case. `scale` is the
+   * Nx only while FF is on; 1.0 otherwise. */
+  {
+    double want = ff ? opt_ff_scale : 1.0;
+    if (want != clock_scale_applied) {
+      clock_scale_applied = want;
+      ons_libretro_clock_set(want);
+    }
+  }
   if (!engine || !vtable) return;
   int av_enable = 1;
   if (environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av_enable) && !(av_enable & 1)) {

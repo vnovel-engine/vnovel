@@ -57,11 +57,14 @@ extern volatile unsigned long long SDL_libretro_frontend_hb;
 void SDL_libretro_get_mouse_pos(int *x, int *y);
 /* When true, fast-forward is active — timers fire immediately */
 extern bool SDL_libretro_fastforward;
-/* Fast-forward time acceleration (ms added per SDL_GetTicks call) */
-extern int SDL_libretro_ff_speed;
-extern int SDL_libretro_ff_mult;
-/* Fast-forward time offset (accumulated once per frame in retro_run) */
-extern Uint32 SDL_libretro_ff_offset;
+
+/* The single game clock (see sdl-libretro/video.c). Engines read this for all
+ * time and the core sets the fast-forward scale. `scale` <= 1.0 = no
+ * acceleration. The clock is monotonic and never jumps backwards when
+ * fast-forward toggles. */
+long long ons_libretro_game_clock_ms(void);
+void      ons_libretro_clock_set(double scale);
+void      ons_libretro_clock_reset(void);
 
 #ifdef __cplusplus
 }
