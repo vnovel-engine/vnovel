@@ -60,7 +60,12 @@ LINK_LIBS_unix   := -ldl -lpthread
 # be resolvable (--no-undefined) or the loader would fault at call time. The
 # core keeps the version script (link.T) so only retro_* is exported; the
 # runtime deliberately does not, since the engines resolve SDL by name there.
-SHARED_NOUNDEF = -shared $(MOD_STATIC_RT) -Wl,--no-undefined
+# The engine modules export their vtable (libretro.cpp calls it by name); on
+# PE the automatic export set is unreliable for i686 — the vtable is transient
+# and ld exported it on x86_64 but not on i686 — so MOD_EXPORTS exports them
+# explicitly on the mingw platform (empty on ELF, where the default is enough).
+MOD_EXPORTS =
+SHARED_NOUNDEF = -shared $(MOD_STATIC_RT) $(MOD_EXPORTS) -Wl,--no-undefined
 
 # Shared-module extension and the flags that name one. PE has no SONAME; the
 # loader finds a DLL by name in the module's own directory, which is the
@@ -132,7 +137,9 @@ else ifeq ($(platform), aarch64)
    CXXFLAGS += $(shell pkg-config --cflags freetype2 2>/dev/null)
    CFLAGS   += $(shell pkg-config --cflags freetype2 2>/dev/null)
 else ifeq ($(platform), mingw)
-   CROSS    := x86_64-w64-mingw32-
+   # Overridable so the same block builds x86_64 and i686 (win32):
+   #   make platform=mingw CROSS=i686-w64-mingw32-
+   CROSS    ?= x86_64-w64-mingw32-
    TARGET    := $(TARGET_NAME)_libretro.dll
    MOD_EXT   := .dll
    MOD_RPATH :=
@@ -166,6 +173,15 @@ else ifeq ($(platform), mingw)
    # linking the system -lbz2 as well collides (multiple definition of
    # BZ2_bzRead*). freetype needs zlib and brotli, which we do not vend.
    MOD_RT_LIBS   = -Wl,-Bstatic -lwinpthread -lfreetype -lz -lbrotlidec -lbrotlicommon -Wl,-Bdynamic
+   # i686 only: the vendored bzip2 exports stdcall-decorated BZ2_bzDecompress@4
+   # (bzlib.h's WINAPI on 32-bit), but the system i686 freetype static archive
+   # references the plain cdecl BZ2_bzDecompress. They do not match, so libfreetype
+   # cannot get bzip2 from our runtime on 32-bit; link the system static bz2,
+   # whose cdecl names match. Only needed when the target has a `b` in its
+   # arch name (i686); x86_64 freetype has no bzip2 dependency at all.
+   ifneq (,$(filter i686%,$(CROSS)))
+   MOD_RT_LIBS   := $(subst -lfreetype,-lfreetype -lbz2,$(MOD_RT_LIBS))
+   endif
    # Drop the dynamic -lpthread/-lfreetype that Makefile.common appends: ld would
    # see those first, satisfy the symbols from the import libraries, and never
    # pull in the static copies above — leaving the DLL importing them.
@@ -206,6 +222,10 @@ else ifeq ($(platform), mingw)
    # or the renamed SDL symbols they link against it. The runtime is internal
    # glue, not a public API, so exporting all of it is the right scope.
    RUNTIME_EXPORTS = -Wl,--export-all-symbols -Wl,--exclude-libs,ALL
+   # Same for the engine modules: export all so the vtable and the engine's
+   # entry points land in the import library the core links. i686 did not
+   # export the transient vtable automatically.
+   MOD_EXPORTS     = -Wl,--export-all-symbols -Wl,--exclude-libs,ALL
 
 else ifeq ($(platform), win)
    # Native Windows (MSVC not supported; use mingw platform for cross-compile)
