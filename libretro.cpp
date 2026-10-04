@@ -616,9 +616,9 @@ bool retro_load_game(const struct retro_game_info *game){
     fill_pathname_join(game_save_dir, root, base, sizeof(game_save_dir));
   }
 
-  // Internal rendering resolution. "native" lets the game/script decide;
-  // otherwise ask the engine to render at a fixed size. Must happen before
-  // init(), which is where the engine sizes its surface. Read once here so both
+  // Internal rendering resolution. "native" uses the host display size;
+  // otherwise tell the engine the frontend expects a fixed resolution, so it
+  // sizes itself (and its window/layer) from that. Read once here so both
   // engines see the same value: ONS via vtable->setResolution below, KiriKiri
   // via krkr_set_resolution in its branch.
   int forced_res_w = 0, forced_res_h = 0;
@@ -645,11 +645,12 @@ bool retro_load_game(const struct retro_game_info *game){
     mkdir_p(game_save_dir);
     krkr_setSavePath(engine, game_save_dir);
     strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
-    /* Force the engine's internal resolution so KiriKiri renders natively at
-     * the target size (no post-scaling by the core). The request is stashed by
-     * the cabi and applied when krkr_init resolves the engine's setter, before
-     * the engine thread builds its main window. 0,0 is a no-op: the game's own
-     * scWidth/scHeight applies. */
+    /* Tell the engine the frontend's expected resolution so KiriKiri sizes
+     * itself (System.screenWidth/screenHeight) from it. The request is stashed
+     * by the cabi and applied when krkr_init resolves the engine's setter, so
+     * the engine sees it before it builds its main window. 0,0 is a no-op: the
+     * host display size applies. The engine's SDL surface is not forced; the
+     * core scales the finished frame. */
     if (forced_res_w > 0 && forced_res_h > 0) {
       krkr_set_resolution(forced_res_w, forced_res_h);
       log_cb(RETRO_LOG_INFO, "Internal resolution: forced %dx%d\n", forced_res_w, forced_res_h);
