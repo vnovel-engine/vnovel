@@ -3,7 +3,8 @@
 #endif
 // engine_kirikiri_cabi.cpp — C ABI wrapper for krkrsdl2 engine (dlopen approach)
 //
-// krkrsdl2 is built as a separate shared library (libkrkrsdl2.so) to avoid
+// krkrsdl2 is built as a separate shared library (onscripter-en_engine_krkrsdl2,
+// an engine module beside the core like the ONS/PONScripter ones) to avoid
 // SDL 1.2/SDL2 symbol conflicts. This wrapper dlopen's it at runtime.
 // RTLD_DEEPBIND ensures krkrsdl2 uses its own SDL2, not the core's SDL 1.2.
 typedef unsigned int Uint32;
@@ -77,14 +78,17 @@ typedef void (*krkr_set_resolution_t)(int, int);
 // Global surface pointer — void* to avoid SDL 1.2/SDL2 type conflict
 extern "C" void *SDL_libretro_surface = NULL;
 
-/* The engine's shared-library file name, per platform. The loader below is
- * otherwise platform-neutral: it dlopen's whatever this expands to. */
+/* The engine's shared-library file name, per platform. It is a libretro engine
+ * module like the ONS/PONScripter ones, so it follows the same
+ * onscripter-en_engine_<name>.<ext> convention with no "lib" prefix anywhere.
+ * The loader below is otherwise platform-neutral: it dlopen's whatever this
+ * expands to. */
 #if defined(_WIN32)
-#  define KRKR_ENGINE_SONAME "krkrsdl2.dll"
+#  define KRKR_ENGINE_SONAME "onscripter-en_engine_krkrsdl2.dll"
 #elif defined(__APPLE__)
-#  define KRKR_ENGINE_SONAME "libkrkrsdl2.dylib"
+#  define KRKR_ENGINE_SONAME "onscripter-en_engine_krkrsdl2.dylib"
 #else
-#  define KRKR_ENGINE_SONAME "libkrkrsdl2.so"
+#  define KRKR_ENGINE_SONAME "onscripter-en_engine_krkrsdl2.so"
 #endif
 /* Join a directory and the engine library name into `out`. */
 static void krkr_join(char *out, size_t n, const char *dir)
@@ -170,9 +174,10 @@ int krkr_init(EngineHandle engine) {
     fprintf(stderr, "krkr_init: starting\n");
 
     /* The engine is dlopened (not linked) because it needs SDL2 while this
-     * core links SDL 1.2. On a packaged install libkrkrsdl2.so lives in
-     * /usr/lib (the loader's default search path); a dev tree can point at a
-     * local build via KRKRSDL2_LIB_PATH for convenience. */
+     * core links SDL 1.2. On a packaged install the engine module lives in
+     * the core directory (or the loader's default search path) under
+     * KRKR_ENGINE_SONAME; a dev tree can point at a local build via
+     * KRKRSDL2_LIB_PATH for convenience. */
     const char *override = getenv("KRKRSDL2_LIB_PATH");
     if (override && *override) {
         krkr_dl = dlopen(override, RTLD_NOW | RTLD_DEEPBIND);
@@ -233,7 +238,9 @@ int krkr_init(EngineHandle engine) {
         }
     }
     if (!krkr_dl) {
-        fprintf(stderr, "Failed to load libkrkrsdl2.so: %s\n", dlerror());
+        /* Name the file actually looked for, not a hardcoded one: this
+         * message is the first thing to read when a game shows no video. */
+        fprintf(stderr, "Failed to load %s: %s\n", KRKR_ENGINE_SONAME, dlerror());
         return -1;
     }
     p_pre_init = (krkrsdl2_pre_init_platform_t)dlsym(krkr_dl, "_Z26krkrsdl2_pre_init_platformv");
@@ -349,7 +356,7 @@ extern "C" void krkr_get_mouse_pos(int *x, int *y) { if (x) *x = krkr_mouse_x; i
  *     and tears the application down — only after the thread has exited, so it
  *     is safe.
  *   Phase 2 (start): krkr_start() re-arms the engine's process-global latches
- *     (the .so is never unmapped — glibc retains libkrkrsdl2, a relocation
+ *     (the module is never unmapped — glibc retains it, a relocation
  *     dependency of libz/libpng/libogg/libstdc++) and re-creates the thread.
  *
  * krkr_shutdown() is the blocking form for permanent teardown (unload/deinit),
@@ -492,7 +499,17 @@ void krkr_pump_events(void) {
     { static int sb = 0; if (!sb) { setvbuf(stderr, NULL, _IONBF, 0); sb = 1; } }
     static int (*p_SDL_PushEvent)(void*) = NULL;
     if (!p_SDL_PushEvent) {
-        p_SDL_PushEvent = (int(*)(void*))dlsym(RTLD_DEFAULT, "SDL_PushEvent");
+        /* The event must go to the *engine's* SDL2 — the one whose event queue
+         * the engine's loop blocks on — so resolve from the engine handle
+         * first. That handle is the only lookup that is correct on every
+         * platform: on Windows RTLD_DEFAULT is the host exe (no SDL2) and the
+         * bare soname below is a Linux name; on Linux the module's SDL2 is
+         * RTLD_DEEPBIND-private and the global scope may hold the frontend's
+         * unrelated SDL2 instead. The engine exports SDL_PushEvent on Windows
+         * via its .def and on Linux through its vendored SDL2. */
+        p_SDL_PushEvent = (int(*)(void*))dlsym(krkr_dl, "SDL_PushEvent");
+        if (!p_SDL_PushEvent)
+            p_SDL_PushEvent = (int(*)(void*))dlsym(RTLD_DEFAULT, "SDL_PushEvent");
         if (!p_SDL_PushEvent) {
             void *sdl2 = dlopen("libSDL2-2.0.so.0", RTLD_NOW | RTLD_NOLOAD);
             if (!sdl2) sdl2 = dlopen("libSDL2-2.0.so.0", RTLD_LAZY);
@@ -764,6 +781,18 @@ static int krkr_audio_resolved = 0;
  * Resolved lazily alongside the ring; 0 until the engine has published it. */
 extern "C" int krkr_audio_rate(void) {
     return (krkr_audio_resolved && krkr_audio_freq_ptr) ? *krkr_audio_freq_ptr : 0;
+}
+
+/* Channel count the engine's ring is interleaved at, and the writer's monotonic
+ * frame counter — both for diagnostics. */
+static int *krkr_audio_ch_ptr = NULL;
+extern "C" int krkr_audio_channels(void) {
+    if (!krkr_audio_resolved) return 0;
+    if (!krkr_audio_ch_ptr) krkr_audio_ch_ptr = (int*)dlsym(krkr_dl, "SDL_libretro_audio_channels");
+    return krkr_audio_ch_ptr ? *krkr_audio_ch_ptr : 0;
+}
+extern "C" int krkr_audio_written(void) {
+    return (krkr_audio_resolved && krkr_audio_w_ptr) ? *krkr_audio_w_ptr : 0;
 }
 
 extern "C" int krkr_get_audio(int16_t *out_buf, int max_frames) {

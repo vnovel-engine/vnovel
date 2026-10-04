@@ -43,10 +43,48 @@
  * inside the handler loses the dump by design, which is acceptable for a
  * diagnostic path. */
 static char ons_crash_log_path[PATH_MAX_LENGTH] = "ons_crash.log";
+
+/* --- Path canonicalization -------------------------------------------------
+ * The core holds one internal path form: '/' separators, no trailing
+ * separator. A frontend hands back native paths (on Windows, '\'), and the
+ * engines open files and directories with whatever they are given, so a
+ * canonical path is realized — separators translated for the platform — only
+ * at the boundary where it is handed to an engine (or used for the crash log).
+ * Every site in between (splitting a game name off a directory, nesting the
+ * per-game save dir, building a probe path) then works in the one form and
+ * needs no platform knowledge. */
+static void canon_path(char *out, size_t n, const char *in)
+{
+  if (!out || n == 0) return;
+  if (!in) { out[0] = '\0'; return; }
+  size_t j = 0;
+  for (size_t i = 0; in[i] && j + 1 < n; i++) out[j++] = (in[i] == '\\') ? '/' : in[i];
+  while (j > 1 && out[j - 1] == '/') j--;
+  out[j] = '\0';
+}
+/* Realize a canonical path for the platform. Returns `scratch` (a native copy)
+ * on Windows, or `canon` itself where the native form is already canonical. */
+static const char *realize_path(const char *canon, char *scratch, size_t n)
+{
+#ifdef _WIN32
+  if (!scratch || n == 0) return canon;
+  size_t j = 0;
+  for (size_t i = 0; canon[i] && j + 1 < n; i++) scratch[j++] = (canon[i] == '/') ? '\\' : canon[i];
+  scratch[j] = '\0';
+  return scratch;
+#else
+  (void)scratch; (void)n;
+  return canon;
+#endif
+}
+
 static void ons_set_crash_log_path(const char *dir)
 {
-  if (dir && dir[0])
-    fill_pathname_join(ons_crash_log_path, dir, "ons_crash.log", sizeof(ons_crash_log_path));
+  if (dir && dir[0]) {
+    char cdir[PATH_MAX_LENGTH];
+    canon_path(cdir, sizeof(cdir), dir);
+    fill_pathname_join(ons_crash_log_path, cdir, "ons_crash.log", sizeof(ons_crash_log_path));
+  }
 }
 
 #if !defined(_WIN32)
@@ -282,6 +320,15 @@ static retro_environment_t         environ_cb;
  * retro_set_environment. */
 static EngineHandle engine = nullptr;
 static const EngineVTable *vtable = nullptr;
+
+/* Frontend audio-ring occupancy (percent full), last reported by the
+ * audio-buffer-status callback. -1 until the first report. It is the only
+ * feedback the core gets about the ring it feeds; the KiriKiri submit rate is
+ * steered by it. */
+static volatile int krkr_ring_occupancy = -1;
+/* Frontend's forecast that the ring will run dry during the next frame. The
+ * submit controller acts on this and on the occupancy above. */
+static volatile int krkr_underrun_likely = 0;
 /* Wrapper called from retro_run to dump engine state to a FILE* */
 static void engine_dump_state(EngineHandle h, FILE *f)
 {
@@ -312,7 +359,9 @@ static void audio_logf(const char *fmt, ...)
 }
 
 /* Recursive mkdir (all components). Needed because per-game save dirs are
- * nested: <savedir>/<game>/ and ons_mkdir() is a plain single-level mkdir. */
+ * nested: <savedir>/<game>/ and ons_mkdir() is a plain single-level mkdir.
+ * Both separators are honoured: a Windows path from the frontend uses '\' and
+ * splitting on '/' alone would pass the whole path to a single-level mkdir. */
 static void mkdir_p(const char *path)
 {
   char tmp[PATH_MAX_LENGTH];
@@ -320,7 +369,12 @@ static void mkdir_p(const char *path)
   if (len == 0 || len >= sizeof(tmp)) return;
   memcpy(tmp, path, len + 1);
   for (char *p = tmp + 1; *p; p++) {
-    if (*p == '/') { *p = '\0'; ons_mkdir(tmp); *p = '/'; }
+    if (*p == '/' || *p == '\\') {
+      char sep = *p;
+      *p = '\0';
+      ons_mkdir(tmp);
+      *p = sep;
+    }
   }
   ons_mkdir(tmp);
 }
@@ -409,6 +463,31 @@ void retro_set_environment(retro_environment_t cb)
     }
   };
   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK, &update_cb);
+
+  /* Audio buffer occupancy reporting. The frontend calls this once per frame
+   * with the audio ring's occupancy (percent full) and raises `underrun_likely`
+   * when it expects the ring to run dry during the next frame. This is the only
+   * feedback the core gets about the ring it feeds — RetroArch's own statistics
+   * printout is #ifdef DEBUG and only at deinit — and the KiriKiri submit
+   * controller steers on it (see krkr_abuf_drain). We also log transitions so
+   * an underrun shows up in the core stderr log with a timestamp. */
+  static struct retro_audio_buffer_status_callback audio_status_cb = {
+    [] (bool active, unsigned occupancy, bool underrun_likely) {
+      static bool last_underrun = false;
+      static unsigned n = 0;
+      if (active) {
+        krkr_ring_occupancy = (int)occupancy;
+      }
+      krkr_underrun_likely = underrun_likely ? 1 : 0;
+      /* Log only on state change (and the first report), not every frame. */
+      if (n++ == 0 || underrun_likely != last_underrun) {
+        fprintf(stderr, "audio_status: active=%d occupancy=%u%% underrun_likely=%d\n",
+                active ? 1 : 0, occupancy, underrun_likely ? 1 : 0);
+        last_underrun = underrun_likely;
+      }
+    }
+  };
+  environ_cb(RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK, &audio_status_cb);
 
   // Shoulder buttons as mouse clicks, matching the KiriKiri shim and the
   // RetroPad convention: L = left click (the primary act: confirm/advance),
@@ -581,7 +660,98 @@ extern "C" {
   void krkr_push_key(int sym, int down);
   int krkr_get_audio(int16_t *out_buf, int max_frames);
   int krkr_audio_rate(void);
+  int krkr_audio_channels(void);
+  int krkr_audio_written(void);
   void krkr_shutdown(void);
+}
+
+/* --- KiriKiri audio buffer ------------------------------------------------
+ * Holds the engine's mixed output between retro_run calls. The engine produces
+ * in device quanta (1024 frames = 21.33 ms at 48 kHz) while retro_run runs at
+ * the video rate, so production and consumption do not line up per call; this
+ * buffer absorbs the phase difference. Each call drains it whole into the
+ * frontend (see kiri_frame). */
+#define KRKR_ABUF_MAX (48000 / 60 * 8)   /* ~133 ms at 60 fps */
+#define KRKR_QUANTUM (1024)              /* engine device quantum (FAUDIO_1024_QUANTUM) */
+static int16_t krkr_abuf[KRKR_ABUF_MAX * 2];
+static int krkr_abuf_len = 0;            /* frames currently buffered */
+static int krkr_abuf_dropped = 0;        /* frames discarded on overflow */
+static int krkr_abuf_peak = 0;           /* high-water mark of krkr_abuf_len */
+
+/* Move everything the engine currently has into the buffer. When full, the
+ * oldest half is dropped: audio is a stream, and a stalled consumer must not
+ * make this grow without bound. */
+static void krkr_abuf_fill(void)
+{
+  const int space = KRKR_ABUF_MAX - krkr_abuf_len;
+  if (space <= 0) {
+    /* No room: discard the oldest half to make way (audio is a stream). */
+    int keep = KRKR_ABUF_MAX / 2;
+    memmove(krkr_abuf, krkr_abuf + (krkr_abuf_len - keep) * 2,
+            (size_t)keep * 2 * sizeof(int16_t));
+    krkr_abuf_dropped += krkr_abuf_len - keep;
+    krkr_abuf_len = keep;
+  }
+  int got = krkr_get_audio(krkr_abuf + krkr_abuf_len * 2, KRKR_ABUF_MAX - krkr_abuf_len);
+  if (got > 0) krkr_abuf_len += got;
+  if (krkr_abuf_len > krkr_abuf_peak) krkr_abuf_peak = krkr_abuf_len;
+}
+
+/* Submit audio to the frontend, steered by RetroArch's audio-buffer-status
+ * callback. Returns frames sent.
+ *
+ * This follows the libretro audio contract the way a normal core does: submit
+ * the frames the frontend's device is consuming for the elapsed time —
+ * elapsed_ms * rate / 1000, with the sub-frame remainder carried — so the
+ * average is exactly the device rate and each call is smooth. RetroArch's own
+ * pipe (audio/audio_driver.c) then holds about one frame in steady state and
+ * rate-controls the device; a core blocks there only by over-submitting.
+ *
+ * The amount is drawn from the engine's captured ring. The engine's mixer runs
+ * on its paced dummy device on its own thread, so its production is not exactly
+ * aligned with our calls: sub-frame amounts are carried in `owed` so the long
+ * run is exact, and a short ring is not padded.
+ *
+ * A large gap between calls is a pause (the frontend stops calling retro_run
+ * while its menu is open or the window is unfocused), not audio owed. Accruing
+ * it would make the core repay the whole pause as one catch-up burst on resume,
+ * which overfills the frontend's ring and blocks the core — the accumulating
+ * slowdown. And the engine keeps producing for the first moments of a pause
+ * before it notices, leaving a backlog that would otherwise never drain and
+ * persist as growing latency. On such a gap the debt is cleared and the stale
+ * audio is discarded: late audio has no value in a visual novel. */
+static int krkr_abuf_drain(int rate)
+{
+  static long long last_ms = 0;
+  static long long owed = 0;             /* fractional frames owed */
+  long long now = ons_libretro_game_clock_ms();
+  long long dt = last_ms ? now - last_ms : 0;
+  last_ms = now;
+  if (dt < 0 || dt > 250) {              /* first call, or resumed from a pause */
+    owed = 0;
+    /* Drain and discard whatever the engine produced while unpolled. */
+    int g;
+    do { g = krkr_get_audio(krkr_abuf, KRKR_ABUF_MAX); } while (g == KRKR_ABUF_MAX);
+    krkr_abuf_len = 0;
+    return 0;
+  }
+  krkr_abuf_fill();
+  owed += dt * (long long)rate;
+  if (owed > (long long)rate * 1000) owed = (long long)rate * 1000;  /* 1 s cap */
+  long long want = owed / 1000;
+  if (want < 0) want = 0;
+  int send = (int)want;
+  if (send > krkr_abuf_len) send = krkr_abuf_len;   /* never pad */
+  if (send > 0 && audio_batch_cb) {
+    owed -= (long long)send * 1000;
+    if (owed < 0) owed = 0;
+    audio_batch_cb(krkr_abuf, (size_t)send);
+    memmove(krkr_abuf, krkr_abuf + send * 2,
+            (size_t)(krkr_abuf_len - send) * 2 * sizeof(int16_t));
+    krkr_abuf_len -= send;
+    return send;
+  }
+  return 0;
 }
 
 /* RetroArch keyboard callback -> engine key queue (KiriKiri). Also feeds the
@@ -629,6 +799,13 @@ bool retro_load_game(const struct retro_game_info *game){
 
   char archive_path[PATH_MAX_LENGTH];
   fill_pathname_basedir(archive_path, game->path, sizeof(archive_path));
+  /* From here on archive_path and game_save_dir are canonical ('/' separators,
+   * no trailing slash) and every intermediate use assumes that one form. */
+  {
+    char canon[PATH_MAX_LENGTH];
+    canon_path(canon, sizeof(canon), archive_path);
+    snprintf(archive_path, sizeof(archive_path), "%s/", canon);
+  }
   // Get save directory early (needed for KiriKiri path)
   const char *save_dir = NULL;
   environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir);
@@ -643,7 +820,8 @@ bool retro_load_game(const struct retro_game_info *game){
    * and nest under it. */
   char game_save_dir[PATH_MAX_LENGTH];
   {
-    /* archive_path is like ".../vnovel/Tsukihime/" -> take the last component */
+    /* archive_path is canonical and ends in '/': drop that and take the last
+     * component — the game folder name. */
     char trimmed[PATH_MAX_LENGTH];
     strncpy(trimmed, archive_path, sizeof(trimmed) - 1);
     trimmed[sizeof(trimmed) - 1] = '\0';
@@ -651,8 +829,10 @@ bool retro_load_game(const struct retro_game_info *game){
     while (tl > 0 && trimmed[tl - 1] == '/') trimmed[--tl] = '\0';
     const char *base = strrchr(trimmed, '/');
     base = base ? base + 1 : trimmed;
-    const char *root = (save_dir && save_dir[0]) ? save_dir : archive_path;
+    char root[PATH_MAX_LENGTH];
+    canon_path(root, sizeof(root), (save_dir && save_dir[0]) ? save_dir : archive_path);
     fill_pathname_join(game_save_dir, root, base, sizeof(game_save_dir));
+    canon_path(game_save_dir, sizeof(game_save_dir), game_save_dir);
   }
 
   // Internal rendering resolution. "native" uses the host display size;
@@ -680,9 +860,12 @@ bool retro_load_game(const struct retro_game_info *game){
     engine = krkr_create();
     log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (data.xp3)\n");
     audio_logf("ENGINE=KiriKiri (data.xp3) save=%s\n", game_save_dir);
-    krkr_setArchivePath(engine, archive_path);
-    mkdir_p(game_save_dir);
-    krkr_setSavePath(engine, game_save_dir);
+    {
+      char na[PATH_MAX_LENGTH], ns[PATH_MAX_LENGTH];
+      krkr_setArchivePath(engine, realize_path(archive_path, na, sizeof(na)));
+      mkdir_p(game_save_dir);
+      krkr_setSavePath(engine, realize_path(game_save_dir, ns, sizeof(ns)));
+    }
     strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
     /* Tell the engine the frontend's expected resolution so KiriKiri sizes
      * itself (System.screenWidth/screenHeight) from it. The request is stashed
@@ -716,7 +899,10 @@ bool retro_load_game(const struct retro_game_info *game){
     log_cb(RETRO_LOG_INFO, "Using ONScripter-EN engine (nscript.dat)\n");
     audio_logf("ENGINE=ONScripter-EN (nscript.dat) save=%s\n", game_save_dir);
   }
-  vtable->setArchivePath(engine, archive_path);
+  {
+    char na[PATH_MAX_LENGTH];
+    vtable->setArchivePath(engine, realize_path(archive_path, na, sizeof(na)));
+  }
   /* Remember the last archive that was run, so later comparisons (a restart
    * vs. a genuine content change) have something to compare against:
    * retro_reset() recreates the engine and re-applies last_archive_path.
@@ -726,15 +912,13 @@ bool retro_load_game(const struct retro_game_info *game){
 
   // Per-game save directory (see above). Fall back to the game dir if
   // RetroArch gave us no save directory at all.
-  if (save_dir && save_dir[0]) {
-    mkdir_p(game_save_dir);
-    vtable->setSavePath(engine, game_save_dir);
-    strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
-    test_output_dir = strdup(game_save_dir);
-  } else {
-    vtable->setSavePath(engine, archive_path);
-    strncpy(last_save_path, archive_path, sizeof(last_save_path));
-    test_output_dir = strdup(archive_path);
+  {
+    const char *sp = (save_dir && save_dir[0]) ? game_save_dir : archive_path;
+    char ns[PATH_MAX_LENGTH];
+    mkdir_p(sp);
+    vtable->setSavePath(engine, realize_path(sp, ns, sizeof(ns)));
+    strncpy(last_save_path, sp, sizeof(last_save_path));
+    test_output_dir = strdup(sp);
   }
 
   // Auto-detect encryption key from .exe in game directory.
@@ -861,8 +1045,9 @@ void retro_reset(void)
   if (vtable) {
     engine = vtable->create();
     if (engine) {
-      vtable->setArchivePath(engine, last_archive_path);
-      vtable->setSavePath(engine, last_save_path);
+      char na[PATH_MAX_LENGTH], ns[PATH_MAX_LENGTH];
+      vtable->setArchivePath(engine, realize_path(last_archive_path, na, sizeof(na)));
+      vtable->setSavePath(engine, realize_path(last_save_path, ns, sizeof(ns)));
       vtable->setDebugLevel(engine, opt_debug_level);
       if (vtable->setAudioPaused) vtable->setAudioPaused(engine, 0);
       if (vtable->startThread) vtable->startThread(engine);
@@ -1264,36 +1449,38 @@ static void kiri_frame(void)
     } else {
       video_cb(NULL, 0, 0, 0);
     }
-    // Audio: drain everything the engine has produced this frame and emit
-    // exactly that. RetroArch's audio_sync adapts its pacing to the amount we
-    // submit, so padding to a fixed frame count (previously 735) caused
-    // periodic underruns -> "choppy" playback. The engine runs at 48kHz
-    // (see -wsfreq in engine_kirikiri_cabi.cpp) and we advertise the same.
+    /* Audio (KiriKiri): submit what the engine has produced, once per call
+     * (see krkr_abuf_drain). */
     {
-      static int16_t audio_buf[16384 * 2];
-      /* Submit about one frame of audio, not the whole ring.
-       *
-       * The engine's FAudio thread produces audio in real time (48000 Hz) into
-       * a 16384-frame ring. If the engine ever gets ahead — a hitch, a pause, a
-       * slow first frame — the ring holds a large backlog, and draining it in
-       * full every frame means we hand RetroArch far more than real time. With
-       * audio_sync on, RA's threaded pipeline publishes into a ring of only
-       * AUDIO_PIPE_RING_FRAMES (3) video frames and blocks the core in an
-       * eventcount wait when that fills, so an over-submitting core stalls the
-       * whole frame (observed: 150-220 ms frame times, ~2% CPU, sawtooth) until
-       * fast-forward switches the pipeline to its non-blocking state.
-       *
-       * A video-novel core has no use for a multi-frame audio backlog: dropping
-       * it is strictly better than playing it late. So bound the submit to
-       * ceil(rate/fps) plus a little slack, and drop whatever is beyond it by
-       * advancing the read pointer (audio is a stream; stale samples have no
-       * value). The ring's own lapped-writer guard is not enough — the surplus
-       * must be discarded here, between frames. */
-      const int sub_rate = krkr_audio_rate() ? krkr_audio_rate() : 48000;
-      const int per_frame = sub_rate / 60 + 16;       /* one video frame + slack */
-      int got = krkr_get_audio(audio_buf, per_frame);
-      if (got > 0 && audio_batch_cb)
-        audio_batch_cb(audio_buf, got);
+      const int rate = krkr_audio_rate() ? krkr_audio_rate() : 48000;
+      int got = krkr_abuf_drain(rate);
+      /* Audio diagnosis: what the engine's ring says its rate is, what the
+       * frontend was told, and how many frames we actually hand it per second.
+       * If the ring rate and the frontend rate disagree (or the produced rate
+       * drifts from the ring rate), that is the slowdown/underrun signature.
+       * One line per second, to the same log as everything else. */
+      {
+        static long long t0 = 0;
+        static int frames_out = 0;
+        long long now = ons_libretro_game_clock_ms();
+        frames_out += got;
+        if (t0 == 0) {
+          t0 = now;
+          fprintf(stderr, "krkr_audio: ring_rate=%d advertised=%d ch=%d\n",
+                  krkr_audio_rate(), krkr_audio_rate(), krkr_audio_channels());
+        } else if (now - t0 >= 1000) {
+          double secs = (double)(now - t0) / 1000.0;
+          static int last_written = 0;
+          int written = krkr_audio_written();
+          int produced = last_written ? written - last_written : 0;
+          last_written = written;
+          fprintf(stderr, "krkr_audio: out=%.0f fps produced=%d/s ring_occ=%d%% buf_pk=%d drop=%d ch=%d\n",
+                  frames_out / secs, produced, krkr_ring_occupancy,
+                  krkr_abuf_peak, krkr_abuf_dropped, krkr_audio_channels());
+          t0 = now;
+          frames_out = 0;
+        }
+      }
     }
 }
 
