@@ -18,6 +18,7 @@ deploy-recalbox.py
 
 # generated font embed (from resources/fonts/*.ttf)
 resources/fonts/fallback_font.h
+resources/fonts/extra_fallback_font.h
 
 # build output (make: build/$(platform)/)
 build/

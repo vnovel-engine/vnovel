@@ -158,6 +158,12 @@ extern DECLSPEC int SDLCALL TTF_GlyphMetrics(TTF_Font *font, Uint16 ch,
  * clear. Returns 0 on success, -1 if the buffer could not be parsed. */
 extern DECLSPEC int SDLCALL TTF_SetFallbackFontMem(const unsigned char *data, int size);
 
+/* Register an ADDITIONAL in-memory fallback, tried in order when the primary
+ * fallback lacks a codepoint. One font cannot cover everything these games use:
+ * a CJK clone has no Latin-1 accents, and a Latin font has no CJK. Up to
+ * TTF_MAX_EXTRA_FALLBACKS may be added. Returns 0 on success. */
+extern DECLSPEC int SDLCALL TTF_AddFallbackFontMem(const unsigned char *data, int size);
+
 /* Get the dimensions of a rendered string of text */
 extern DECLSPEC int SDLCALL TTF_SizeText(TTF_Font *font, const char *text, int *w, int *h);
 extern DECLSPEC int SDLCALL TTF_SizeUTF8(TTF_Font *font, const char *text, int *w, int *h);

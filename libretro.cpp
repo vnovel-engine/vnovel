@@ -15,6 +15,7 @@
 /* Vendored fallback font, generated from resources/fonts/ by the Makefile;
  * registered in retro_init for glyphs the game fonts lack. */
 #include "fallback_font.h"
+#include "extra_fallback_font.h"
 
 /* Crash diagnostics: on SIGSEGV/SIGBUS/SIGABRT dump the fault address and a
  * symbolicated backtrace to the crash log, then re-raise so the default
@@ -507,12 +508,19 @@ void retro_init(void)
 
   /* The game fonts used by ONScripter have no U+2026, and the bundled
    * stb_truetype glyph layer has no fontconfig fallback, so a substituted
-   * ellipsis rendered as .notdef. Register the vendored fallback font
-   * (resources/fonts/, OFL — embedded by the Makefile) for any codepoint the
-   * game font lacks. */
+   * ellipsis rendered as .notdef. Register the vendored fallback fonts
+   * (resources/fonts/, embedded by the Makefile) for any codepoint the game
+   * font lacks.
+   *
+   * Two fonts, because neither covers everything these games use: Mona is a
+   * CJK / MS PGothic clone (excellent CJK, no Latin-1 accents), FiraSans is a
+   * Latin face (no CJK). Mona is primary so Japanese and ellipsis resolve; the
+   * Latin font is the secondary, used for accented Latin a game font lacks. */
   {
     extern int TTF_SetFallbackFontMem(const unsigned char *data, int size);
+    extern int TTF_AddFallbackFontMem(const unsigned char *data, int size);
     TTF_SetFallbackFontMem(fallback_font_ttf, fallback_font_ttf_len);
+    TTF_AddFallbackFontMem(extra_fallback_font_ttf, extra_fallback_font_ttf_len);
   }
 }
 

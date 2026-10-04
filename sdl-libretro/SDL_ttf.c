@@ -78,6 +78,47 @@ int TTF_SetFallbackFontMem(const unsigned char *data, int size)
     return 0;
 }
 
+/* Additional fallbacks, tried in order when the primary fallback lacks a
+ * codepoint. Needed because one font cannot cover everything these games use:
+ * Mona is a CJK/MS PGothic clone (no Latin-1 accents), while a Latin font has
+ * no CJK. The core registers both, so whichever carries the glyph wins. */
+#define TTF_MAX_EXTRA_FALLBACKS 4
+static struct {
+    stbtt_fontinfo info;
+    SDL_RWops *src;
+    int loaded;
+} s_extra_fallback[TTF_MAX_EXTRA_FALLBACKS];
+
+int TTF_AddFallbackFontMem(const unsigned char *data, int size)
+{
+    for (int i = 0; i < TTF_MAX_EXTRA_FALLBACKS; i++) {
+        if (s_extra_fallback[i].loaded) continue;
+        if (!data || size <= 0) return -1;
+        s_extra_fallback[i].src = SDL_RWFromConstMem(data, size);
+        if (!s_extra_fallback[i].src) return -1;
+        if (!stbtt_InitFont(&s_extra_fallback[i].info, s_extra_fallback[i].src,
+                            stbtt_GetFontOffsetForIndex(s_extra_fallback[i].src, 0))) {
+            SDL_RWclose(s_extra_fallback[i].src);
+            s_extra_fallback[i].src = NULL;
+            return -1;
+        }
+        s_extra_fallback[i].loaded = 1;
+        return 0;
+    }
+    return -1;
+}
+
+/* First loaded extra fallback that carries `ch`, or NULL. */
+static const stbtt_fontinfo *TTF_ExtraFallbackFor(Uint16 ch)
+{
+    for (int i = 0; i < TTF_MAX_EXTRA_FALLBACKS; i++) {
+        if (!s_extra_fallback[i].loaded) continue;
+        if (stbtt_FindGlyphIndex(&s_extra_fallback[i].info, ch) != 0)
+            return &s_extra_fallback[i].info;
+    }
+    return NULL;
+}
+
 /* Pick the font for `ch`. The engine lays text out in fixed half-width cells
  * and places glyphs using the game font's ascent, so substituting a
  * proportional Latin font for ordinary text breaks inheriting advance/metrics.
@@ -120,6 +161,14 @@ static const stbtt_fontinfo *TTF_PickFont(TTF_Font *font, Uint16 ch, int *glyph,
                 *glyph = fg;
                 *scale = stbtt_ScaleForPixelHeight(&s_fallback.info, font->height);
                 return &s_fallback.info;
+            }
+            /* The primary fallback lacks this codepoint (e.g. a CJK fallback
+             * asked for an accented Latin letter). Try the additional ones. */
+            const stbtt_fontinfo *extra = TTF_ExtraFallbackFor(ch);
+            if (extra) {
+                *glyph = stbtt_FindGlyphIndex(extra, ch);
+                *scale = stbtt_ScaleForPixelHeight(extra, font->height);
+                return extra;
             }
         }
         *glyph = g;

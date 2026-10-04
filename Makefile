@@ -175,24 +175,40 @@ PONS_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.pons.o,$(PONS_CXX)) \
              $(patsubst %.c,$(BUILD_DIR)/%.pons.o,$(PONS_C))
 
 # Vendored fallback font (stb_truetype has no fontconfig fallback); embedded as
-# a C header at build time. The TTF + its OFL licence live in resources/fonts/.
-FALLBACK_FONT      := resources/fonts/FiraSans-Regular.ttf
+# a C header at build time. The TTF + its licence live in resources/fonts/.
+#
+# Mona is the CJK fallback here and in the KiriKiri engine, so all three engines
+# render Japanese identically. It is a metric-compatible MS PGothic clone
+# (Shinonome-derived, effectively public domain — MONA-LICENSE.txt), which suits
+# this use better than the previous Latin-only FiraSans: it carries the CJK
+# codepoints the game fonts lack, and its fixed-pitch Latin metrics match the
+# half-width cells ONScripter lays text out in.
+FALLBACK_FONT      := resources/fonts/mona.ttf
 FALLBACK_FONT_HDR  := resources/fonts/fallback_font.h
+# Secondary fallback, tried when the primary lacks a codepoint. Mona is a CJK
+# clone (no Latin-1 accents); FiraSans covers Latin. Between them every codepoint
+# these games use resolves.
+EXTRA_FALLBACK_FONT     := resources/fonts/FiraSans-Regular.ttf
+EXTRA_FALLBACK_FONT_HDR := resources/fonts/extra_fallback_font.h
 
 # Make symlinks first so .o files can find their sources
-all: $(FALLBACK_FONT_HDR) $(TARGET)
+all: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR) $(TARGET)
 
-# --- Embedded fallback font --------------------------------------------------
-# Generate a C header from the vendored TTF at build time (the 480 KB font stays
-# a normal file in resources/fonts/, with its OFL licence alongside).
+# --- Embedded fallback fonts -------------------------------------------------
+# Generate a C header from each vendored TTF at build time (the fonts stay
+# normal files in resources/fonts/, with their licences alongside).
 $(FALLBACK_FONT_HDR): $(FALLBACK_FONT)
 	@echo "EMBED $(FALLBACK_FONT)"
 	$(Q)python3 tools/embed_font.py $(FALLBACK_FONT) $@
 
+$(EXTRA_FALLBACK_FONT_HDR): $(EXTRA_FALLBACK_FONT)
+	@echo "EMBED $(EXTRA_FALLBACK_FONT)"
+	$(Q)python3 tools/embed_font.py $(EXTRA_FALLBACK_FONT) $@
+
 # libretro.cpp includes the generated header; CORE_DIR is ".", so its object is
 # build/$(platform)/./libretro.o. Make the header before it compiles (the .d
 # file already tracks the header's contents after that).
-$(BUILD_DIR)/./libretro.o: $(FALLBACK_FONT_HDR)
+$(BUILD_DIR)/./libretro.o: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR)
 
 # Include compiler-generated header dependencies (-MMD). If a header changes,
 # the objects that include it rebuild. Missing .d files (first build) are
