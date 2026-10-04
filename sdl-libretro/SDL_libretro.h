@@ -66,8 +66,6 @@ extern bool SDL_libretro_fastforward;
 long long ons_libretro_game_clock_ms(void);
 void      ons_libretro_clock_set(double scale);
 void      ons_libretro_clock_reset(void);
-void      ons_libretro_clock_pause(void);
-void      ons_libretro_clock_resume(void);
 
 #ifdef __cplusplus
 }

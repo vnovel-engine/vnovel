@@ -1345,13 +1345,11 @@ void retro_run(void)
   int av_enable = 1;
   if (environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av_enable) && !(av_enable & 1)) {
     SDL_libretro_paused = true;
-    ons_libretro_clock_pause();   /* no game time accrues while paused */
     return;
   }
   // Unpause: clear flag and drain accumulated timer events
   if (SDL_libretro_paused) {
     SDL_libretro_paused = false;
-    ons_libretro_clock_resume();  /* continue from the pause instant */
     SDL_Event ev;
     while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
       ;
