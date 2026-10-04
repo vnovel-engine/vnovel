@@ -203,13 +203,29 @@ with no rendering.
 
 ### Frame synchronization and pacing
 
-The engine runs on its own thread. There is no longer an event semaphore
-gating it: `SDL_libretro_event_sem` is created and destroyed but never
-waited on. The engine's own event loop supplies the pacing — PONScripter's
-`eventLoop()` blocks in `SDL_WaitEvent()`, which polls via
-`SDL_Delay(10)`, and `SDL_AddTimer` timers (text/animation) are driven by
-the 1 ms SDL timer thread. `retro_run()` pumps input each frame and
-displays the current framebuffer; `DUMMY_UpdateRects` is a no-op.
+The engine runs on its own thread. There is no event semaphore gating it:
+`SDL_libretro_event_sem` is created and destroyed but never waited on. The
+engine's own event loop supplies the pacing — PONScripter's `eventLoop()`
+blocks in `SDL_WaitEvent()`, which polls via `SDL_Delay(10)`, and
+`SDL_AddTimer` timers (text/animation) are driven by the 1 ms SDL timer
+thread. `retro_run()` pumps input each frame and displays the current
+framebuffer; `DUMMY_UpdateRects` is a no-op.
+
+**Single game clock.** All engine time reads `ons_libretro_game_clock_ms()`
+(`sdl-libretro/video.c`), which the core dilates. `retro_run()` compares the
+effective rate (the Fast-Forward Speed option while FF is on, else 1.0) each
+frame and calls `ons_libretro_clock_set()` only when it *changes*, so the
+common case is one double compare with no store. Every timed engine event —
+ONS/PON `SDL_GetTicks` timers and KiriKiri timers alike — accelerates by the
+same factor, and the clock is monotonic (it never jumps backwards when FF
+toggles). (The earlier per-callable `SDL_libretro_ff_mult` / `ff_offset`
+approach was replaced by this single clock.)
+
+**KiriKiri pacing.** The KiriKiri engine's own fpslimiter is a no-op and its
+main loop has no pacing, so `retro_run()`'s KiriKiri path caps it at 60 fps
+with an explicit `nanosleep`; FF bypasses that cap. Audio is the other half:
+see *Audio submission* below — pacing and audio submission together are what
+keep the KiriKiri frame time correct.
 
 **Pause.** RetroArch stops calling `retro_run()` entirely while its menu is
 open, so a flag set inside `retro_run()` is never observed by the engine.
@@ -220,17 +236,43 @@ set. Because every engine loop reaches `SDL_Delay`, this freezes text,
 animations and audio at once. `hb == 0` (before the first `retro_run`) is
 treated as running, to avoid a start-up deadlock.
 
-**Fast-forward.** `retro_run()` reports fast-forward to the SDL layer, and
-the Fast-Forward Speed core option sets `SDL_libretro_ff_mult` (2…64).
-`SDL_AddTimer` divides its interval by that multiplier so text/animation
-advance at the selected rate. `SDL_GetTicks()` also advances by
-`SDL_libretro_ff_offset`, so script-side timing compresses consistently.
-
 **Reset.** `retro_reset()` stops the engine thread (posting `SDL_QUIT`),
 destroys the engine, recreates it and re-applies `last_archive_path` /
 `last_save_path`. Both must be recorded for every engine at load time; an
 empty archive path makes PONScripter's `DirPaths::get_all_paths()` walk an
 empty container and abort.
+
+### Audio submission (do not over-submit)
+
+The core must hand RetroArch **about one video frame of audio per frame**, and
+drop anything beyond that. RetroArch's threaded audio pipeline publishes into a
+ring of only `AUDIO_PIPE_RING_FRAMES` (3) video frames and **blocks the core in
+an eventcount wait** when that ring is full; a core that submits a multi-frame
+backlog therefore stalls its own frame loop (observed as 150–220 ms frame times
+at ~2 % CPU, a sawtooth, "cured" by fast-forward — which merely puts the ring in
+its non-blocking state). A visual novel has no use for late audio, so the
+surplus is discarded rather than played. The KiriKiri path accordingly submits
+`ceil(rate/60) + slack` frames and advances past the rest; the ONS/PONS path
+submits `(freq/60)` rounded up to the mixer's block size. Advertise the rate the
+engine actually opened (`spec->freq`), not a hardcoded one.
+
+### `retro_run()` structure
+
+`retro_run()` is a dispatcher, not a monolith. It picks the engine path and
+delegates to named helpers, so each concern is testable and readable:
+
+| Helper | Responsibility |
+|---|---|
+| `stamp_frontend_heartbeat()` | stamp `SDL_libretro_frontend_hb` (pause signal) |
+| `read_pointer_options()` | read the pointer core options (all engines) |
+| `kiri_frame()` | the whole KiriKiri frame (input, pacing, clock, video, audio) |
+| `read_frame_options()` | per-frame core-option re-read (Quick Menu hot-reload) |
+| `ons_drive_clock()` | set the single game clock's rate from FF/options |
+| `ons_present_frame()` | framebuffer hand-off plus shadow overlays (badges, cursor) |
+| `ons_submit_audio()` | drain the mixer into one audio batch |
+
+KiriKiri runs its own thread and frame loop, so `retro_run()` hands it the
+whole frame via `kiri_frame()` and returns; ONS/PONS drive theirs inline.
 
 ### Crash diagnostics
 
@@ -277,78 +319,43 @@ a black screen.
 
 ## Input Mapping
 
-### RetroPad
+**Canonical source: [`CONTROLS.md`](CONTROLS.md).** It defines the layer-2
+contract (physical button → semantic action) and the per-engine keys, and
+[`INPUT-ARCHITECTURE.md`](INPUT-ARCHITECTURE.md) explains the event-vs-polled-state
+split that the injected input must respect. The tables below are a summary; if
+they ever disagree with `CONTROLS.md`, that file wins.
 
-| RetroPad Button | ONScripter Action |
+### RetroPad (layer 2 — identical on every engine)
+
+| RetroPad | Semantic action |
 |---|---|
-| D-pad | Navigate menus |
-| A | Confirm / Advance text |
-| B | Skip text |
-| X | Back / Menu |
-| Y | Hide text window |
-| L | Open save menu (right-click) |
-| R | Save |
-| L2 | Scroll back |
-| R2 | Scroll forward |
-| L3 | Reading speed |
-| R3 | Quick save |
-| Start | Auto mode (toggle) |
-| Select | Skip mode (toggle) |
+| D-pad Up/Down/Left/Right | Focus previous / next |
+| Left analog stick | Move the virtual pointer |
+| A | Advance / Confirm |
+| B | Cancel / Back |
+| X | Hide Text Window |
+| Y | Hold-to-skip / fast-forward (Ctrl; bounded tap) |
+| SELECT | Skip (toggle) |
+| START | Auto mode (toggle) |
+| L / R | History Back / Forward |
+| L2 / R2 | History Back / Forward |
+| L3 / R3 | Pointer click (left / right) |
 
+### Keyboard remap defaults (`key_remap.h`)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              RETROPAD CONTROLLER MAPPING                    │
-├──────────┬──────────────────────────┬───────────────────────┤
-│ Button   │ Action                   │ Engine Key            │
-├──────────┼──────────────────────────┼───────────────────────┤
-│ D-Pad    │ Navigate menus / move    │ Arrow keys            │
-│ A        │ Confirm / Advance text   │ Enter                 │
-│ B        │ Skip text                │ Space                 │
-│ X        │ Menu (right-click)        │ Escape                │
-│ Y        │ Hide text window         │ Right Ctrl             │
-│ L        │ Open save menu (right-clk)│ Mouse R-Click         │
-│ R        │ Save                     │ s                     │
-│ L2       │ Scroll back (lookback)   │ Page Up               │
-│ R2       │ Scroll forward           │ Page Down             │
-│ L3       │ Reading speed            │ Tab                   │
-│ R3       │ Quick save               │ q                     │
-│ Start    │ Auto mode toggle         │ a                     │
-│ Select   │ Skip mode toggle         │ s                     │
-├──────────┼──────────────────────────┼───────────────────────┤
-│ Keyboard │                          │                       │
-├──────────┼──────────────────────────┼───────────────────────┤
-│ Enter    │ Confirm / Advance text   │ Enter                 │
-│ Backspace│ Menu (right-click)        │ → Escape              │
-│ [        │ Lookback (history)       │ → h                   │
-│ ]        │ Page forward             │ → l                   │
-│ s        │ Skip mode toggle         │ s                     │
-│ a        │ Auto mode toggle         │ a                     │
-│ 0        │ Text speed cycle         │ 0                     │
-│ F11      │ Fullscreen toggle        │ → f                   │
-└──────────┴──────────────────────────┴───────────────────────┘
-```
-All buttons are remappable via RetroArch's Quick Menu → Controls.
+Default **host** keys are chosen to avoid RetroArch hotkey conflicts; the core
+translates each to the engine's key before dispatch.
 
-### Keyboard
-
-The core provides virtual key remapping to avoid conflicts with RetroArch's
-default hotkey bindings. Each engine function can be assigned a key via
-core options (Quick Menu → Core Options). The default keys are chosen to
-not conflict with RetroArch defaults:
-
-| Function | Default key | Engine key | RetroPad | Configurable |
-|----------|------------|------------|----------|-------------|
-| Advance text | `Enter` | Return | A | Yes |
-| Menu / right-click | `Backspace` | Escape | X / L | Yes |
-| Lookback (history) | `[` | h | L2 | Yes |
-| Page forward | `]` | l | R2 | No |
-| Skip mode toggle | `s` | s | Select | No |
-| Auto mode toggle | `a` | a | Start | No |
-| Text speed cycle | `0` | 0 | — | No |
-| Fullscreen toggle | `F11` | f | — | No |
-| Up / Down (menus) | Arrow keys | Up/Down | D-pad | No |
-| Left / Right (menus) | Arrow keys | Left/Right | D-pad | No |
+| Function | Default key | Engine key | Configurable |
+|----------|-------------|------------|--------------|
+| Advance / Confirm | `Enter` | Return | Yes |
+| Menu / right-click | `Backspace` | Escape | Yes |
+| Skip (toggle) | `s` | `s` | Yes |
+| Auto (toggle) | `a` | `a` | Yes |
+| Lookback / history | `[` | `h` | Yes |
+| Page forward | `]` | `l` | Yes |
+| Text speed cycle | `0` | `0` | Yes |
+| Fullscreen toggle | `F11` | `f` | Yes |
 
 How remapping works: when you press the configured key (e.g. `[`), the core
 translates it to the engine's expected key (e.g. `h`) before passing it to
