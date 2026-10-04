@@ -1,0 +1,35 @@
+Mona Font — bundled CJK fallback
+================================
+
+File:        mona.ttf  (Mona font TTF version 2.90, built from Shinonome 0.9.9)
+Origin:      https://sourceforge.net/projects/monafont/files/monafont/monafont-2.90/monafont-ttf-2.90.zip
+Downloaded:  monafont-ttf-2.90.zip (1,712,768 bytes) -> mona.ttf (2,828,124 bytes)
+SHA-256:     c8e72cc343e15ce4de7ece749a33a01d27bc2e00409e5fd43cf2cbf0ef040251
+Upstream doc: README-ttf.txt (kept alongside as mona-README-ttf.txt)
+
+Why this font
+-------------
+KiriKiri/KAG games request Windows face names ("ＭＳ ゴシック" / "ＭＳ 明朝",
+MS PGothic/MS Gothic). Mona is a metric-compatible clone of MS PGothic —
+designed so Shift-JIS art and text laid out for MS PGothic render identically —
+so it is the closest open substitute for the games' intended typeface. It covers
+kana and kanji (7,211 glyphs in cmap, including U+3042/30A2/4E00/65E5/6F22).
+
+License
+-------
+From the upstream project page (https://monafont.sourceforge.net/):
+
+    モナーフォントのライセンスは東雲フォントのライセンスに準じます。
+    東雲フォント自体は実質的な public domain となっているため、
+    モナーフォントもこれにならいます。
+    このアーカイブ中に含まれるフォントおよびツール類の改変、再配布、
+    雑誌や CD-ROM 等への掲載はご自由にどうぞ。作者への連絡は不要です。
+
+Translation: Mona Font follows the Shinonome font licence; Shinonome is
+effectively public domain, and Mona follows suit. Modification,
+redistribution, and inclusion (in magazines, on CD-ROMs, and equivalent
+media — which covers embedding in a distributed application) are all free,
+with no notification required to the author.
+
+Accordingly, embedding mona.ttf in this project and redistributing it with the
+build is permitted. The full upstream README is included for reference.
