@@ -60,7 +60,7 @@ LINK_LIBS_unix   := -ldl -lpthread
 # be resolvable (--no-undefined) or the loader would fault at call time. The
 # core keeps the version script (link.T) so only retro_* is exported; the
 # runtime deliberately does not, since the engines resolve SDL by name there.
-SHARED_NOUNDEF := -shared -Wl,--no-undefined -Wl,-Bgroup
+SHARED_NOUNDEF := -shared -Wl,--no-undefined
 
 # Locate the sibling modules next to the core/engine rather than at their build
 # path, so the four artifacts can be deployed as a set. $ORIGIN is ELF; PE has
@@ -73,7 +73,7 @@ ifeq ($(platform), unix)
    fpic    := -fPIC
    CXXFLAGS += $(shell pkg-config --cflags freetype2 2>/dev/null)
    CFLAGS   += $(shell pkg-config --cflags freetype2 2>/dev/null)
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
    LINK_EXTRA := $(LINK_EXTRA_unix)
    LDFLAGS += $(LINK_LIBS_unix)
 
@@ -81,7 +81,7 @@ else ifeq ($(platform), aarch64)
    CROSS   := aarch64-linux-gnu-
    TARGET   := $(TARGET_NAME)_libretro.so
    fpic    := -fPIC
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
    LINK_EXTRA := $(LINK_EXTRA_unix)
    LDFLAGS += $(LINK_LIBS_unix)
    override CC := $(CROSS)gcc
@@ -132,13 +132,13 @@ else ifneq (,$(findstring osx,$(platform)))
 else ifeq ($(platform), emscripten)
    TARGET   := $(TARGET_NAME)_libretro_emscripten.bc
    fpic    := -fPIC
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
 
 else
    # Fallback: treat as unix-like
    TARGET   := $(TARGET_NAME)_libretro.so
    fpic    := -fPIC
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
 endif
 
 # --- Optimization / debug ---
