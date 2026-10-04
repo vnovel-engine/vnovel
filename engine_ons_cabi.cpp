@@ -75,9 +75,20 @@ static void ons_setResolution(EngineHandle h, int w, int hh) {
     ((ONScripterLabel*)h)->setPreferredWidth(buf);
 }
 
-/* --- Runtime accessors -----------------------------------------------------
- * The core reaches SDL through these; see engine_runtime_accessors.h, shared
- * with PONScripter because they read only this module's own SDL and glue. */
+/* The thread body: what the core's ons_main used to do. Init the engine, then
+ * run its loop; the loop returns when the engine sees SDL_QUIT. Errors thrown
+ * by the engine during either call are caught by the setjmp in
+ * engine_thread_main, which surrounds this. */
+static void engine_do_run(EngineHandle h) {
+    ONScripterLabel *ons = (ONScripterLabel*)h;
+    if (ons->init()) return;
+    { extern int SDL_timer_started, SDL_timer_running;
+      fprintf(stderr, "Timer state: started=%d running=%d\n",
+              SDL_timer_started, SDL_timer_running); }
+    SDL_ShowCursor(SDL_DISABLE);
+    ons->executeLabel();
+}
+
 #include "engine_runtime_accessors.h"
 
 extern "C" const EngineVTable ons_engine_vtable = {
@@ -88,9 +99,9 @@ extern "C" const EngineVTable ons_engine_vtable = {
     /* runtime accessors */
     engine_getSurface, engine_getSampleRate, engine_isAudioPaused, engine_setAudioPaused,
     engine_getAudio,
-    /* thread accessors: stay with the core until SDL moves into this module, so
-     * the thread, its setjmp and its SDL are all in one place (see engine_cabi.h) */
-    NULL, NULL, NULL, NULL, NULL,
+    /* thread: the engine owns the script thread, because that thread runs on the
+     * engine's own SDL and its setjmp must be on the same thread as its longjmp */
+    engine_startThread, engine_requestStop, engine_isRunning, engine_joinThread, engine_killThread,
     engine_pushKey, engine_pumpEvents, engine_drainUserEvents, engine_showCursor,
     engine_timerStartedPtr, engine_timerRunningPtr
 };

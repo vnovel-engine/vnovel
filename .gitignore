@@ -26,3 +26,6 @@ build/
 # bootstrap pass for regenerating sdl-vendored.h
 build/vendored-bootstrap/
 tools/__pycache__/
+
+# Windows build artifacts land in the repo root
+*.dll

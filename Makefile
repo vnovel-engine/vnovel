@@ -60,12 +60,51 @@ LINK_LIBS_unix   := -ldl -lpthread
 # be resolvable (--no-undefined) or the loader would fault at call time. The
 # core keeps the version script (link.T) so only retro_* is exported; the
 # runtime deliberately does not, since the engines resolve SDL by name there.
-SHARED_NOUNDEF := -shared -Wl,--no-undefined
+SHARED_NOUNDEF = -shared $(MOD_STATIC_RT) -Wl,--no-undefined
+
+# Shared-module extension and the flags that name one. PE has no SONAME; the
+# loader finds a DLL by name in the module's own directory, which is the
+# equivalent of ELF's $ORIGIN rpath.
+MOD_EXT       := .so
+MOD_RPATH     := -Wl,-rpath,'$$ORIGIN'
+# Named once, before anything that expands it with := (a := captures the value
+# at that point, so a later definition would be invisible to these).
+RUNTIME_SONAME := onscripter-en_runtime
+
+# The whole flag, not just the prefix: on PE there is no SONAME, and a
+# prefix-only variable would leave the bare module name in the link line, where
+# ld reads it as an input file.
+SONAME_RT   := -Wl,-soname,$(RUNTIME_SONAME)$(MOD_EXT)
+SONAME_ONS  := -Wl,-soname,onscripter-en_engine_ons$(MOD_EXT)
+SONAME_PONS := -Wl,-soname,onscripter-en_engine_pons$(MOD_EXT)
+
+# How the linker is told about a sibling module. On ELF the module file itself
+# carries everything needed, so it is passed directly. On PE the DLL cannot be
+# linked against — only its import library can, or every exported symbol reads
+# as undefined — so these become the .dll.a paths.
+RT_IMPLIB_FLAG :=
+RT_LINK        = $(BUILD_DIR)/$(RUNTIME_SONAME)$(MOD_EXT)
+ONS_LINK       = $(BUILD_DIR)/onscripter-en_engine_ons$(MOD_EXT)
+PONS_LINK      = $(BUILD_DIR)/onscripter-en_engine_pons$(MOD_EXT)
 
 # Locate the sibling modules next to the core/engine rather than at their build
 # path, so the four artifacts can be deployed as a set. $ORIGIN is ELF; PE has
 # no equivalent (Windows searches the module's own directory first, which is the
 # behaviour we want there anyway).
+#
+# MOD_STATIC_RT: link the compiler runtime into each module on PE, so a deployed
+# DLL does not need libgcc_s_seh-1.dll / libstdc++-6.dll beside it. Empty on
+# ELF, where those are system libraries. Referenced by the recursive definitions
+# above, so the platform block below can still set it.
+MOD_STATIC_RT =
+MOD_RT_LIBS   =
+# What the module link lines pass last. Default is plain LDFLAGS; a platform
+# that must link its runtime statically overrides it (see the mingw block).
+comma := ,
+MOD_LDFLAGS   = $(LDFLAGS) $(MOD_RT_LIBS)
+# Engine modules link the runtime after their own objects — dropping it
+# leaves every PrivateSDL_* / BZ2_* / ov_* reference undefined.
+MOD_LDFLAGS_ENGINE = $(MOD_LDFLAGS) $(RT_LINK)
 RPATH_ORIGIN := -Wl,-rpath,'$$ORIGIN'
 
 ifeq ($(platform), unix)
@@ -95,10 +134,58 @@ else ifeq ($(platform), aarch64)
 else ifeq ($(platform), mingw)
    CROSS    := x86_64-w64-mingw32-
    TARGET    := $(TARGET_NAME)_libretro.dll
+   MOD_EXT   := .dll
+   MOD_RPATH :=
+   SONAME_RT   :=
+   SONAME_ONS  :=
+   SONAME_PONS :=
+   # PE: link the import libraries, and have each DLL emit one for the modules
+   # that link against it.
+   RT_IMPLIB_FLAG   = -Wl,--out-implib,$(BUILD_DIR)/lib$(RUNTIME_SONAME).dll.a
+   ONS_IMPLIB_FLAG  = -Wl,--out-implib,$(BUILD_DIR)/libonscripter-en_engine_ons.dll.a
+   PONS_IMPLIB_FLAG = -Wl,--out-implib,$(BUILD_DIR)/libonscripter-en_engine_pons.dll.a
+   RT_LINK        = $(BUILD_DIR)/lib$(RUNTIME_SONAME).dll.a
+   ONS_LINK       = $(BUILD_DIR)/libonscripter-en_engine_ons.dll.a
+   PONS_LINK      = $(BUILD_DIR)/libonscripter-en_engine_pons.dll.a
    # No --version-script: PE/COFF does not support it. It is not needed either —
    # RETRO_API expands to __declspec(dllexport) on Windows, so exactly the
    # retro_* entry points are exported and everything else stays private.
    SHARED    := -shared -static-libgcc -static-libstdc++ -s -Wl,--no-undefined
+   # The module rules use these; without the static runtime flags each DLL would
+   # need libgcc_s_seh-1.dll / libstdc++-6.dll beside it.
+   MOD_STATIC_RT = -static-libgcc -static-libstdc++
+   # Keep the pthread runtime inside each DLL; otherwise every module needs
+   # libwinpthread-1.dll beside it.
+   # The whole non-system closure, statically, and AFTER the objects. Note
+   # Makefile.common appends -lpthread -lfreetype to LDFLAGS, which lands later
+   # on the command line and re-resolves both dynamically — so the static flags
+   # have to come after that too. Everything after -Bstatic is static until
+   # -Bdynamic restores the default.
+   # Only what is not already compiled into the runtime: bzip2, ogg, vorbis,
+   # libmad and SMPEG are built from source into onscripter-en_runtime, so
+   # linking the system -lbz2 as well collides (multiple definition of
+   # BZ2_bzRead*). freetype needs zlib and brotli, which we do not vend.
+   MOD_RT_LIBS   = -Wl,-Bstatic -lwinpthread -lfreetype -lz -lbrotlidec -lbrotlicommon -Wl,-Bdynamic
+   # Drop the dynamic -lpthread/-lfreetype that Makefile.common appends: ld would
+   # see those first, satisfy the symbols from the import libraries, and never
+   # pull in the static copies above — leaving the DLL importing them.
+   # $(RT_LINK) is repeated after MOD_RT_LIBS: freetype's static archive needs
+   # BZ2_bzDecompress, which lives in the runtime, and ld resolves left to right
+   # — the first occurrence is already past by the time libfreetype.a is read.
+   # Strip the pthread/freetype flags that Makefile.common and the mingw block
+   # already put in LDFLAGS; MOD_RT_LIBS re-adds the whole closure statically
+   # at the end. Leaving them would bind them dynamically first.
+   # Strip, by exact token, the pthread/freetype flags LDFLAGS carries;
+   # MOD_RT_LIBS re-adds the whole closure statically at the end. Any copy left
+   # earlier on the line binds dynamically first and the static one is skipped.
+   # $(comma) because make splits function arguments on commas, so a literal
+   # -Wl,-Bstatic would parse as two arguments and never match.
+   MOD_LDFLAGS   = $(filter-out -lpthread -lfreetype -lwinpthread -Wl$(comma)-Bstatic -Wl$(comma)-Bdynamic,$(LDFLAGS)) $(MOD_RT_LIBS)
+   # The engine modules additionally repeat $(RT_LINK) after the static closure:
+   # freetype needs BZ2_bzDecompress, which lives in the runtime, and ld resolves
+   # left to right. The runtime itself must not — it would be linking its own
+   # import library, which does not exist yet.
+   MOD_LDFLAGS_ENGINE = $(MOD_LDFLAGS) $(RT_LINK)
    override CC  := $(CROSS)gcc
    override CXX := $(CROSS)g++ -std=c++11
    AR        := $(CROSS)ar
@@ -114,6 +201,11 @@ else ifeq ($(platform), mingw)
    CXXFLAGS += $(FT_CFLAGS)
    CFLAGS   += $(FT_CFLAGS)
    LDFLAGS  += $(FT_LIBS)
+   # PE exports nothing unless told to: without this the runtime's import
+   # library is empty and the engine DLLs cannot resolve bzip2, vorbis, SMPEG
+   # or the renamed SDL symbols they link against it. The runtime is internal
+   # glue, not a public API, so exporting all of it is the right scope.
+   RUNTIME_EXPORTS = -Wl,--export-all-symbols -Wl,--exclude-libs,ALL
 
 else ifeq ($(platform), win)
    # Native Windows (MSVC not supported; use mingw platform for cross-compile)
@@ -149,7 +241,7 @@ else
 endif
 
 # --- Global defines ---
-DEFINES := -D__LIBRETRO__ -DRENAME_SDL_SYMBOLS -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
+DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
 
 # Build stamp: the deployed .so carries this string, so `strings` identifies the
 # exact build (see ONSCRIPTER_EN_LIBRETRO_VERSION in libretro.cpp). A git
@@ -277,33 +369,31 @@ PONS_MOD_OBJS:= $(PONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(PONS_EXTRA_CXX)
 # call into it by name (SDL_*, ons_libretro_game_clock_ms, ...), which is the
 # one direction where symbol resolution is required. That is also why it is the
 # runtime and not the core that holds them — the core stays hidden, per link.T.
-RUNTIME_SHARED := -shared -Wl,-Bsymbolic-functions
-RUNTIME_SONAME := onscripter-en_runtime
+RUNTIME_SHARED = -shared $(MOD_STATIC_RT) -Wl,-Bsymbolic-functions $(RUNTIME_EXPORTS)
 
-ONS_MOD   := $(BUILD_DIR)/onscripter-en_engine_ons.so
-PONS_MOD  := $(BUILD_DIR)/onscripter-en_engine_pons.so
-RT_MOD    := $(BUILD_DIR)/$(RUNTIME_SONAME).so
+ONS_MOD   := $(BUILD_DIR)/onscripter-en_engine_ons$(MOD_EXT)
+PONS_MOD  := $(BUILD_DIR)/onscripter-en_engine_pons$(MOD_EXT)
+RT_MOD    := $(BUILD_DIR)/$(RUNTIME_SONAME)$(MOD_EXT)
 
-# SONAME so the modules record a name (not the build path) as their dependency,
-# and the loader finds it beside them at runtime.
+# A PE module is linked against an import library, not against the DLL itself:
+# pass the .dll directly to ld and every symbol it exports is reported
+# undefined. The import library is the .dll.a that -Wl,--out-implib produces.
+# ELF needs no equivalent — the SONAME is enough.
 $(RT_MOD): $(RUNTIME_OBJS)
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(RUNTIME_SHARED) -Wl,-soname,$(RUNTIME_SONAME).so -o $@ $(RUNTIME_OBJS) $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(RUNTIME_SHARED) $(SONAME_RT) -o $@ $(RUNTIME_OBJS) $(RT_IMPLIB_FLAG) $(MOD_LDFLAGS)
 
-# SONAME so the core records a name rather than the build path, and the loader
-# finds the module beside itself. -fvisibility=hidden keeps the engine's internal
-# symbols private; only the vtable is exported.
 $(ONS_MOD): $(ONS_MOD_OBJS) $(RT_MOD)
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(SHARED_NOUNDEF) -Wl,-soname,onscripter-en_engine_ons.so -o $@ $(ONS_MOD_OBJS) $(RT_MOD) $(RPATH_ORIGIN) $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(SHARED_NOUNDEF) $(SONAME_ONS) -o $@ $(ONS_MOD_OBJS) $(ONS_IMPLIB_FLAG) $(MOD_RPATH) $(MOD_LDFLAGS_ENGINE)
 
 $(PONS_MOD): $(PONS_MOD_OBJS) $(RT_MOD)
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(SHARED_NOUNDEF) -Wl,-soname,onscripter-en_engine_pons.so -o $@ $(PONS_MOD_OBJS) $(RT_MOD) $(RPATH_ORIGIN) $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(SHARED_NOUNDEF) $(SONAME_PONS) -o $@ $(PONS_MOD_OBJS) $(PONS_IMPLIB_FLAG) $(MOD_RPATH) $(MOD_LDFLAGS_ENGINE)
 
 $(TARGET): $(FALLBACK_FONT_HDR) $(CORE_OBJS) $(RT_MOD) $(ONS_MOD) $(PONS_MOD)
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(SHARED) $(LINK_EXTRA) -o $@ $(CORE_OBJS) $(RT_MOD) $(ONS_MOD) $(PONS_MOD) $(RPATH_ORIGIN) $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(SHARED) $(LINK_EXTRA) -o $@ $(CORE_OBJS) $(RT_LINK) $(ONS_LINK) $(PONS_LINK) $(MOD_RPATH) $(MOD_LDFLAGS)
 
 # Copy the four artifacts to the repo root, where the start-* scripts load the
 # core from. Replacing rather than symlinking keeps one coherent set there: the

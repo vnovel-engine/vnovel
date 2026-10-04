@@ -115,7 +115,7 @@ static void ons_crash_handler(int sig)
 
 // Both engines call exit() on script errors and SDL init failures.
 // We catch these via longjmp. errorAndExit() calls the engine-specific
-// longjmp function which jumps back to ons_main's setjmp checkpoint.
+// longjmp function which jumps back to the engine thread's setjmp checkpoint.
 static void                        fallback_log(enum retro_log_level level, const char *fmt, ...);
 static retro_log_printf_t          log_cb = fallback_log;
 /* The setjmp/longjmp storage lives in the bridge module (static storage, one
@@ -282,14 +282,12 @@ static retro_environment_t         environ_cb;
  * retro_set_environment. */
 static EngineHandle engine = nullptr;
 static const EngineVTable *vtable = nullptr;
-static volatile bool engine_running = false;
 /* Wrapper called from retro_run to dump engine state to a FILE* */
 static void engine_dump_state(EngineHandle h, FILE *f)
 {
   if (vtable && vtable->dumpState)
     vtable->dumpState(h, f);
 }
-static SDL_Thread                 *ons_thread;
 static uint32_t                    delta;
 static char last_archive_path[PATH_MAX_LENGTH];
 static char last_save_path[PATH_MAX_LENGTH];
@@ -560,29 +558,6 @@ void retro_init(void)
   }
 }
 
-static int ons_main(void *data)
-{
-  if (setjmp(ons_script_error_jmp) != 0) {
-    // ONScripter called errorAndExit() - caught by longjmp
-    log_cb(RETRO_LOG_ERROR, "ONScripter script error - returning cleanly\n");
-    ons_script_error_jmp_valid = false;
-    engine_running = false;
-    return 0;
-  }
-  ons_script_error_jmp_valid = true;
-  engine_running = true;
-  if (vtable->init(engine)) {
-    return -1;
-  }
-  { extern int SDL_timer_started, SDL_timer_running;
-    log_cb(RETRO_LOG_INFO, "Timer state: started=%d running=%d\n",
-           SDL_timer_started, SDL_timer_running); }
-  SDL_ShowCursor(SDL_DISABLE);
-  vtable->eventLoop(engine);
-  engine_running = false;
-  ons_script_error_jmp_valid = false;
-  return 0;
-}
 // KiriKiri engine C functions (from engine_kirikiri_cabi.cpp)
 extern "C" {
   typedef void* EngineHandle;
@@ -813,7 +788,7 @@ bool retro_load_game(const struct retro_game_info *game){
     }
   }
 
-  ons_thread = SDL_CreateThread(ons_main, NULL);
+  if (vtable->startThread) vtable->startThread(engine);
 
   return true;
 }
@@ -825,32 +800,24 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
 /* Stop the engine thread cooperatively.
  *
  * The ONS/PONS eventLoop blocks in SDL_WaitEvent() and leaves on SDL_QUIT
- * (both engines call endCommand() on SDL_QUIT). SDL_KillThread() would instead
- * leave that thread mid-wait with SDL's event/mixer state inconsistent, which
- * makes the *frontend* spin on shutdown. So: post an SDL_QUIT event (waking
- * SDL_WaitEvent), then join with a timeout. */
+ * (both engines call endCommand() on SDL_QUIT). Killing the thread would leave
+ * it mid-wait with its SDL's event and mixer state inconsistent, which makes the
+ * frontend spin on shutdown. So: ask the engine to post SDL_QUIT to itself, then
+ * join with a timeout. The join and the kill both run inside the engine's own
+ * SDL, so they cannot be done from here. */
 static void stop_engine_thread(void)
 {
-  if (!ons_thread) return;
-  if (vtable) {
-    /* Unblock any engine-side waits, then wake the event loop. */
-    SDL_Event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.type = SDL_QUIT;
-    SDL_PushEvent(&ev);
+  if (!vtable || !engine) return;
+  if (!vtable->isRunning || !vtable->isRunning(engine)) {
+    if (vtable->joinThread) vtable->joinThread(engine);
+    return;
   }
-  /* Wait up to ~2s for a clean return. SDL 1.2 has no timed join, so poll. */
-  for (int i = 0; i < 200; i++) {
-    if (!engine_running) break;
-    SDL_Delay(10);
-  }
-  if (!engine_running) {
-    SDL_WaitThread(ons_thread, NULL);
-  } else {
+  if (vtable->requestStop) vtable->requestStop(engine);
+  if (vtable->joinThread) vtable->joinThread(engine);
+  if (vtable->isRunning && vtable->isRunning(engine)) {
     /* Last resort: the engine ignored SDL_QUIT (e.g. stuck in a script). */
-    SDL_KillThread(ons_thread);
+    if (vtable->killThread) vtable->killThread(engine);
   }
-  ons_thread = nullptr;
 }
 
 void retro_deinit(void)
@@ -897,8 +864,8 @@ void retro_reset(void)
       vtable->setArchivePath(engine, last_archive_path);
       vtable->setSavePath(engine, last_save_path);
       vtable->setDebugLevel(engine, opt_debug_level);
-      SDL_PauseAudio(0); /* Resume audio after engine restart */
-      ons_thread = SDL_CreateThread(ons_main, NULL);
+      if (vtable->setAudioPaused) vtable->setAudioPaused(engine, 0);
+      if (vtable->startThread) vtable->startThread(engine);
     }
   }
   SDL_libretro_in_reset = false;
@@ -1357,7 +1324,7 @@ static void ons_submit_audio(int rate, int16_t *stream,
       int v = stream[i]; if (v < 0) v = -v; if (v > peak) peak = v;
     }
     audio_logf("HB freq=%d frames=%d peak=%d running=%d\n",
-               rate, got, peak, engine_running);
+               rate, got, peak, (vtable->isRunning ? vtable->isRunning(engine) : 0));
   }
   audio_batch_cb(stream, (size_t)got);
 }
@@ -1491,7 +1458,7 @@ void retro_run(void)
     kiri_frame();
     return;
   }
-  if (!engine_running) {
+  if (!vtable->isRunning || !vtable->isRunning(engine)) {
     static Uint32 black[640*480];
     memset(black, 0, sizeof(black));
     video_cb(black, 640, 480, 640*4);
@@ -1650,9 +1617,7 @@ void retro_unload_game(void)
     SDL_libretro_in_reset = false;
     return;
   }
-  if (ons_thread) {
-    stop_engine_thread();
-  }
+  stop_engine_thread();
   SDL_DestroySemaphore(SDL_libretro_event_sem);
   SDL_libretro_event_sem = nullptr;
 #ifdef LIBRETRO_FRAME_SYNC

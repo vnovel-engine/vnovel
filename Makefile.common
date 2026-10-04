@@ -44,6 +44,9 @@ CXXFLAGS += $(INCFLAGS)
 ifeq ($(VENDORED_BOOTSTRAP),1)
 VENDORED_INCLUDE :=
 else
+# RENAME_SDL_SYMBOLS gates the sdl-vendored.h rename. One definition site:
+# it must reach the vendored SDL sources AND every consumer, or the definitions
+# and the call sites disagree (undefined PrivateSDL_* at link time).
 VENDORED_INCLUDE := -D__RETRO__ -DRENAME_SDL_SYMBOLS -include $(CORE_DIR)/sdl-vendored.h
 endif
 CFLAGS   += $(VENDORED_INCLUDE) -include $(SDL_LIBRETRO)/SDL_config_libretro.h

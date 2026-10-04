@@ -19,6 +19,8 @@
 #define ENGINE_RUNTIME_ACCESSORS_H
 
 #include <string.h>
+#include <setjmp.h>
+#include "engine_bridge.h"
 /* Explicit path, not "SDL_libretro.h": a quoted include searches the includer's
  * own directory first, and a stray file of that name next to this header would
  * silently win. (One did — an empty tracked file in the repo root — and the
@@ -113,6 +115,94 @@ static const int *engine_timerStartedPtr(EngineHandle) {
 static const int *engine_timerRunningPtr(EngineHandle) {
     extern int SDL_timer_running;
     return &SDL_timer_running;
+}
+
+/* --- thread ownership ------------------------------------------------------
+ *
+ * The engine's script thread touches only the engine's own SDL (event queue,
+ * timers, surface, mixer), so it must be created against that SDL and not the
+ * frontend's. The same applies to the setjmp that catches engine exit(): it
+ * arms a buffer that libretro_script_error_longjmp() jumps to, and longjmp
+ * restores a stack frame, so both calls have to happen on one thread. Owning
+ * the thread means owning the setjmp, which is why both live here.
+ *
+ * The buffer is ons_script_error_jmp, in the bridge module: static storage that
+ * both sides can name, armed and jumped to only from this thread.
+ *
+ * The body of the thread is engine-dependent, so each cabi file defines
+ * engine_do_run() after including this header. It should init the engine and
+ * run its loop; a non-zero return means init failed. */
+static void engine_do_run(EngineHandle);   /* defined by the including cabi file */
+
+static SDL_Thread *engine_thread = NULL;
+static EngineHandle engine_thread_handle = NULL;
+static volatile int engine_thread_running = 0;
+
+static int engine_thread_main(void *)
+{
+    if (setjmp(ons_script_error_jmp) != 0) {
+        /* The engine called errorAndExit() — a script error, or exit() deep in
+         * engine code. longjmp landed here, so the thread returns cleanly
+         * instead of taking the whole process down. */
+        fprintf(stderr, "engine: script error — thread returning cleanly\n");
+        ons_script_error_jmp_valid = 0;
+        engine_thread_running = 0;
+        return 0;
+    }
+    ons_script_error_jmp_valid = 1;
+    engine_thread_running = 1;
+    engine_do_run(engine_thread_handle);
+    engine_thread_running = 0;
+    ons_script_error_jmp_valid = 0;
+    return 0;
+}
+
+static int engine_startThread(EngineHandle h)
+{
+    ons_script_error_jmp_valid = 0;
+    engine_thread_handle = h;
+    engine_thread = SDL_CreateThread(engine_thread_main, NULL);
+    return engine_thread ? 0 : -1;
+}
+
+/* Wake the engine's event loop so it can observe the shutdown request. Both
+ * engines leave their loop on SDL_QUIT (they call endCommand() for it). */
+static void engine_requestStop(EngineHandle)
+{
+    SDL_Event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = SDL_QUIT;
+    SDL_PushEvent(&ev);
+}
+
+static int engine_isRunning(EngineHandle)
+{
+    return engine_thread_running;
+}
+
+/* Wait for a clean exit. SDL 1.2 has no timed join, so poll; the engine paces
+ * itself through SDL_Delay, which the pause gate in SDL_systimer.c honours. */
+static void engine_joinThread(EngineHandle)
+{
+    if (!engine_thread) return;
+    for (int i = 0; i < 200 && engine_thread_running; i++)
+        SDL_Delay(10);
+    if (!engine_thread_running) {
+        SDL_WaitThread(engine_thread, NULL);
+        engine_thread = NULL;
+    }
+}
+
+/* Last resort when the engine ignored SDL_QUIT (e.g. stuck in a script).
+ * SDL_KillThread leaves that thread mid-wait with SDL's event and mixer state
+ * inconsistent, which makes the frontend spin on shutdown — so it is only for
+ * the case where joining would hang forever. */
+static void engine_killThread(EngineHandle)
+{
+    if (!engine_thread) return;
+    SDL_KillThread(engine_thread);
+    engine_thread = NULL;
+    engine_thread_running = 0;
 }
 
 #endif /* ENGINE_RUNTIME_ACCESSORS_H */

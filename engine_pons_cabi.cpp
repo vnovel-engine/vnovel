@@ -68,6 +68,20 @@ static void pons_setResolution(EngineHandle h, int w, int hh) {
     ((PonscripterLabel*)h)->setPreferredWidth(buf);
 }
 
+/* The thread body: what the core's ons_main used to do, for PONScripter. Init
+ * the engine, then run its loop; the loop returns when the engine sees
+ * SDL_QUIT. Errors thrown during either call are caught by the setjmp in
+ * engine_thread_main, which surrounds this. */
+static void engine_do_run(EngineHandle h) {
+    PonscripterLabel *pons = (PonscripterLabel*)h;
+    if (pons->init(NULL)) return;
+    { extern int SDL_timer_started, SDL_timer_running;
+      fprintf(stderr, "Timer state: started=%d running=%d\n",
+              SDL_timer_started, SDL_timer_running); }
+    SDL_ShowCursor(SDL_DISABLE);
+    pons->eventLoop();
+}
+
 /* Runtime accessors — see engine_runtime_accessors.h; shared with ONScripter
  * because they read only this module's own SDL and glue. */
 #include "engine_runtime_accessors.h"
@@ -80,9 +94,9 @@ extern "C" const EngineVTable pons_engine_vtable = {
     /* runtime accessors */
     engine_getSurface, engine_getSampleRate, engine_isAudioPaused, engine_setAudioPaused,
     engine_getAudio,
-    /* thread accessors: stay with the core until SDL moves into this module (see
-     * engine_cabi.h on why the thread, its setjmp and its SDL belong together) */
-    NULL, NULL, NULL, NULL, NULL,
+    /* thread: the engine owns the script thread, because that thread runs on the
+     * engine's own SDL and its setjmp must be on the same thread as its longjmp */
+    engine_startThread, engine_requestStop, engine_isRunning, engine_joinThread, engine_killThread,
     engine_pushKey, engine_pumpEvents, engine_drainUserEvents, engine_showCursor,
     engine_timerStartedPtr, engine_timerRunningPtr
 };
