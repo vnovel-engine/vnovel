@@ -223,7 +223,7 @@ EXTRA_FALLBACK_FONT_HDR := resources/fonts/extra_fallback_font.h
 # Make symlinks first so .o files can find their sources.
 # The build produces four artifacts that must ship together: the core plus its
 # runtime and two engine modules (the core's rpath finds them beside itself).
-all: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR) $(TARGET) stage-modules
+all: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR) $(TARGET) stage-modules install-root
 
 # --- Embedded fallback fonts -------------------------------------------------
 # Generate a C header from each vendored TTF at build time (the fonts stay
@@ -304,6 +304,14 @@ $(PONS_MOD): $(PONS_MOD_OBJS) $(RT_MOD)
 $(TARGET): $(FALLBACK_FONT_HDR) $(CORE_OBJS) $(RT_MOD) $(ONS_MOD) $(PONS_MOD)
 	@$(if $(Q),echo "LD $@",)
 	$(Q)$(CXX) $(fpic) $(SHARED) $(LINK_EXTRA) -o $@ $(CORE_OBJS) $(RT_MOD) $(ONS_MOD) $(PONS_MOD) $(RPATH_ORIGIN) $(LDFLAGS)
+
+# Copy the four artifacts to the repo root, where the start-* scripts load the
+# core from. Replacing rather than symlinking keeps one coherent set there: the
+# root previously held a core from one build and modules from another, which
+# loads the wrong runtime without any error.
+install-root: $(TARGET) $(RT_MOD) $(ONS_MOD) $(PONS_MOD)
+	@$(if $(Q),echo "INSTALL root artifacts",)
+	$(Q)cp -f $(RT_MOD) $(ONS_MOD) $(PONS_MOD) $(CORE_DIR)/
 
 # Stage the modules next to the core so the rpath above resolves, and so a
 # deploy takes the whole set rather than a core that cannot find its runtime.
