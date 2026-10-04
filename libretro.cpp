@@ -886,37 +886,115 @@ static void read_ff_speed_option(void)
   }
 }
 
-void retro_run(void)
+/* Per-frame option re-read (Quick Menu hot-reload) plus the one-time
+ * frame-sync setup. Split out of retro_run purely for readability. */
+static void read_frame_options(void)
 {
-  /* Frontend heartbeat for the ONS/PONS engine thread. RetroArch stops
-   * calling retro_run entirely while its menu is open, so a paused flag set
-   * here would never be observed. The engine thread instead watches this
-   * timestamp: SDL_Delay() blocks when the heartbeat goes stale (see
-   * SDL_systimer.c), which freezes text/animation exactly like a pause. */
-  {
-    struct timespec hb;
-    clock_gettime(CLOCK_MONOTONIC, &hb);
-    SDL_libretro_frontend_hb =
-        (unsigned long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000;
+#ifdef LIBRETRO_FRAME_SYNC
+  static bool frame_sync_activated = false;
+  if (!frame_sync_activated) {
+    SDL_Event ev;
+    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
+      ;
+    frame_sync_activated = true;
+    { char env_path[PATH_MAX_LENGTH]; fill_pathname_join(env_path, last_save_path, "envdata", sizeof(env_path));
+      FILE *ef = fopen(env_path, "rb");
+      if (ef) { fseek(ef, 0, SEEK_END); long esz = ftell(ef); fseek(ef, 0, SEEK_SET);
+        unsigned char buf[256]; size_t nr = fread(buf, 1, esz < 256 ? esz : 256, ef);
+        for (size_t i = 0; i < nr; i += 16) {
+          char hex[128] = ""; int p = 0;
+          for (size_t j = i; j < i+16 && j < nr; j++) p += snprintf(hex+p, sizeof(hex)-p, "%02x ", buf[j]);
+          log_cb(RETRO_LOG_INFO, "  %04zx: %s\n", i, hex);
+        }
+        fclose(ef);
+      } else log_cb(RETRO_LOG_INFO, "envdata: not found (using defaults)\n");
+    }
+  }
+  // Re-read core options each frame (allows hot-reload from Quick Menu)
+  struct retro_variable var = {0};
+
+  var.key = "onscripter_en_frame_sync";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+    bool new_sync = (strcmp(var.value, "enabled") == 0);
+    if (new_sync != opt_frame_sync) {
+      opt_frame_sync = new_sync;
+      if (opt_frame_sync && !SDL_libretro_wait_sem)
+        SDL_libretro_wait_sem = NULL; /* disabled — causes deadlock */
+      else if (!opt_frame_sync)
+        SDL_libretro_wait_sem = NULL;
+    }
   }
 
-  /* Pointer options drive the input callback for *both* engines, and the
-   * KiriKiri branch below returns before the main option block, so read them
-   * here where every path sees them. */
-  {
-    struct retro_variable pvar = {0};
-    pvar.key = "onscripter_en_pointer_enable";
-    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
-      opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
-    pvar.key = "onscripter_en_pointer_source";
-    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
-      opt_pointer_source = (strcmp(pvar.value, "left") == 0) ? POINTER_SOURCE_LEFT
-                                                             : POINTER_SOURCE_RIGHT;
+  var.key = "onscripter_en_mode_indicators";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    opt_indicators = (strcmp(var.value, "enabled") == 0);
+
+  var.key = "onscripter_en_debug_level";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+    int new_debug = atoi(var.value);
+    if (new_debug != opt_debug_level) {
+      opt_debug_level = new_debug;
+      if (engine) vtable->setDebugLevel(engine, opt_debug_level);
+    }
   }
 
-  // KiriKiri engine path: read from SDL_libretro_surface
-  // Use void* to avoid SDL 1.2/SDL2 type conflict
-  if (!vtable) {
+  var.key = "onscripter_en_software_cursor";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    opt_software_cursor = (strcmp(var.value, "enabled") == 0);
+
+  var.key = "onscripter_en_text_speed";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+    int new_speed = -1;
+    if (strcmp(var.value, "slow") == 0)        new_speed = 0;
+    else if (strcmp(var.value, "normal") == 0) new_speed = 1;
+    else if (strcmp(var.value, "fast") == 0)   new_speed = 2;
+    else if (strcmp(var.value, "instant") == 0) new_speed = 3;
+    if (new_speed != opt_text_speed) {
+      opt_text_speed = new_speed;
+      if (engine && opt_text_speed >= 0 && opt_text_speed <= 2)
+        vtable->setTextSpeed(engine, opt_text_speed);
+    }
+  }
+
+  read_ff_speed_option();   /* shared with the KiriKiri branch (line ~917) */
+
+  var.key = "onscripter_en_mouse_sensitivity";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    opt_mouse_sensitivity = atof(var.value);
+#endif
+  /* Read key remap options */
+  #define PARSE_KEY(optname, idx) do { \
+    var.key = optname; \
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) { \
+      if (strcmp(var.value, "[") == 0)            remap_keys[idx] = SDLK_LEFTBRACKET; \
+      else if (strcmp(var.value, "]") == 0)       remap_keys[idx] = SDLK_RIGHTBRACKET; \
+      else if (strcmp(var.value, "h") == 0)       remap_keys[idx] = SDLK_h; \
+      else if (strcmp(var.value, "q") == 0)       remap_keys[idx] = SDLK_q; \
+      else if (strcmp(var.value, "b") == 0)       remap_keys[idx] = SDLK_b; \
+      else if (strcmp(var.value, "backspace") == 0) remap_keys[idx] = SDLK_BACKSPACE; \
+      else if (strcmp(var.value, "escape") == 0)  remap_keys[idx] = SDLK_ESCAPE; \
+      else if (strcmp(var.value, "x") == 0)       remap_keys[idx] = SDLK_x; \
+      else if (strcmp(var.value, "return") == 0)  remap_keys[idx] = SDLK_RETURN; \
+      else if (strcmp(var.value, "space") == 0)   remap_keys[idx] = SDLK_SPACE; \
+      else if (strcmp(var.value, "z") == 0)       remap_keys[idx] = SDLK_z; \
+      else if (strcmp(var.value, "l") == 0)       remap_keys[idx] = SDLK_l; \
+      else if (strcmp(var.value, "f") == 0)       remap_keys[idx] = SDLK_f; \
+      else remap_keys[idx] = default_remap_keys[idx]; \
+    } else { \
+      remap_keys[idx] = default_remap_keys[idx]; \
+    } \
+  } while(0)
+
+  PARSE_KEY("onscripter_en_key_lookback", REMAP_LOOKBACK);
+  PARSE_KEY("onscripter_en_key_menu", REMAP_MENU);
+  PARSE_KEY("onscripter_en_key_advance", REMAP_ADVANCE);
+}
+
+/* KiriKiri frame. The engine owns its own thread and publishes a video surface;
+ * this drives input, pacing, the single game clock, audio and the framebuffer
+ * handoff. Runs only while KiriKiri is the active engine (vtable == NULL). */
+static void kiri_frame(void)
+{
     /* The game terminated itself (KAG `[close]` -> engine TVPTerminateAsync).
      * Per the desired behaviour: pause the core permanently, blank the screen,
      * reset the state — and do NOT let the frontend quit. The engine already
@@ -1208,6 +1286,174 @@ void retro_run(void)
       if (got > 0 && audio_batch_cb)
         audio_batch_cb(audio_buf, got);
     }
+}
+
+
+/* Drain the engine mixer into a batch. No lock — the engine rarely holds
+ * the mixer lock and the callback is fast; this avoids ring underruns. */
+static void ons_submit_audio(SDL_AudioSpec *spec, int16_t *stream,
+                             size_t max_frames, size_t frames)
+{
+  SDL_audiostatus ast = SDL_GetAudioStatus();
+  static SDL_audiostatus last_ast = SDL_AUDIO_STOPPED;
+  static int hb = 0;
+  if (ast != last_ast) {
+    fprintf(stderr, "ons_audio: status %d (spec=%p freq=%d frames=%zu) engine_running=%d\n",
+            (int)ast, (void*)spec, spec ? spec->freq : -1, frames, engine_running);
+    audio_logf("STATUS %d (spec=%p freq=%d ch=%d frames=%zu) engine_running=%d\n",
+               (int)ast, (void*)spec, spec ? spec->freq : -1,
+               spec ? spec->channels : -1, frames, engine_running);
+    last_ast = ast;
+  }
+  /* Heartbeat every ~120 frames: is the mixer open, and does the callback
+   * actually produce samples (non-silence)? */
+  if (++hb >= 120) {
+    hb = 0;
+    audio_logf("HB status=%d spec=%p freq=%d ch=%d frames=%zu running=%d\n",
+               (int)ast, (void*)spec, spec ? spec->freq : -1,
+               spec ? spec->channels : -1, frames, engine_running);
+  }
+  if (spec && ast == SDL_AUDIO_PLAYING && frames <= max_frames) {
+    memset(stream, 0, frames * 4);
+    { static int tc = 0; Uint32 t0 = SDL_GetTicks();
+    spec->callback(NULL, (uint8_t *)stream, frames * 4);
+    Uint32 t1 = SDL_GetTicks();
+    /* peak sample of this batch: 0 => silent (mixer produced nothing) */
+    { int peak = 0;
+      for (size_t i = 0; i < frames * 2; i++) { int v = stream[i]; if (v < 0) v = -v; if (v > peak) peak = v; }
+      static int pc = 0;
+      if (tc < 20 || (pc < 40 && peak > 0)) {
+        audio_logf("[%u] mix=%dms frames=%zu freq=%d peak=%d\n", t0, t1-t0, frames, spec->freq, peak);
+        pc++; tc++;
+      } else if (tc < 20) tc++;
+    } }
+    audio_batch_cb(stream, frames);
+  }
+}
+
+
+/* Choose between a direct framebuffer hand-off and a shadow copy that
+ * carries the mode badges and software cursor. The engine framebuffer is
+ * never modified. */
+static void ons_present_frame(SDL_Surface *screen)
+{
+  bool draw_auto = opt_indicators && engine && vtable->isAutoMode(engine);
+  bool draw_skip = opt_indicators && engine && vtable->isSkipMode(engine);
+// Use a shadow buffer for overlays (indicators + cursor) so the engine's
+// framebuffer is never modified. Always use shadow when indicators or
+// cursor are enabled; otherwise pass the framebuffer directly.
+bool need_shadow = opt_software_cursor || draw_auto || draw_skip;
+if (need_shadow && screen && screen->pixels) {
+  static Uint32 *shadow = NULL;
+  static int shadow_size = 0;
+  int fb_size = screen->w * screen->h * 4;
+  if (fb_size > shadow_size) {
+    shadow = (Uint32 *)realloc(shadow, fb_size);
+    shadow_size = fb_size;
+  }
+  memcpy(shadow, screen->pixels, fb_size);
+  int w = screen->w, h = screen->h;
+  int pitch = screen->pitch / 4;
+  /* Draw mode indicators (top-right corner) */
+  int bx = w - 12, by = 4;
+  if (draw_auto) {
+    for (int dy = 0; dy < 8; dy++)
+      for (int dx = 0; dx < 8; dx++)
+        if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
+          shadow[(by+dy) * pitch + (bx+dx)] = 0xCC22AA22;
+    bx -= 12;
+  }
+  if (draw_skip) {
+    for (int dy = 0; dy < 8; dy++)
+      for (int dx = 0; dx < 8; dx++)
+        if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
+          shadow[(by+dy) * pitch + (bx+dx)] = 0xCCAAAA22;
+  }
+  /* Draw software cursor on shadow (not on engine framebuffer) */
+  if (opt_software_cursor) {
+    int cx, cy;
+    SDL_libretro_get_mouse_pos(&cx, &cy);
+    /* Off-screen (negative) until real pointer input: draw nothing then. */
+    for (int dy = 0; dy < 12 && cx >= 0 && cy >= 0; dy++) {
+      for (int dx = 0; dx < 12; dx++) {
+        int sx = cx + dx, sy = cy + dy;
+        if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+          if (dx == 0 || dy == dx)
+            shadow[sy * pitch + sx] = 0xFFFFFFFF;
+        }
+      }
+    }
+  }
+  video_cb(shadow, screen->w, screen->h, screen->pitch);
+} else if (screen && screen->pixels) {
+  video_cb(screen->pixels, screen->w, screen->h, screen->pitch);
+} else {
+  video_cb(NULL, 0, 0, 0);
+}
+}
+
+/* Drive the single game clock. Only touch it when the effective rate
+ * actually changes (FF on/off, or the option changed) — a plain double
+ * compare per frame, no store, no call in the common case. `scale` is the
+ * Nx only while FF is on; 1.0 otherwise. */
+static void ons_drive_clock(bool ff)
+{
+  double want = ff ? opt_ff_scale : 1.0;
+  if (want != clock_scale_applied) {
+    clock_scale_applied = want;
+    ons_libretro_clock_set(want);
+  }
+  /* ONS_CLOCK_DEBUG: ~2 Hz trace of the live clock so a human can watch the
+   * bias grow at (scale-1)x while FF is on and freeze when it is off. */
+  static int cdbg = -1;
+  if (cdbg < 0) cdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
+  if (cdbg) {
+    static int cdbg_count = 0;
+    if (++cdbg_count >= 30) {
+      cdbg_count = 0;
+      fprintf(stderr, "[clock] ff=%d scale=%.3f t=%lldms\n",
+              (int)ff, clock_scale_applied, ons_libretro_game_clock_ms());
+    }
+  }
+}
+
+/* Frontend heartbeat for the ONS/PONS engine thread. RetroArch stops calling
+ * retro_run entirely while its menu is open, so a paused flag set here would
+ * never be observed. The engine thread instead watches this timestamp:
+ * SDL_Delay() blocks when the heartbeat goes stale (see SDL_systimer.c), which
+ * freezes text/animation exactly like a pause. */
+static void stamp_frontend_heartbeat(void)
+{
+  struct timespec hb;
+  clock_gettime(CLOCK_MONOTONIC, &hb);
+  SDL_libretro_frontend_hb =
+      (unsigned long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000;
+}
+
+/* Pointer options drive the input callback for *both* engines, and the KiriKiri
+ * branch returns before the main option block, so read them where every path
+ * sees them. */
+static void read_pointer_options(void)
+{
+  struct retro_variable pvar = {0};
+  pvar.key = "onscripter_en_pointer_enable";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
+    opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
+  pvar.key = "onscripter_en_pointer_source";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
+    opt_pointer_source = (strcmp(pvar.value, "left") == 0) ? POINTER_SOURCE_LEFT
+                                                           : POINTER_SOURCE_RIGHT;
+}
+
+void retro_run(void)
+{
+  stamp_frontend_heartbeat();
+  read_pointer_options();
+
+  /* KiriKiri runs its own engine thread and owns its frame loop; ONS/PONS do
+   * not, so the two paths are entirely separate. */
+  if (!vtable) {
+    kiri_frame();
     return;
   }
   if (!engine_running) {
@@ -1216,131 +1462,12 @@ void retro_run(void)
     video_cb(black, 640, 480, 640*4);
     return;
   }
-#ifdef LIBRETRO_FRAME_SYNC
-  static bool frame_sync_activated = false;
-  if (!frame_sync_activated) {
-    SDL_Event ev;
-    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
-      ;
-    frame_sync_activated = true;
-    { char env_path[PATH_MAX_LENGTH]; fill_pathname_join(env_path, last_save_path, "envdata", sizeof(env_path));
-      FILE *ef = fopen(env_path, "rb");
-      if (ef) { fseek(ef, 0, SEEK_END); long esz = ftell(ef); fseek(ef, 0, SEEK_SET);
-        unsigned char buf[256]; size_t nr = fread(buf, 1, esz < 256 ? esz : 256, ef);
-        for (size_t i = 0; i < nr; i += 16) {
-          char hex[128] = ""; int p = 0;
-          for (size_t j = i; j < i+16 && j < nr; j++) p += snprintf(hex+p, sizeof(hex)-p, "%02x ", buf[j]);
-          log_cb(RETRO_LOG_INFO, "  %04zx: %s\n", i, hex);
-        }
-        fclose(ef);
-      } else log_cb(RETRO_LOG_INFO, "envdata: not found (using defaults)\n");
-    }
-  }
-  // Re-read core options each frame (allows hot-reload from Quick Menu)
-  struct retro_variable var = {0};
-
-  var.key = "onscripter_en_frame_sync";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    bool new_sync = (strcmp(var.value, "enabled") == 0);
-    if (new_sync != opt_frame_sync) {
-      opt_frame_sync = new_sync;
-      if (opt_frame_sync && !SDL_libretro_wait_sem)
-        SDL_libretro_wait_sem = NULL; /* disabled — causes deadlock */
-      else if (!opt_frame_sync)
-        SDL_libretro_wait_sem = NULL;
-    }
-  }
-
-  var.key = "onscripter_en_mode_indicators";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    opt_indicators = (strcmp(var.value, "enabled") == 0);
-
-  var.key = "onscripter_en_debug_level";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    int new_debug = atoi(var.value);
-    if (new_debug != opt_debug_level) {
-      opt_debug_level = new_debug;
-      if (engine) vtable->setDebugLevel(engine, opt_debug_level);
-    }
-  }
-
-  var.key = "onscripter_en_software_cursor";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    opt_software_cursor = (strcmp(var.value, "enabled") == 0);
-
-  var.key = "onscripter_en_text_speed";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    int new_speed = -1;
-    if (strcmp(var.value, "slow") == 0)        new_speed = 0;
-    else if (strcmp(var.value, "normal") == 0) new_speed = 1;
-    else if (strcmp(var.value, "fast") == 0)   new_speed = 2;
-    else if (strcmp(var.value, "instant") == 0) new_speed = 3;
-    if (new_speed != opt_text_speed) {
-      opt_text_speed = new_speed;
-      if (engine && opt_text_speed >= 0 && opt_text_speed <= 2)
-        vtable->setTextSpeed(engine, opt_text_speed);
-    }
-  }
-
-  read_ff_speed_option();   /* shared with the KiriKiri branch (line ~917) */
-
-  var.key = "onscripter_en_mouse_sensitivity";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    opt_mouse_sensitivity = atof(var.value);
-#endif
-  /* Read key remap options */
-  #define PARSE_KEY(optname, idx) do { \
-    var.key = optname; \
-    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) { \
-      if (strcmp(var.value, "[") == 0)            remap_keys[idx] = SDLK_LEFTBRACKET; \
-      else if (strcmp(var.value, "]") == 0)       remap_keys[idx] = SDLK_RIGHTBRACKET; \
-      else if (strcmp(var.value, "h") == 0)       remap_keys[idx] = SDLK_h; \
-      else if (strcmp(var.value, "q") == 0)       remap_keys[idx] = SDLK_q; \
-      else if (strcmp(var.value, "b") == 0)       remap_keys[idx] = SDLK_b; \
-      else if (strcmp(var.value, "backspace") == 0) remap_keys[idx] = SDLK_BACKSPACE; \
-      else if (strcmp(var.value, "escape") == 0)  remap_keys[idx] = SDLK_ESCAPE; \
-      else if (strcmp(var.value, "x") == 0)       remap_keys[idx] = SDLK_x; \
-      else if (strcmp(var.value, "return") == 0)  remap_keys[idx] = SDLK_RETURN; \
-      else if (strcmp(var.value, "space") == 0)   remap_keys[idx] = SDLK_SPACE; \
-      else if (strcmp(var.value, "z") == 0)       remap_keys[idx] = SDLK_z; \
-      else if (strcmp(var.value, "l") == 0)       remap_keys[idx] = SDLK_l; \
-      else if (strcmp(var.value, "f") == 0)       remap_keys[idx] = SDLK_f; \
-      else remap_keys[idx] = default_remap_keys[idx]; \
-    } else { \
-      remap_keys[idx] = default_remap_keys[idx]; \
-    } \
-  } while(0)
-
-  PARSE_KEY("onscripter_en_key_lookback", REMAP_LOOKBACK);
-  PARSE_KEY("onscripter_en_key_menu", REMAP_MENU);
-  PARSE_KEY("onscripter_en_key_advance", REMAP_ADVANCE);
+  read_frame_options();
   // Detect fast-forward mode
   bool ff = false;
   environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &ff);
   SDL_libretro_fastforward = ff;
-  /* Drive the single game clock. Only touch it when the effective rate
-   * actually changes (FF on/off, or the option changed) — a plain double
-   * compare per frame, no store, no call in the common case. `scale` is the
-   * Nx only while FF is on; 1.0 otherwise. */
-  {
-    double want = ff ? opt_ff_scale : 1.0;
-    if (want != clock_scale_applied) {
-      clock_scale_applied = want;
-      ons_libretro_clock_set(want);
-    }
-    /* ONS_CLOCK_DEBUG: ~2 Hz trace of the live clock so a human can watch the
-     * bias grow at (scale-1)x while FF is on and freeze when it is off. */
-    static int cdbg = -1;
-    if (cdbg < 0) cdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
-    if (cdbg) {
-      static int cdbg_count = 0;
-      if (++cdbg_count >= 30) {
-        cdbg_count = 0;
-        fprintf(stderr, "[clock] ff=%d scale=%.3f t=%lldms\n",
-                (int)ff, clock_scale_applied, ons_libretro_game_clock_ms());
-      }
-    }
-  }
+  ons_drive_clock(ff);
   if (!engine || !vtable) return;
   int av_enable = 1;
   if (environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av_enable) && !(av_enable & 1)) {
@@ -1437,99 +1564,8 @@ void retro_run(void)
 
   // Draw mode indicators (auto/skip badges) on the shadow buffer
   // along with the cursor, so the engine framebuffer is never modified.
-  bool draw_auto = opt_indicators && engine && vtable->isAutoMode(engine);
-  bool draw_skip = opt_indicators && engine && vtable->isSkipMode(engine);
-  // Use a shadow buffer for overlays (indicators + cursor) so the engine's
-  // framebuffer is never modified. Always use shadow when indicators or
-  // cursor are enabled; otherwise pass the framebuffer directly.
-  bool need_shadow = opt_software_cursor || draw_auto || draw_skip;
-  if (need_shadow && screen && screen->pixels) {
-    static Uint32 *shadow = NULL;
-    static int shadow_size = 0;
-    int fb_size = screen->w * screen->h * 4;
-    if (fb_size > shadow_size) {
-      shadow = (Uint32 *)realloc(shadow, fb_size);
-      shadow_size = fb_size;
-    }
-    memcpy(shadow, screen->pixels, fb_size);
-    int w = screen->w, h = screen->h;
-    int pitch = screen->pitch / 4;
-    /* Draw mode indicators (top-right corner) */
-    int bx = w - 12, by = 4;
-    if (draw_auto) {
-      for (int dy = 0; dy < 8; dy++)
-        for (int dx = 0; dx < 8; dx++)
-          if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
-            shadow[(by+dy) * pitch + (bx+dx)] = 0xCC22AA22;
-      bx -= 12;
-    }
-    if (draw_skip) {
-      for (int dy = 0; dy < 8; dy++)
-        for (int dx = 0; dx < 8; dx++)
-          if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
-            shadow[(by+dy) * pitch + (bx+dx)] = 0xCCAAAA22;
-    }
-    /* Draw software cursor on shadow (not on engine framebuffer) */
-    if (opt_software_cursor) {
-      int cx, cy;
-      SDL_libretro_get_mouse_pos(&cx, &cy);
-      /* Off-screen (negative) until real pointer input: draw nothing then. */
-      for (int dy = 0; dy < 12 && cx >= 0 && cy >= 0; dy++) {
-        for (int dx = 0; dx < 12; dx++) {
-          int sx = cx + dx, sy = cy + dy;
-          if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
-            if (dx == 0 || dy == dx)
-              shadow[sy * pitch + sx] = 0xFFFFFFFF;
-          }
-        }
-      }
-    }
-    video_cb(shadow, screen->w, screen->h, screen->pitch);
-  } else if (screen && screen->pixels) {
-    video_cb(screen->pixels, screen->w, screen->h, screen->pitch);
-  } else {
-    video_cb(NULL, 0, 0, 0);
-  }
-  /* Audio: call mixer callback directly. No lock — the engine rarely
- * holds the mixer lock (only during Mix_PlayChannel etc.), and the
- * callback is fast. This avoids ring buffer underruns. */
-  {
-    SDL_audiostatus ast = SDL_GetAudioStatus();
-    static SDL_audiostatus last_ast = SDL_AUDIO_STOPPED;
-    static int hb = 0;
-    if (ast != last_ast) {
-      fprintf(stderr, "ons_audio: status %d (spec=%p freq=%d frames=%zu) engine_running=%d\n",
-              (int)ast, (void*)spec, spec ? spec->freq : -1, frames, engine_running);
-      audio_logf("STATUS %d (spec=%p freq=%d ch=%d frames=%zu) engine_running=%d\n",
-                 (int)ast, (void*)spec, spec ? spec->freq : -1,
-                 spec ? spec->channels : -1, frames, engine_running);
-      last_ast = ast;
-    }
-    /* Heartbeat every ~120 frames: is the mixer open, and does the callback
-     * actually produce samples (non-silence)? */
-    if (++hb >= 120) {
-      hb = 0;
-      audio_logf("HB status=%d spec=%p freq=%d ch=%d frames=%zu running=%d\n",
-                 (int)ast, (void*)spec, spec ? spec->freq : -1,
-                 spec ? spec->channels : -1, frames, engine_running);
-    }
-    if (spec && ast == SDL_AUDIO_PLAYING && frames <= max_frames) {
-      memset(stream, 0, frames * 4);
-      { static int tc = 0; Uint32 t0 = SDL_GetTicks();
-      spec->callback(NULL, (uint8_t *)stream, frames * 4);
-      Uint32 t1 = SDL_GetTicks();
-      /* peak sample of this batch: 0 => silent (mixer produced nothing) */
-      { int peak = 0;
-        for (size_t i = 0; i < frames * 2; i++) { int v = stream[i]; if (v < 0) v = -v; if (v > peak) peak = v; }
-        static int pc = 0;
-        if (tc < 20 || (pc < 40 && peak > 0)) {
-          audio_logf("[%u] mix=%dms frames=%zu freq=%d peak=%d\n", t0, t1-t0, frames, spec->freq, peak);
-          pc++; tc++;
-        } else if (tc < 20) tc++;
-      } }
-      audio_batch_cb(stream, frames);
-    }
-  }
+  ons_present_frame(screen);
+  ons_submit_audio(spec, stream, max_frames, frames);
 }
 size_t retro_serialize_size(void)
 {

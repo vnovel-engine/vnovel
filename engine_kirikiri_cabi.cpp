@@ -14,9 +14,14 @@ typedef unsigned int Uint32;
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <retro_miscellaneous.h>   /* PATH_MAX_LENGTH */
+#include <libretro.h>              /* retro_environment_t, RETRO_ENVIRONMENT_* */
 /* The core's single game clock (sdl-libretro/video.c); installed into the
  * engine via krkr_set_clock. C linkage — defined in C, consumed from C++. */
 extern "C" long long ons_libretro_game_clock_ms(void);
+/* The frontend callback table, exported by libretro.cpp. Used to locate the
+ * engine library via GET_SYSTEM_DIRECTORY / GET_LIBRETRO_PATH. */
+extern "C" retro_environment_t environ_cb_global;
 /* libretro input device constants (from libretro.h) */
 #define KRKR_RETRO_DEVICE_POINTER 6        /* RETRO_DEVICE_POINTER (was wrongly 0x104) */
 #define KRKR_RETRO_DEVICE_JOYPAD  1
@@ -34,13 +39,32 @@ typedef void (*krkr_set_resolution_t)(int, int);
 
 // Global surface pointer — void* to avoid SDL 1.2/SDL2 type conflict
 extern "C" void *SDL_libretro_surface = NULL;
+
+/* The engine's shared-library file name, per platform. The loader below is
+ * otherwise platform-neutral: it dlopen's whatever this expands to. */
+#if defined(_WIN32)
+#  define KRKR_ENGINE_SONAME "krkrsdl2.dll"
+#elif defined(__APPLE__)
+#  define KRKR_ENGINE_SONAME "libkrkrsdl2.dylib"
+#else
+#  define KRKR_ENGINE_SONAME "libkrkrsdl2.so"
+#endif
+/* Join a directory and the engine library name into `out`. */
+static void krkr_join(char *out, size_t n, const char *dir)
+{
+    size_t len = strlen(dir);
+    if (len && (dir[len - 1] == '/' || dir[len - 1] == '\\'))
+        snprintf(out, n, "%s%s", dir, KRKR_ENGINE_SONAME);
+    else
+        snprintf(out, n, "%s/%s", dir, KRKR_ENGINE_SONAME);
+}
 // Audio capture is in krkrsdl2's FAudio_platform_sdl2.c (SDL_libretro_audio_* globals)
 
 static pthread_t krkr_thread;
 static volatile bool krkr_running = false;
-static char krkr_game_path[4096] = "";
+static char krkr_game_path[PATH_MAX_LENGTH] = "";
 static void *krkr_dl = NULL;
-static char krkr_personal_path[4096] = "";
+static char krkr_personal_path[PATH_MAX_LENGTH] = "";
 static krkrsdl2_pre_init_platform_t p_pre_init = NULL;
 static krkrsdl2_run_main_loop_t p_run_main_loop = NULL;
 static krkrsdl2_cleanup_t p_cleanup = NULL;
@@ -78,7 +102,7 @@ static void *krkr_main(void *data) {
      * package installs to. An explicit env var still wins. */
     if (!getenv("KRKRSDL2_DATA_PATH"))
         setenv("KRKRSDL2_DATA_PATH", "/usr/share/krkrsdl2", 1);
-    char path_env[4096];
+    char path_env[PATH_MAX_LENGTH];
     snprintf(path_env, sizeof(path_env), "%s:%s/system/:%s/plugin/", krkr_game_path, krkr_game_path, krkr_game_path);
     if (p_pre_init) p_pre_init();
     setenv("SDL_VIDEODRIVER", "dummy", 1);
@@ -117,23 +141,23 @@ int krkr_init(EngineHandle engine) {
         krkr_dl = dlopen(override, RTLD_NOW | RTLD_DEEPBIND);
         fprintf(stderr, "krkr_init: dlopen(%s)=%p\n", override, krkr_dl);
     }
-    /* Fallback chain for the engine .so. A bare dlopen("libkrkrsdl2.so") only
-     * works if the loader's search path happens to contain it; on this dev
-     * setup it does not, so KiriKiri silently failed to initialise unless the
-     * caller exported KRKRSDL2_LIB_PATH. Try, in order: the directory holding
-     * the running core (where a dev/side-by-side install puts it), the
-     * conventional libretro cores dir, then the system paths. */
+    /* Fallback chain for the engine library. A bare dlopen of KRKR_ENGINE_SONAME
+     * only works if the loader's search path happens to contain it; on this dev
+     * setup it did not, so KiriKiri silently failed to initialise unless the
+     * caller exported KRKRSDL2_LIB_PATH. Instead of guessing OS-specific paths,
+     * ask the frontend where things are:
+     *   1. the directory holding the running core (dev / side-by-side install);
+     *   2. the frontend's system directory (per-machine shared data);
+     *   3. the directory of the core named by GET_LIBRETRO_PATH;
+     *   4. the loader's own search path.
+     * No hardcoded /usr/lib or $HOME/.config prefixes — this keeps the same code
+     * working on Linux, macOS and Windows. */
     if (!krkr_dl) {
-        static const char *cands[] = {
-            "$COREDIR/libkrkrsdl2.so",          /* replaced below */
-            "$HOME/.config/retroarch/cores/libkrkrsdl2.so", /* replaced below */
-            "/usr/lib/libkrkrsdl2.so",
-            "/usr/local/lib/libkrkrsdl2.so",
-            "libkrkrsdl2.so",                   /* loader search path (last) */
-        };
-        char path[4096];
+        char path[PATH_MAX_LENGTH];
+        char coredir[PATH_MAX_LENGTH] = "";
+        char libdir[PATH_MAX_LENGTH] = "";
+
         /* The core's own directory: dladdr on a symbol in this .so. */
-        char coredir[4096] = "";
         {
             Dl_info info;
             if (dladdr((void*)&krkr_init, &info) && info.dli_fname) {
@@ -142,19 +166,33 @@ int krkr_init(EngineHandle engine) {
                 if (slash) *slash = '\0'; else coredir[0] = '\0';
             }
         }
-        const char *home = getenv("HOME");
-        for (unsigned i = 0; i < sizeof(cands)/sizeof(cands[0]) && !krkr_dl; i++) {
-            if (strncmp(cands[i], "$COREDIR/", 9) == 0) {
-                if (!coredir[0]) continue;
-                snprintf(path, sizeof(path), "%s/%s", coredir, cands[i] + 9);
-            } else if (strncmp(cands[i], "$HOME/", 6) == 0) {
-                if (!home || !*home) continue;
-                snprintf(path, sizeof(path), "%s/%s", home, cands[i] + 6);
-            } else {
-                snprintf(path, sizeof(path), "%s", cands[i]);
-            }
+        const char *sysdir = NULL;
+        if (environ_cb_global &&
+            !environ_cb_global(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysdir))
+            sysdir = NULL;
+        const char *core_path = NULL;
+        if (environ_cb_global &&
+            !environ_cb_global(RETRO_ENVIRONMENT_GET_LIBRETRO_PATH, &core_path))
+            core_path = NULL;
+        if (core_path && *core_path) {
+            snprintf(libdir, sizeof(libdir), "%s", core_path);
+            char *slash = strrchr(libdir, '/');
+            if (slash) *slash = '\0'; else libdir[0] = '\0';
+        }
+
+        const char *dirs[3];
+        int nd = 0;
+        if (coredir[0]) dirs[nd++] = coredir;
+        if (sysdir && *sysdir) dirs[nd++] = sysdir;
+        if (libdir[0]) dirs[nd++] = libdir;
+        for (int i = 0; i < nd && !krkr_dl; i++) {
+            krkr_join(path, sizeof(path), dirs[i]);
             krkr_dl = dlopen(path, RTLD_NOW | RTLD_DEEPBIND);
-            if (krkr_dl) fprintf(stderr, "krkr_init: dlopen(%s)=%p\n", path, krkr_dl);
+            fprintf(stderr, "krkr_init: dlopen(%s)=%p\n", path, krkr_dl);
+        }
+        if (!krkr_dl) {
+            krkr_dl = dlopen(KRKR_ENGINE_SONAME, RTLD_NOW | RTLD_DEEPBIND);
+            if (krkr_dl) fprintf(stderr, "krkr_init: dlopen(%s)=%p\n", KRKR_ENGINE_SONAME, krkr_dl);
         }
     }
     if (!krkr_dl) {
