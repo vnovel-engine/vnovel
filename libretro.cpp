@@ -8,10 +8,20 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <signal.h>
-#include <execinfo.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+/* backtrace()/backtrace_symbols_fd() are glibc extensions: unavailable on
+ * Windows, and macOS spells its equivalent differently. Guard the whole
+ * symbolication path so the core builds and runs everywhere; without it the
+ * handler still logs the signal and fault address, which is the part that
+ * matters most. */
+#if defined(__GLIBC__)
+#  include <execinfo.h>
+#  define ONS_HAVE_BACKTRACE 1
+#else
+#  define ONS_HAVE_BACKTRACE 0
+#endif
 /* Vendored fallback font, generated from resources/fonts/ by the Makefile;
  * registered in retro_init for glyphs the game fonts lack. */
 #include "fallback_font.h"
@@ -39,29 +49,54 @@ static void ons_set_crash_log_path(const char *dir)
     fill_pathname_join(ons_crash_log_path, dir, "ons_crash.log", sizeof(ons_crash_log_path));
 }
 
+#if !defined(_WIN32)
 static void ons_crash_handler(int sig, siginfo_t *si, void *ctx)
 {
   (void)ctx;
   static volatile int reentry = 0;
   if (reentry) { signal(sig, SIG_DFL); raise(sig); return; }
   reentry = 1;
+#else
+/* signal() on Windows passes only the signal number. */
+static void ons_crash_handler(int sig)
+{
+  static volatile int reentry = 0;
+  if (reentry) { signal(sig, SIG_DFL); raise(sig); return; }
+  reentry = 1;
+  const void *si_addr = NULL;
+#endif
 
   int fd = open(ons_crash_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd >= 0) {
     char buf[256];
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
+#if !defined(_WIN32)
+    const void *crash_addr = si ? si->si_addr : NULL;
+#else
+    const void *crash_addr = si_addr;
+#endif
     int n = snprintf(buf, sizeof buf,
                      "=== signal %d (%s) addr=%p at %lld.%03lds ===\n",
                      sig,
-                     sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" :
+                     sig == SIGSEGV ? "SIGSEGV" :
+#ifdef SIGBUS
+                     sig == SIGBUS ? "SIGBUS" :
+#endif
                      sig == SIGABRT ? "SIGABRT" : "signal",
-                     si ? si->si_addr : NULL,
+                     crash_addr,
                      (long long)ts.tv_sec, ts.tv_nsec / 1000000);
     if (n > 0) write(fd, buf, n);
+#if ONS_HAVE_BACKTRACE
     void *bt[64];
     int frames = backtrace(bt, 64);
     backtrace_symbols_fd(bt, frames, fd);
+#else
+    /* No symbolication on this platform; the address above is still the
+     * most useful single fact for a crash report. */
+    const char *note = "(no backtrace: platform lacks backtrace())\n";
+    write(fd, note, strlen(note));
+#endif
     close(fd);
   }
   signal(sig, SIG_DFL);
@@ -490,6 +525,10 @@ void retro_init(void)
     const char *save_dir = NULL;
     if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir))
       ons_set_crash_log_path(save_dir);
+#if !defined(_WIN32)
+    /* sigaction/SA_SIGINFO/SIGBUS are POSIX; Windows has no equivalent
+     * (SetUnhandledExceptionFilter is a different mechanism, and the address
+     * it gives is already reported by the frontend). Skip the install there. */
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = ons_crash_handler;
@@ -497,6 +536,10 @@ void retro_init(void)
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGBUS, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
+#else
+    signal(SIGABRT, ons_crash_handler);
+    signal(SIGSEGV, ons_crash_handler);
+#endif
   }
   enum retro_pixel_format pixfmt = RETRO_PIXEL_FORMAT_XRGB8888;
   struct retro_frame_time_callback frametime = {

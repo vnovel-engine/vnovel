@@ -7,13 +7,50 @@
 // SDL 1.2/SDL2 symbol conflicts. This wrapper dlopen's it at runtime.
 // RTLD_DEEPBIND ensures krkrsdl2 uses its own SDL2, not the core's SDL 1.2.
 typedef unsigned int Uint32;
-#include <dlfcn.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+/* dlopen/dlsym are POSIX. On Windows the same job is done by LoadLibrary /
+ * GetProcAddress, so provide the same spellings and let the rest of the file
+ * stay platform-neutral. RTLD_DEEPBIND is a glibc extension with no Windows
+ * equivalent: the reason it is used here (keep the engine's own SDL2 from
+ * binding to the core's SDL 1.2) does not arise there, because the engine is a
+ * separate DLL with its own imports. */
+#ifdef _WIN32
+#  include <windows.h>
+#  define RTLD_NOW 0
+#  define RTLD_DEEPBIND 0
+#  define RTLD_LAZY 0
+#  define RTLD_NOLOAD 0
+/* Windows has no global symbol namespace: RTLD_DEFAULT is the main module,
+ * which is the closest equivalent for our uses. */
+#  define RTLD_DEFAULT ((void *)GetModuleHandleA(NULL))
+static inline void *dlopen(const char *path, int) { return (void *)LoadLibraryA(path); }
+static inline void *dlsym(void *h, const char *name) {
+    return h ? (void *)GetProcAddress((HMODULE)h, name) : NULL;
+}
+static inline int dlclose(void *h) { return h ? (FreeLibrary((HMODULE)h) ? 0 : -1) : -1; }
+static const char *dlerror(void) {
+    static char msg[64];
+    snprintf(msg, sizeof msg, "LoadLibrary/GetProcAddress failed (%lu)", GetLastError());
+    return msg;
+}
+/* setenv/unsetenv are POSIX; the CRT has _putenv_s. */
+static inline int setenv(const char *name, const char *value, int overwrite) {
+    if (!overwrite && getenv(name)) return 0;
+    return _putenv_s(name, value);
+}
+static inline int unsetenv(const char *name) { return _putenv_s(name, ""); }
+/* dladdr has no Windows equivalent in this shape; a Windows build does not use
+ * the coredir search (it resolves the engine DLL by name), so report failure. */
+struct Dl_info { const char *dli_fname; void *dli_fbase; const char *dli_sname; void *dli_saddr; };
+static inline int dladdr(const void *, Dl_info *) { return 0; }
+#else
+#  include <dlfcn.h>
+#endif
 #include <retro_miscellaneous.h>   /* PATH_MAX_LENGTH */
 #include <libretro.h>              /* retro_environment_t, RETRO_ENVIRONMENT_* */
 /* The core's single game clock (sdl-libretro/video.c); installed into the
