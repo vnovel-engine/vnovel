@@ -69,7 +69,7 @@ static void pons_setResolution(EngineHandle h, int w, int hh) {
 }
 
 /* Runtime accessors — see engine_runtime_accessors.h; shared with ONScripter
- * because they only read this module's own SDL and glue. */
+ * because they read only this module's own SDL and glue. */
 #include "engine_runtime_accessors.h"
 
 extern "C" const EngineVTable pons_engine_vtable = {
@@ -79,6 +79,7 @@ extern "C" const EngineVTable pons_engine_vtable = {
     pons_setResolution,
     /* runtime accessors */
     engine_getSurface, engine_getSampleRate, engine_isAudioPaused, engine_setAudioPaused,
+    engine_getAudio,
     /* thread accessors: stay with the core until SDL moves into this module (see
      * engine_cabi.h on why the thread, its setjmp and its SDL belong together) */
     NULL, NULL, NULL, NULL, NULL,

@@ -937,9 +937,7 @@ static void read_frame_options(void)
 #ifdef LIBRETRO_FRAME_SYNC
   static bool frame_sync_activated = false;
   if (!frame_sync_activated) {
-    SDL_Event ev;
-    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
-      ;
+    if (engine && vtable->drainUserEvents) vtable->drainUserEvents(engine);
     frame_sync_activated = true;
     { char env_path[PATH_MAX_LENGTH]; fill_pathname_join(env_path, last_save_path, "envdata", sizeof(env_path));
       FILE *ef = fopen(env_path, "rb");
@@ -1333,53 +1331,46 @@ static void kiri_frame(void)
 }
 
 
-/* Drain the engine mixer into a batch. No lock — the engine rarely holds
- * the mixer lock and the callback is fast; this avoids ring underruns. */
-static void ons_submit_audio(SDL_AudioSpec *spec, int16_t *stream,
+/* Pull one batch from the engine's mixer and hand it to the frontend.
+ *
+ * `rate` is passed in because retro_run already fetched it for the AV geometry;
+ * calling the accessor again per frame would be wasted work. */
+static void ons_submit_audio(int rate, int16_t *stream,
                              size_t max_frames, size_t frames)
 {
-  SDL_audiostatus ast = SDL_GetAudioStatus();
-  static SDL_audiostatus last_ast = SDL_AUDIO_STOPPED;
-  static int hb = 0;
-  if (ast != last_ast) {
-    fprintf(stderr, "ons_audio: status %d (spec=%p freq=%d frames=%zu) engine_running=%d\n",
-            (int)ast, (void*)spec, spec ? spec->freq : -1, frames, engine_running);
-    audio_logf("STATUS %d (spec=%p freq=%d ch=%d frames=%zu) engine_running=%d\n",
-               (int)ast, (void*)spec, spec ? spec->freq : -1,
-               spec ? spec->channels : -1, frames, engine_running);
-    last_ast = ast;
+  if (!engine || !vtable->getAudio || frames > max_frames) return;
+  /* Paused or closed audio yields nothing; getAudio reports that as 0. */
+  if (vtable->isAudioPaused && vtable->isAudioPaused(engine)) {
+    static bool logged = false;
+    if (!logged) { logged = true; audio_logf("STATUS paused freq=%d\n", rate); }
+    return;
   }
-  /* Heartbeat every ~120 frames: is the mixer open, and does the callback
-   * actually produce samples (non-silence)? */
+  int got = vtable->getAudio(engine, stream, (int)frames);
+  if (got <= 0) return;
+  /* Heartbeat every ~120 frames: does the mixer actually produce samples
+   * (non-silence), or is it handing back zeros? */
+  static int hb = 0;
   if (++hb >= 120) {
     hb = 0;
-    audio_logf("HB status=%d spec=%p freq=%d ch=%d frames=%zu running=%d\n",
-               (int)ast, (void*)spec, spec ? spec->freq : -1,
-               spec ? spec->channels : -1, frames, engine_running);
+    int peak = 0;
+    for (size_t i = 0; i < (size_t)got * 2; i++) {
+      int v = stream[i]; if (v < 0) v = -v; if (v > peak) peak = v;
+    }
+    audio_logf("HB freq=%d frames=%d peak=%d running=%d\n",
+               rate, got, peak, engine_running);
   }
-  if (spec && ast == SDL_AUDIO_PLAYING && frames <= max_frames) {
-    memset(stream, 0, frames * 4);
-    { static int tc = 0; Uint32 t0 = SDL_GetTicks();
-    spec->callback(NULL, (uint8_t *)stream, frames * 4);
-    Uint32 t1 = SDL_GetTicks();
-    /* peak sample of this batch: 0 => silent (mixer produced nothing) */
-    { int peak = 0;
-      for (size_t i = 0; i < frames * 2; i++) { int v = stream[i]; if (v < 0) v = -v; if (v > peak) peak = v; }
-      static int pc = 0;
-      if (tc < 20 || (pc < 40 && peak > 0)) {
-        audio_logf("[%u] mix=%dms frames=%zu freq=%d peak=%d\n", t0, t1-t0, frames, spec->freq, peak);
-        pc++; tc++;
-      } else if (tc < 20) tc++;
-    } }
-    audio_batch_cb(stream, frames);
-  }
+  audio_batch_cb(stream, (size_t)got);
 }
 
 
 /* Choose between a direct framebuffer hand-off and a shadow copy that
  * carries the mode badges and software cursor. The engine framebuffer is
- * never modified. */
-static void ons_present_frame(SDL_Surface *screen)
+ * never modified.
+ *
+ * Takes an EngineSurface rather than an SDL_Surface: the core does not include
+ * SDL headers, so the engine's SDL cannot be confused with an SDL2/SDL3 the
+ * frontend loads globally. Same four fields. */
+static void ons_present_frame(const EngineSurface *screen)
 {
   bool draw_auto = opt_indicators && engine && vtable->isAutoMode(engine);
   bool draw_skip = opt_indicators && engine && vtable->isSkipMode(engine);
@@ -1390,13 +1381,13 @@ bool need_shadow = opt_software_cursor || draw_auto || draw_skip;
 if (need_shadow && screen && screen->pixels) {
   static Uint32 *shadow = NULL;
   static int shadow_size = 0;
-  int fb_size = screen->w * screen->h * 4;
+  int fb_size = screen->width * screen->height * 4;
   if (fb_size > shadow_size) {
     shadow = (Uint32 *)realloc(shadow, fb_size);
     shadow_size = fb_size;
   }
   memcpy(shadow, screen->pixels, fb_size);
-  int w = screen->w, h = screen->h;
+  int w = screen->width, h = screen->height;
   int pitch = screen->pitch / 4;
   /* Draw mode indicators (top-right corner) */
   int bx = w - 12, by = 4;
@@ -1428,9 +1419,9 @@ if (need_shadow && screen && screen->pixels) {
       }
     }
   }
-  video_cb(shadow, screen->w, screen->h, screen->pitch);
+  video_cb(shadow, screen->width, screen->height, screen->pitch);
 } else if (screen && screen->pixels) {
-  video_cb(screen->pixels, screen->w, screen->h, screen->pitch);
+  video_cb(screen->pixels, screen->width, screen->height, screen->pitch);
 } else {
   video_cb(NULL, 0, 0, 0);
 }
@@ -1521,62 +1512,65 @@ void retro_run(void)
   // Unpause: clear flag and drain accumulated timer events
   if (SDL_libretro_paused) {
     SDL_libretro_paused = false;
-    SDL_Event ev;
-    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
-      ;
+    /* Drop timer events the engine queued while paused instead of replaying
+     * them at once, which would make the script jump forward. */
+    if (engine && vtable->drainUserEvents) vtable->drainUserEvents(engine);
   }
 
-  SDL_Surface *screen = SDL_GetVideoSurface();
+  /* The engine owns its SDL now, so ask it for the framebuffer and the audio
+   * rate rather than reaching into SDL from here. Both are NULL/0 until the
+   * engine's video mode and audio are up. */
+  const EngineSurface *screen = (engine && vtable->getSurface) ? vtable->getSurface(engine) : NULL;
+  int rate = (engine && vtable->getSampleRate) ? vtable->getSampleRate(engine) : 0;
+  if (rate <= 0) rate = 44100;
   /* retro_get_system_av_info() runs before load_game, when the engine does not
    * exist yet, so it can only guess. Once the engine's surface is up, report
    * its real internal resolution (ONScripter/Ponscripter derive it from the
    * script: commonly 640x480 or 800x600) so RetroArch sizes the viewport
    * correctly. Scaling/aspect stay RetroArch's decision.
    *
-   * Sample rate: report the rate the engine actually negotiated with SDL
-   * (spec->freq), NOT a hardcoded value. ONScripter/PONScripter open at 44100;
-   * advertising 48000 here made RetroArch consume 800 samples/frame while the
-   * core only submitted 736 (round-up of 44100/60) — a 64-sample/frame
-   * deficit that drained RetroArch's audio buffer and caused periodic BGM
-   * underruns. Re-emit whenever the rate appears too, since the engine may
-   * open audio after the first frame without the geometry changing. */
-  SDL_AudioSpec *spec = SDL_libretro_audio_spec;
-  if (screen && screen->w > 0 && screen->h > 0) {
+   * Sample rate: report the rate the engine actually negotiated with SDL, NOT
+   * a hardcoded value. ONScripter/PONScripter open at 44100; advertising 48000
+   * here made RetroArch consume 800 samples/frame while the core only submitted
+   * 736 (round-up of 44100/60) — a 64-sample/frame deficit that drained
+   * RetroArch's audio buffer and caused periodic BGM underruns. Re-emit
+   * whenever the rate appears too, since the engine may open audio after the
+   * first frame without the geometry changing. */
+  if (screen && screen->width > 0 && screen->height > 0) {
     static int last_w = 0, last_h = 0, last_rate = 0;
-    int rate = (spec && spec->freq > 0) ? spec->freq : 44100;
-    if (screen->w != last_w || screen->h != last_h || rate != last_rate) {
+    if (screen->width != last_w || screen->height != last_h || rate != last_rate) {
       struct retro_system_av_info av;
-      av.geometry.base_width = screen->w;
-      av.geometry.base_height = screen->h;
-      av.geometry.max_width = screen->w;
-      av.geometry.max_height = screen->h;
-      av.geometry.aspect_ratio = (float)screen->w / (float)screen->h;
+      av.geometry.base_width = screen->width;
+      av.geometry.base_height = screen->height;
+      av.geometry.max_width = screen->width;
+      av.geometry.max_height = screen->height;
+      av.geometry.aspect_ratio = (float)screen->width / (float)screen->height;
       av.timing.fps = 60.0;
       av.timing.sample_rate = (double)rate;
       environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
       fprintf(stderr, "ons_audio: SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d Hz)\n",
-              screen->w, screen->h, rate, last_rate);
+              screen->width, screen->height, rate, last_rate);
       audio_logf("SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d) frames/frame=%zu\n",
-                 screen->w, screen->h, rate, last_rate, ((size_t)rate / 60 / 32 + 1) * 32);
-      last_w = screen->w;
-      last_h = screen->h;
+                 screen->width, screen->height, rate, last_rate, ((size_t)rate / 60 / 32 + 1) * 32);
+      last_w = screen->width;
+      last_h = screen->height;
       last_rate = rate;
     }
   }
   static const size_t max_frames = 2048;
   static int16_t stream[max_frames * 2];
-  size_t frames = (spec ? spec->freq : 44100) / 60;
+  size_t frames = (size_t)rate / 60;
   frames = (frames / 32 + 1) * 32;
   input_poll_cb();
   SDL_libretro_input_ready = true;
-  SDL_libretro_PumpEvents();
+  vtable->pumpEvents ? vtable->pumpEvents(engine) : (void)0;
   /* Geometry is left to the core's reported values: retro_get_system_av_info()
    * sizes the window and video_cb() dimensions drive the viewport each frame.
    * (A hardcoded 640x480 SET_GEOMETRY here would also fight the KiriKiri path,
    * which reports 800x600, and overrode the user's scaling/aspect settings.) */
 #ifdef LIBRETRO_FRAME_SYNC
   if (pending_snapshot[0]) {
-    SDL_Surface *snap_screen = SDL_GetVideoSurface();
+    const EngineSurface *snap_screen = vtable->getSurface ? vtable->getSurface(engine) : NULL;
     if (snap_screen && snap_screen->pixels) {
       char bmp_path[PATH_MAX_LENGTH];
       log_cb(RETRO_LOG_INFO, "Snapshot saved: %s\n", bmp_path);
@@ -1609,7 +1603,7 @@ void retro_run(void)
   // Draw mode indicators (auto/skip badges) on the shadow buffer
   // along with the cursor, so the engine framebuffer is never modified.
   ons_present_frame(screen);
-  ons_submit_audio(spec, stream, max_frames, frames);
+  ons_submit_audio(rate, stream, max_frames, frames);
 }
 size_t retro_serialize_size(void)
 {

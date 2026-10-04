@@ -7,11 +7,10 @@
 // module (engine_bridge.h) or, for the frontend state, a plain bool in the
 // bridge, which survives the boundary because it is a static object.
 //
-// The engine owns its SDL. Two engines must never host two live SDLs in one
-// call path (the engine's event loop blocks in SDL_WaitEvent on its own queue,
-// so a second copy would receive nothing), and the core must not reach an SDL
-// the frontend can shadow: RetroArch loads SDL2/SDL3 globally, and our SDL 1.2
-// symbols would otherwise resolve to those.
+// The engine owns its SDL, and the core does not link, include or reach it.
+// Only one SDL may be live in a call path: the engine's event loop blocks in
+// SDL_WaitEvent on its own queue, so a second copy would receive nothing. The
+// core talks to SDL exclusively through the accessors below.
 
 #ifndef ENGINE_CABI_H
 #define ENGINE_CABI_H
@@ -62,19 +61,21 @@ typedef struct {
     void         (*setResolution)(EngineHandle, int w, int h);
 
     /* --- runtime accessors -------------------------------------------------
-     * The core used to call SDL directly for these; now the engine owns SDL
-     * and answers instead. Each is valid only after init() has returned; a
-     * NULL return or a zeroed surface means "not up yet" and the core skips
+     * The core reaches SDL only through these: the engine owns its SDL, so the
+     * core never links or includes it. Each is valid after init() has returned;
+     * a NULL return or a zeroed surface means "not up yet" and the core skips
      * the frame rather than presenting garbage. */
 
     /* Current framebuffer, or NULL before the video mode is set. */
     const EngineSurface *(*getSurface)(EngineHandle);
 
-    /* Audio the engine has negotiated with SDL: sample rate, and whether audio
-     * is currently paused. rate is 0 until SDL_OpenAudio has happened. */
+    /* Sample rate the engine negotiated with SDL; 0 before SDL_OpenAudio. */
     int  (*getSampleRate)(EngineHandle);
     int  (*isAudioPaused)(EngineHandle);
     void (*setAudioPaused)(EngineHandle, int paused);
+    /* Pull mixed stereo frames from the engine's mixer. Returns frames
+     * written; 0 when audio is closed or paused. */
+    int  (*getAudio)(EngineHandle, int16_t *out, int max_frames);
 
     /* Thread ownership. The engine spawns and owns its script thread, because
      * that thread calls into the engine's own SDL (SDL_WaitEvent, timers,

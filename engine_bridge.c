@@ -1,58 +1,30 @@
-// engine_bridge.c — the shared state that both the core and every engine module
-// link against, so that neither has to resolve the other's symbols by name.
+// engine_bridge.c — shared state for the core and every engine module.
 //
-// Why a bridge module rather than a struct of pointers handed over at load:
+// These symbols are referenced by name from both the core and the engine/glue
+// sources, in several translation units that re-declare them locally (12 files
+// declare libretro_script_error_longjmp; events.c also declares
+// environ_cb_global and opt_mouse_sensitivity). Defining them here lets every
+// declaration and use site stay as written, resolved against this module
+// instead of whichever side happened to define them.
 //
-// The engines and the glue refer to these values by name, in 58 places, and
-// several translation units re-declare them locally:
+// ONE BRIDGE FILE PER PROCESS. Everything here is a static object, so its
+// address never changes and a copy of that address stays valid in any module.
+// That only holds while all loaders resolve the same file: two byte-identical
+// copies under different names load as two independent instances, and the state
+// silently splits — the core then reads values the engine never wrote. So ship
+// exactly one bridge binary, and never place a second copy under another name.
 //
-//     extern "C" void libretro_script_error_longjmp(void);   (12 files)
-//     extern retro_environment_t environ_cb_global;          (events.c:83)
-//     extern float opt_mouse_sensitivity;                    (events.c:283)
+// On ELF the modules link -lonscripter-en_runtime, which contains this file. On
+// Windows the loader reuses the already-loaded DLL when the import library
+// names it, so the same single instance is shared. Either way nothing has to be
+// exported from the core (link.T still hides everything but retro_*).
 //
-// A macro-based shim rewrites those declarations and does not compile. Moving
-// the *definitions* here instead leaves every declaration and every use site
-// untouched: the symbols are still resolved by name, just against this module
-// rather than against whichever side happened to define them.
-//
-// Portability: this is an ordinary shared library. On ELF the two modules link
-// -lons_bridge; on Windows they link the import library generated when the
-// bridge DLL is built. Either way neither module needs the other's symbols, so
-// there is no import library pointing at the core and nothing has to be
-// exported from it (link.T still hides everything but retro_*).
-//
-// Verified on both loaders (Wine, real PE binaries): two LoadLibraryA calls for
-// the same DLL path return one HMODULE and share one data section, so the core
-// and the engine really do see the same objects.
-//
-// THE CONTRACT — ONE BRIDGE FILE, ONE PATH:
-//
-// That sharing holds only while every loader resolves the same file. Measured:
-// loading bridge.dll and bridge_copy.dll (byte-identical copies, different
-// names) yields two distinct instances — two separate copies of every object
-// below. Nothing errors; the state simply splits, and the core then reads
-// values the engine never wrote. So:
-//
-//   * ship exactly one bridge binary;
-//   * the core loads it by absolute path derived from its own location, and
-//     the engine modules link the import library so the loader reuses the
-//     already-loaded module rather than searching;
-//   * never place a second copy under another name.
-//
-// Equivalent failure on ELF: two copies differing by path.
-//
-// Lifetime contract — the reason these are plain globals rather than pointers
-// allocated at load:
-//
-// A pointer is only valid until its pointee is reallocated, and a stale pointer
-// shared across a module boundary does not fault, it silently reads the wrong
-// memory. So every piece of state here is a static object that lives for the
-// whole process: its address never changes, so a copy of that address in any
-// module stays correct. Callers must never store the address of anything
-// *reachable through* these (e.g. the SDL_AudioSpec that SDL_libretro_audio_spec
-// points at) beyond the object's own lifetime — the audio spec is owned by the
-// engine's SDL and is only valid while audio is open, exactly as before this
-// split.
+// These are plain globals rather than pointers allocated at load because a
+// pointer is only valid until its pointee is reallocated, and a stale pointer
+// shared across a module boundary does not fault — it silently reads the wrong
+// memory. Callers must not cache anything reachable *through* these beyond that
+// object's own lifetime; SDL_libretro_audio_spec in particular is owned by the
+// engine's SDL and is only valid while audio is open.
 
 #include "engine_bridge.h"
 #include <setjmp.h>

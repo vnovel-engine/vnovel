@@ -46,8 +46,7 @@ static const EngineSurface *engine_getSurface(EngineHandle) {
     return &engine_surface_view;
 }
 
-/* Sample rate the engine negotiated with SDL, or 0 before SDL_OpenAudio. The
- * glue publishes the spec; the core used to read the same variable directly. */
+/* Sample rate the engine negotiated with SDL, or 0 before SDL_OpenAudio. */
 static int engine_getSampleRate(EngineHandle) {
     extern SDL_AudioSpec *SDL_libretro_audio_spec;
     SDL_AudioSpec *spec = SDL_libretro_audio_spec;
@@ -60,6 +59,22 @@ static int engine_isAudioPaused(EngineHandle) {
 
 static void engine_setAudioPaused(EngineHandle, int paused) {
     SDL_PauseAudio(paused ? 1 : 0);
+}
+
+/* Fill `out` with up to `max_frames` stereo frames from the engine's mixer.
+ * Returns frames written (0 if audio is closed, paused, or produced nothing).
+ *
+ * The mixer's callback wants a byte count, not a frame count: one stereo frame
+ * is 2 int16 samples, so frames*4 bytes. */
+static int engine_getAudio(EngineHandle, int16_t *out, int max_frames) {
+    extern SDL_AudioSpec *SDL_libretro_audio_spec;
+    SDL_AudioSpec *spec = SDL_libretro_audio_spec;
+    if (!spec || SDL_GetAudioStatus() != SDL_AUDIO_PLAYING) return 0;
+    if (!spec->callback || max_frames <= 0) return 0;
+    size_t bytes = (size_t)max_frames * 4;
+    memset(out, 0, bytes);
+    spec->callback(NULL, (uint8_t *)out, bytes);
+    return max_frames;
 }
 
 static void engine_pushKey(EngineHandle, int sym, int down) {
