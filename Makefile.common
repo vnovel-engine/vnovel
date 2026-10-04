@@ -31,9 +31,23 @@ INCFLAGS := \
 CFLAGS   += $(INCFLAGS)
 CXXFLAGS += $(INCFLAGS)
 
-# Force our SDL config (dummy backends only) on all platforms
-CFLAGS   += -include $(SDL_LIBRETRO)/SDL_config_libretro.h
-CXXFLAGS += -include $(SDL_LIBRETRO)/SDL_config_libretro.h
+# Force our SDL config (dummy backends only) on all platforms.
+# sdl-vendored.h comes first and renames our SDL/SDL_mixer/SMPEG/TTF/IMG symbols
+# to a Private prefix, so they cannot collide with the SDL2/SDL3 the frontend
+# loads globally. It must be included before SDL's own headers, hence first in
+# the -include chain; see tools/gen_sdl_vendored.py for the full rationale.
+#
+# Bootstrapping has an ordering problem: the rename list is generated from the
+# symbols the vendored objects define, but those objects are compiled with the
+# list applied. Build once with VENDORED_BOOTSTRAP=1 (renames off) and run the
+# generator — that is what `make regen-vendored` does.
+ifeq ($(VENDORED_BOOTSTRAP),1)
+VENDORED_INCLUDE :=
+else
+VENDORED_INCLUDE := -D__RETRO__ -DRENAME_SDL_SYMBOLS -include $(CORE_DIR)/sdl-vendored.h
+endif
+CFLAGS   += $(VENDORED_INCLUDE) -include $(SDL_LIBRETRO)/SDL_config_libretro.h
+CXXFLAGS += $(VENDORED_INCLUDE) -include $(SDL_LIBRETRO)/SDL_config_libretro.h
 
 # --- libmad config ---
 CFLAGS += -DFPM_DEFAULT -DSIZEOF_INT=4

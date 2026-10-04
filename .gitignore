@@ -22,3 +22,7 @@ REVIEW.md
 
 # build output (make: build/$(platform)/)
 build/
+
+# bootstrap pass for regenerating sdl-vendored.h
+build/vendored-bootstrap/
+tools/__pycache__/

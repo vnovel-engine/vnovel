@@ -60,7 +60,7 @@ LINK_LIBS_unix   := -ldl -lpthread
 # be resolvable (--no-undefined) or the loader would fault at call time. The
 # core keeps the version script (link.T) so only retro_* is exported; the
 # runtime deliberately does not, since the engines resolve SDL by name there.
-SHARED_NOUNDEF := -shared -Wl,--no-undefined
+SHARED_NOUNDEF := -shared -Wl,--no-undefined -Wl,-Bgroup
 
 # Locate the sibling modules next to the core/engine rather than at their build
 # path, so the four artifacts can be deployed as a set. $ORIGIN is ELF; PE has
@@ -73,7 +73,7 @@ ifeq ($(platform), unix)
    fpic    := -fPIC
    CXXFLAGS += $(shell pkg-config --cflags freetype2 2>/dev/null)
    CFLAGS   += $(shell pkg-config --cflags freetype2 2>/dev/null)
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
    LINK_EXTRA := $(LINK_EXTRA_unix)
    LDFLAGS += $(LINK_LIBS_unix)
 
@@ -81,7 +81,7 @@ else ifeq ($(platform), aarch64)
    CROSS   := aarch64-linux-gnu-
    TARGET   := $(TARGET_NAME)_libretro.so
    fpic    := -fPIC
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
    LINK_EXTRA := $(LINK_EXTRA_unix)
    LDFLAGS += $(LINK_LIBS_unix)
    override CC := $(CROSS)gcc
@@ -132,13 +132,13 @@ else ifneq (,$(findstring osx,$(platform)))
 else ifeq ($(platform), emscripten)
    TARGET   := $(TARGET_NAME)_libretro_emscripten.bc
    fpic    := -fPIC
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
 
 else
    # Fallback: treat as unix-like
    TARGET   := $(TARGET_NAME)_libretro.so
    fpic    := -fPIC
-   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
+   SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined -Wl,-Bgroup
 endif
 
 # --- Optimization / debug ---
@@ -149,7 +149,7 @@ else
 endif
 
 # --- Global defines ---
-DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
+DEFINES := -D__LIBRETRO__ -DRENAME_SDL_SYMBOLS -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
 
 # Build stamp: the deployed .so carries this string, so `strings` identifies the
 # exact build (see ONSCRIPTER_EN_LIBRETRO_VERSION in libretro.cpp). A git
@@ -277,7 +277,7 @@ PONS_MOD_OBJS:= $(PONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(PONS_EXTRA_CXX)
 # call into it by name (SDL_*, ons_libretro_game_clock_ms, ...), which is the
 # one direction where symbol resolution is required. That is also why it is the
 # runtime and not the core that holds them — the core stays hidden, per link.T.
-RUNTIME_SHARED := -shared
+RUNTIME_SHARED := -shared -Wl,-Bsymbolic-functions
 RUNTIME_SONAME := onscripter-en_runtime
 
 ONS_MOD   := $(BUILD_DIR)/onscripter-en_engine_ons.so
@@ -364,7 +364,23 @@ install:
 	cp -v $(TARGET) $(DESTDIR)/
 	cp -v $(TARGET_NAME)_libretro.info $(DESTDIR)/
 
-.PHONY: all clean install
+# sdl-vendored.h is generated (tools/gen_sdl_vendored.py) but tracked: it is the
+# manifest of which symbols we rename, it is reviewable in diffs, and a fresh
+# clone needs it without a bootstrap build first.
+#
+# The generator reads the symbols the vendored objects define, but a normal
+# build already applies the renames. Regenerate with the two commands below:
+# the bootstrap pass compiles the vendored sources under their plain names into
+# a scratch build dir, which the generator then reads.
+regen-vendored:
+	@echo "REGEN sdl-vendored.h (bootstrap build, plain names)"
+	$(Q)rm -rf build/vendored-bootstrap
+	$(Q)$(MAKE) platform=$(platform) VENDORED_BOOTSTRAP=1 BUILD_DIR=build/vendored-bootstrap \
+		all >/dev/null
+	$(Q)python3 tools/gen_sdl_vendored.py build/vendored-bootstrap sdl-vendored.h
+	$(Q)rm -rf build/vendored-bootstrap
+
+.PHONY: all clean install install-root stage-modules regen-vendored
 
 print-%:
 	@echo '$*=$($*)'
@@ -381,7 +397,7 @@ $(BUILD_DIR)/engine_ons_cabi.o: engine_ons_cabi.cpp
 		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(DEPS_DIR)/libogg/include \
 		-I$(DEPS_DIR)/libvorbis/include -I$(DEPS_DIR)/libmad -I$(DEPS_DIR)/bzip2 \
 		-I$(CORE_DIR) -I$(SMPEG_DIR) \
-		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
+		-include $(CORE_DIR)/sdl-vendored.h -include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
 
 $(BUILD_DIR)/engine_pons_cabi.o: engine_pons_cabi.cpp
 	@$(if $(Q),echo "CXX pons-cabi $<",)
@@ -391,7 +407,7 @@ $(BUILD_DIR)/engine_pons_cabi.o: engine_pons_cabi.cpp
 		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(DEPS_DIR)/libogg/include \
 		-I$(DEPS_DIR)/libvorbis/include -I$(DEPS_DIR)/libmad -I$(DEPS_DIR)/bzip2 \
 		-I$(CORE_DIR) -I$(SMPEG_DIR) \
-		-include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
+		-include $(CORE_DIR)/sdl-vendored.h -include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
 
 $(BUILD_DIR)/engine_kirikiri_cabi.o: engine_kirikiri_cabi.cpp
 	@$(if $(Q),echo "CXX kirikiri-cabi $<",)
