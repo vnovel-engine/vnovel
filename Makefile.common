@@ -49,18 +49,18 @@ LDFLAGS += -lpthread -lfreetype
 # =============================================================================
 
 # --- bzip2 ---
-SOURCES_C += $(addprefix $(DEPS_DIR)/bzip2/, \
+RUNTIME_C += $(addprefix $(DEPS_DIR)/bzip2/, \
   blocksort.c huffman.c crctable.c randtable.c \
   compress.c decompress.c bzlib.c \
 )
 
 # --- libogg ---
-SOURCES_C += $(addprefix $(DEPS_DIR)/libogg/src/, \
+RUNTIME_C += $(addprefix $(DEPS_DIR)/libogg/src/, \
   bitwise.c framing.c \
 )
 
 # --- libvorbis ---
-SOURCES_C += $(addprefix $(DEPS_DIR)/libvorbis/lib/, \
+RUNTIME_C += $(addprefix $(DEPS_DIR)/libvorbis/lib/, \
   mdct.c smallft.c block.c envelope.c window.c lsp.c \
   lpc.c analysis.c synthesis.c psy.c info.c \
   floor1.c floor0.c res0.c mapping0.c registry.c \
@@ -68,13 +68,13 @@ SOURCES_C += $(addprefix $(DEPS_DIR)/libvorbis/lib/, \
 )
 
 # --- libmad (MP3 decoder) ---
-SOURCES_C += $(addprefix $(DEPS_DIR)/libmad/, \
+RUNTIME_C += $(addprefix $(DEPS_DIR)/libmad/, \
   version.c fixed.c bit.c timer.c stream.c frame.c \
   synth.c decoder.c layer12.c layer3.c huffman.c \
 )
 
 # --- SDL 1.2 (core, with dummy backends) ---
-SOURCES_C += $(addprefix $(SDL_DIR)/src/, \
+RUNTIME_C += $(addprefix $(SDL_DIR)/src/, \
   SDL.c SDL_error.c SDL_fatal.c \
   audio/SDL_audio.c audio/SDL_audiocvt.c audio/SDL_audiodev.c \
   audio/SDL_mixer.c audio/SDL_mixer_m68k.c audio/SDL_wave.c \
@@ -103,20 +103,20 @@ SOURCES_C += $(addprefix $(SDL_DIR)/src/, \
 )
 
 # --- SDL → libretro bridge ---
-SOURCES_C += $(addprefix $(SDL_LIBRETRO)/, \
+RUNTIME_C += $(addprefix $(SDL_LIBRETRO)/, \
   audio.c events.c video.c SDL_ttf.c \
 )
-SOURCES_CXX += $(SDL_LIBRETRO)/SDL_image.cpp
+RUNTIME_CXX += $(SDL_LIBRETRO)/SDL_image.cpp
 
 # --- SDL_mixer ---
-SOURCES_C += $(addprefix $(DEPS_DIR)/sdl-mixer/, \
+RUNTIME_C += $(addprefix $(DEPS_DIR)/sdl-mixer/, \
   mixer.c music.c effects_internal.c effect_position.c \
   load_voc.c load_aiff.c load_ogg.c music_ogg.c \
   dynamic_ogg.c music_mad.c \
 )
 
 # --- libretro-common ---
-SOURCES_C += $(addprefix $(LIBRETRO_COMM)/, \
+RUNTIME_C += $(addprefix $(LIBRETRO_COMM)/, \
   compat/compat_strl.c \
   encodings/encoding_utf.c \
   string/stdstring.c \
@@ -125,15 +125,15 @@ SOURCES_C += $(addprefix $(LIBRETRO_COMM)/, \
 )
 
 # --- SMPEG (MPEG-1 audio/video decoder) ---
-SOURCES_C   += $(SMPEG_DIR)/MPEGfilter.c
-SOURCES_CXX += $(addprefix $(SMPEG_DIR)/, \
+RUNTIME_C   += $(SMPEG_DIR)/MPEGfilter.c
+RUNTIME_CXX += $(addprefix $(SMPEG_DIR)/, \
   MPEG.cpp MPEGlist.cpp MPEGring.cpp MPEGstream.cpp MPEGsystem.cpp smpeg.cpp \
 )
-SOURCES_CXX += $(addprefix $(SMPEG_DIR)/audio/, \
+RUNTIME_CXX += $(addprefix $(SMPEG_DIR)/audio/, \
   MPEGaudio.cpp bitwindow.cpp filter.cpp filter_2.cpp hufftable.cpp \
   mpeglayer1.cpp mpeglayer2.cpp mpeglayer3.cpp mpegtable.cpp mpegtoraw.cpp \
 )
-SOURCES_CXX += $(addprefix $(SMPEG_DIR)/video/, \
+RUNTIME_CXX += $(addprefix $(SMPEG_DIR)/video/, \
   MPEGvideo.cpp decoders.cpp floatdct.cpp gdith.cpp jrevdct.cpp \
   motionvec.cpp parseblock.cpp readfile.cpp util.cpp vhar128.cpp video.cpp \
 )
@@ -221,15 +221,36 @@ PONS_C := $(PONSCRIPTER)/bstrlib.c
 PONS_OBJS += $(PONS_C:.c=.pons.o)
 
 # =============================================================================
-# Core files (libretro API + C ABI wrappers for both engines)
+# Core files
 # =============================================================================
-# The bridge holds state the core and the engine modules both use. It is built
-# into every shared object that needs it; here that is only the core, since the
-# engines are not yet separate modules. When they are, this source is compiled
-# into the module too, and only one copy is loaded per process (see the
-# one-bridge-file contract in engine_bridge.c).
-SOURCES_C += $(CORE_DIR)/engine_bridge.c
-
-SOURCES_CXX += \
+# The core keeps only the libretro entry points and the KiriKiri ABI (which is
+# already dlopen-based). Everything the engines share — SDL, the sdl-libretro
+# glue, the mixer, SMPEG, the decoders, the bridge — is in the runtime module
+# below, because there must be exactly one live SDL and it must be the one the
+# engine's event loop is blocked in.
+#
+# The RC file: linking
+#
+#   core -> runtime, engine_ons, engine_pons
+#   engine_ons -> runtime
+#   engine_pons -> runtime
+#
+# so core and engines all resolve SDL to the same runtime object.
+CORE_CXX := \
   $(CORE_DIR)/libretro.cpp \
-  $(CORE_DIR)/embed_stub.cpp
+  $(CORE_DIR)/engine_kirikiri_cabi.cpp
+
+# The bridge holds state core, runtime and engines all use. It lives in the
+# runtime so every module resolves the same copy (see the one-bridge-file
+# contract in engine_bridge.c).
+RUNTIME_C += $(CORE_DIR)/engine_bridge.c
+
+# embed_stub provides getResource(), which the engines call; it belongs with the
+# engine-side runtime rather than the core.
+RUNTIME_CXX += $(CORE_DIR)/embed_stub.cpp
+
+# The C ABI wrapper for each engine compiles into that engine's module: it
+# constructs the engine class, which lives there, and only its vtable is
+# exported.
+ONS_EXTRA_CXX := $(CORE_DIR)/engine_ons_cabi.cpp
+PONS_EXTRA_CXX := $(CORE_DIR)/engine_pons_cabi.cpp

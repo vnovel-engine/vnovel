@@ -50,12 +50,23 @@ PLATFLAGS     :=
 SDL_SYSTIMER  ?= unix/SDL_systimer.c
 
 # --- Platform configuration ---
-# Link-time extras that only apply to ELF/POSIX targets:
-#   -z muldefs      the symbol-rename machinery produces duplicate symbols on
-#                   purpose; ELF needs this, PE/COFF does not accept -z at all
-#   -ldl -lpthread  POSIX libraries with no Windows equivalent
-LINK_EXTRA_unix := -Wl,-z,muldefs
+# Link-time extras for ELF/POSIX targets. -z muldefs is gone: it existed only
+# because the symbol-rename machinery deliberately produced duplicate symbols,
+# and the engine modules make that unnecessary.
+LINK_EXTRA_unix :=
 LINK_LIBS_unix   := -ldl -lpthread
+
+# Flags for the engine modules: shared, and every symbol the module needs must
+# be resolvable (--no-undefined) or the loader would fault at call time. The
+# core keeps the version script (link.T) so only retro_* is exported; the
+# runtime deliberately does not, since the engines resolve SDL by name there.
+SHARED_NOUNDEF := -shared -Wl,--no-undefined
+
+# Locate the sibling modules next to the core/engine rather than at their build
+# path, so the four artifacts can be deployed as a set. $ORIGIN is ELF; PE has
+# no equivalent (Windows searches the module's own directory first, which is the
+# behaviour we want there anyway).
+RPATH_ORIGIN := -Wl,-rpath,'$$ORIGIN'
 
 ifeq ($(platform), unix)
    TARGET   := $(TARGET_NAME)_libretro.so
@@ -185,12 +196,8 @@ CFLAGS   += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall $(fpic)
 include Makefile.common
 
 # --- Object files (all in BUILD_DIR, preserving source subdirectory structure) ---
-OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES_C)) \
-           $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SOURCES_CXX)) \
-           $(BUILD_DIR)/engine_ons_cabi.o \
-           $(BUILD_DIR)/engine_pons_cabi.o \
-           $(BUILD_DIR)/engine_kirikiri_cabi.o \
-           $(patsubst %.S,$(BUILD_DIR)/%.o,$(SOURCES_S))
+# Per-module lists are defined in the "Shared modules" section below, after
+# Makefile.common has populated the source lists.
 
 ONS_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.ons.o,$(ONS_CXX))
 PONS_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.pons.o,$(PONS_CXX)) \
@@ -213,8 +220,10 @@ FALLBACK_FONT_HDR  := resources/fonts/fallback_font.h
 EXTRA_FALLBACK_FONT     := resources/fonts/FiraSans-Regular.ttf
 EXTRA_FALLBACK_FONT_HDR := resources/fonts/extra_fallback_font.h
 
-# Make symlinks first so .o files can find their sources
-all: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR) $(TARGET)
+# Make symlinks first so .o files can find their sources.
+# The build produces four artifacts that must ship together: the core plus its
+# runtime and two engine modules (the core's rpath finds them beside itself).
+all: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR) $(TARGET) stage-modules
 
 # --- Embedded fallback fonts -------------------------------------------------
 # Generate a C header from each vendored TTF at build time (the fonts stay
@@ -241,9 +250,66 @@ $(BUILD_DIR)/./libretro.o: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR)
 DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps/sdl-mixer deps/libretro-common
 
 
-$(TARGET): $(FALLBACK_FONT_HDR) $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
+# --- Shared modules ---------------------------------------------------------
+# Three shared objects, one bridge between them:
+#
+#   libruntime   SDL + glue + bridge + mixer + SMPEG + decoders. There must be
+#                exactly one live SDL, because its event queue, surface and
+#                timers are state the engine's event loop blocks in. Both
+#                engines and the core resolve SDL here.
+#   libengine_*  one per engine: the engine's own objects plus its C ABI wrapper.
+#                Each carries its own symbol table, so the identical class names
+#                (ScriptHandler, DirectReader, ...) cannot collide — which is
+#                what the rename pass existed to prevent.
+#   core         libretro entry points + the dlopen-based KiriKiri ABI.
+#
+# The engines link the runtime, and the core links all three. Nothing is
+# dlopen'd here: separation of symbol tables is a link-time property, and the
+# .rc/.def files below give Windows the same one-DLL-per-module layout.
+
+RUNTIME_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(RUNTIME_C)) \
+                $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(RUNTIME_CXX))
+CORE_OBJS    := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(CORE_CXX))
+ONS_MOD_OBJS := $(ONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ONS_EXTRA_CXX))
+PONS_MOD_OBJS:= $(PONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(PONS_EXTRA_CXX))
+
+# The runtime is a plain shared library with default visibility: the engines
+# call into it by name (SDL_*, ons_libretro_game_clock_ms, ...), which is the
+# one direction where symbol resolution is required. That is also why it is the
+# runtime and not the core that holds them — the core stays hidden, per link.T.
+RUNTIME_SHARED := -shared
+RUNTIME_SONAME := onscripter-en_runtime
+
+ONS_MOD   := $(BUILD_DIR)/onscripter-en_engine_ons.so
+PONS_MOD  := $(BUILD_DIR)/onscripter-en_engine_pons.so
+RT_MOD    := $(BUILD_DIR)/$(RUNTIME_SONAME).so
+
+# SONAME so the modules record a name (not the build path) as their dependency,
+# and the loader finds it beside them at runtime.
+$(RT_MOD): $(RUNTIME_OBJS)
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(SHARED) $(LINK_EXTRA) -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS)
+	$(Q)$(CXX) $(fpic) $(RUNTIME_SHARED) -Wl,-soname,$(RUNTIME_SONAME).so -o $@ $(RUNTIME_OBJS) $(LDFLAGS)
+
+# SONAME so the core records a name rather than the build path, and the loader
+# finds the module beside itself. -fvisibility=hidden keeps the engine's internal
+# symbols private; only the vtable is exported.
+$(ONS_MOD): $(ONS_MOD_OBJS) $(RT_MOD)
+	@$(if $(Q),echo "LD $@",)
+	$(Q)$(CXX) $(fpic) $(SHARED_NOUNDEF) -Wl,-soname,onscripter-en_engine_ons.so -o $@ $(ONS_MOD_OBJS) $(RT_MOD) $(RPATH_ORIGIN) $(LDFLAGS)
+
+$(PONS_MOD): $(PONS_MOD_OBJS) $(RT_MOD)
+	@$(if $(Q),echo "LD $@",)
+	$(Q)$(CXX) $(fpic) $(SHARED_NOUNDEF) -Wl,-soname,onscripter-en_engine_pons.so -o $@ $(PONS_MOD_OBJS) $(RT_MOD) $(RPATH_ORIGIN) $(LDFLAGS)
+
+$(TARGET): $(FALLBACK_FONT_HDR) $(CORE_OBJS) $(RT_MOD) $(ONS_MOD) $(PONS_MOD)
+	@$(if $(Q),echo "LD $@",)
+	$(Q)$(CXX) $(fpic) $(SHARED) $(LINK_EXTRA) -o $@ $(CORE_OBJS) $(RT_MOD) $(ONS_MOD) $(PONS_MOD) $(RPATH_ORIGIN) $(LDFLAGS)
+
+# Stage the modules next to the core so the rpath above resolves, and so a
+# deploy takes the whole set rather than a core that cannot find its runtime.
+stage-modules: $(TARGET) $(RT_MOD) $(ONS_MOD) $(PONS_MOD)
+	@$(if $(Q),echo "STAGE modules",)
+	$(Q)mkdir -p $(BUILD_DIR)/stage && cp $(RT_MOD) $(ONS_MOD) $(PONS_MOD) $(BUILD_DIR)/stage/ && cp $(TARGET) $(BUILD_DIR)/stage/
 
 # --- Generic compile rules (output to BUILD_DIR, preserving subdirs) ---
 # -MMD -MP emits a .d per object listing its included headers; those are
@@ -283,7 +349,7 @@ $(BUILD_DIR)/%.pons.o: %.c
 
 clean:
 	rm -rf build
-	rm -f $(TARGET) ons_rename.txt pons_rename.txt rename_stamp
+	rm -f $(TARGET) $(TARGET_NAME)_runtime.so $(TARGET_NAME)_engine_ons.so $(TARGET_NAME)_engine_pons.so
 
 install:
 	@test -n "$(DESTDIR)" || (echo "ERROR: set DESTDIR" && false)
@@ -296,8 +362,9 @@ print-%:
 	@echo '$*=$($*)'
 
 
-# C ABI wrappers: compile with only their engine's include path
-# to avoid header name conflicts between ONScripter-EN and PONScripter
+# C ABI wrappers. Each compiles with only its own engine's include path, because
+# both engines have headers of the same names (ScriptHandler.h, and so on) and
+# including both paths in one command resolves the wrong one.
 $(BUILD_DIR)/engine_ons_cabi.o: engine_ons_cabi.cpp
 	@$(if $(Q),echo "CXX ons-cabi $<",)
 	@mkdir -p $(dir $@)
@@ -324,43 +391,3 @@ $(BUILD_DIR)/engine_kirikiri_cabi.o: engine_kirikiri_cabi.cpp
 	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
 		-I$(LIBRETRO_COMM)/include -I$(CORE_DIR) \
 		-c -o $@ $<
-
-# Engine static libraries (avoids duplicate symbol errors)
-$(BUILD_DIR)/libons.a: $(ONS_OBJS)
-	@mkdir -p $(dir $@)
-	$(Q)$(AR) rcs $@ $^
-
-$(BUILD_DIR)/libpons.a: $(PONS_OBJS)
-	@mkdir -p $(dir $@)
-	$(Q)$(AR) rcs $@ $^
-
-# Generate symbol rename maps.
-# Common symbols (intersection) are renamed to prevent cross-resolution.
-# Additionally, weak symbols (V/W) unique to each library are renamed
-# because the linker can cross-resolve them despite different names —
-# COMDAT group deduplication uses the group signature (not the symbol
-# name), and objcopy doesn't rename group signatures. The rename-syms.sh
-# script strips the GROUP flag from affected sections to prevent this.
-rename_stamp: $(BUILD_DIR)/libons.a $(BUILD_DIR)/libpons.a
-	@echo "Generating symbol rename maps..."
-	@$(NM) $(BUILD_DIR)/libons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/ons_all.txt
-	@$(NM) $(BUILD_DIR)/libpons.a | grep ' [TDBRVWbr]' | awk '{print $$3}' | sort -u > /tmp/pons_all.txt
-	@comm -12 /tmp/ons_all.txt /tmp/pons_all.txt | grep -v '^$$' > /tmp/ons_common.txt
-	@$(NM) $(BUILD_DIR)/libons.a | grep ' [VW] ' | awk '{print $$3}' | sort -u > /tmp/ons_weak.txt
-	@$(NM) $(BUILD_DIR)/libpons.a | grep ' [VW] ' | awk '{print $$3}' | sort -u > /tmp/pons_weak.txt
-	@cat /tmp/ons_common.txt /tmp/ons_weak.txt | sort -u | grep -v '^$$' | awk '{print $$0 "=ons_" $$0}' > ons_rename.txt
-	@cat /tmp/ons_common.txt /tmp/pons_weak.txt | sort -u | grep -v '^$$' | awk '{print $$0 "=pons_" $$0}' > pons_rename.txt
-	@touch rename_stamp
-
-
-$(BUILD_DIR)/libons_rn.a: $(BUILD_DIR)/libons.a rename_stamp
-	@rm -rf $(BUILD_DIR)/_ons_rn && mkdir -p $(BUILD_DIR)/_ons_rn
-	cd $(BUILD_DIR)/_ons_rn && $(AR) x ../libons.a
-	cd $(BUILD_DIR)/_ons_rn && sh ../../../rename-syms.sh ../../../ons_rename.txt $(OBJCOPY) *.o
-	$(Q)$(AR) rcs $@ $(BUILD_DIR)/_ons_rn/*.o
-
-$(BUILD_DIR)/libpons_rn.a: $(BUILD_DIR)/libpons.a rename_stamp
-	@rm -rf $(BUILD_DIR)/_pons_rn && mkdir -p $(BUILD_DIR)/_pons_rn
-	cd $(BUILD_DIR)/_pons_rn && $(AR) x ../libpons.a
-	cd $(BUILD_DIR)/_pons_rn && sh ../../../rename-syms.sh ../../../pons_rename.txt $(OBJCOPY) *.o
-	$(Q)$(AR) rcs $@ $(BUILD_DIR)/_pons_rn/*.o
