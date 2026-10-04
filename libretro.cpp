@@ -383,8 +383,12 @@ void retro_set_environment(retro_environment_t cb)
   };
   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK, &update_cb);
 
-  // L button generates right-click to open the rmenu (save/load/lookback)
-  SDL_libretro_rightclick_button = RETRO_DEVICE_ID_JOYPAD_L;
+  // Shoulder buttons as mouse clicks, matching the KiriKiri shim and the
+  // RetroPad convention: L = left click (the primary act: confirm/advance),
+  // R = right click (cancel/back, and ONScripter's right-click menu). This was
+  // previously inverted (L emitted the right-click / rmenu).
+  SDL_libretro_leftclick_button  = RETRO_DEVICE_ID_JOYPAD_L;
+  SDL_libretro_rightclick_button = RETRO_DEVICE_ID_JOYPAD_R;
   // L button no longer sends SDLK_o (one-page mode)
   SDL_libretro_pad_mapping[RETRO_DEVICE_ID_JOYPAD_L] = ONS_KEY_NONE;
 }
@@ -1305,11 +1309,13 @@ void retro_run(void)
   int av_enable = 1;
   if (environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av_enable) && !(av_enable & 1)) {
     SDL_libretro_paused = true;
+    ons_libretro_clock_pause();   /* no game time accrues while paused */
     return;
   }
   // Unpause: clear flag and drain accumulated timer events
   if (SDL_libretro_paused) {
     SDL_libretro_paused = false;
+    ons_libretro_clock_resume();  /* continue from the pause instant */
     SDL_Event ev;
     while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENTMASK(SDL_USEREVENT)) > 0)
       ;

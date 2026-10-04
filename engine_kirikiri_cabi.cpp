@@ -21,6 +21,7 @@ extern "C" long long ons_libretro_game_clock_ms(void);
 #define KRKR_RETRO_DEVICE_POINTER 6        /* RETRO_DEVICE_POINTER (was wrongly 0x104) */
 #define KRKR_RETRO_DEVICE_JOYPAD  1
 #define KRKR_RETRO_DEVICE_ID_JOYPAD_L 10
+#define KRKR_RETRO_DEVICE_ID_JOYPAD_R 11
 #define KRKR_RETRO_DEVICE_ID_POINTER_X 0
 #define KRKR_RETRO_DEVICE_ID_POINTER_Y 1
 #define KRKR_RETRO_DEVICE_ID_POINTER_PRESSED 2
@@ -386,6 +387,11 @@ extern "C" void krkr_push_key(int sym, int down) {
 #define KRKR_SDL_MOUSEBUTTONUP   0x402
 #define KRKR_SDL_KEYDOWN         0x300
 #define KRKR_SDL_KEYUP           0x301
+/* SDL_CONTROLLERBUTTONDOWN/UP (SDL_events.h enum, after the touch/gesture
+ * block). Used to deliver the D-pad as KiriKiri *virtual pad* keys: see the
+ * PAD table note below. */
+#define KRKR_SDL_CONTROLLERBUTTONDOWN 0x651
+#define KRKR_SDL_CONTROLLERBUTTONUP   0x652
 
 /* SDL2 keysyms the pad dispatch emits. This file does not include the SDL2
  * headers (it dlopen()s the engine's own SDL2; see the RTLD_DEEPBIND note at
@@ -530,15 +536,24 @@ void krkr_pump_events(void) {
     /* Push mouse button event on click state change.
      * Right button (SDL button 3) opens the KAG right-click menu. RetroArch can
      * deliver it as the mouse RIGHT button, the pointer-pressed state, or a
-     * RetroPad button mapped to right-click (SDL_libretro_rightclick_button). */
+     * RetroPad shoulder button.
+     *
+     * L = LEFT click (the primary act: confirm/advance, click a dialog button);
+     * R = RIGHT click (cancel/back, the KAG right-click menu). This matches the
+     * RetroPad convention where the left shoulder is the affirmative action and
+     * the right shoulder is the secondary/back action — the mapping was
+     * previously inverted (L emitted a right-click and R a left-click). */
     {
-        int right = mright;
-        if (krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, KRKR_RETRO_DEVICE_ID_JOYPAD_L)) right = 1;
+        int lbtn = krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, KRKR_RETRO_DEVICE_ID_JOYPAD_L);
+        int rbtn = krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, KRKR_RETRO_DEVICE_ID_JOYPAD_R);
+        /* L -> left click, R -> right click. A real mouse's right button also
+         * means right-click. */
+        int right = mright || rbtn;
         /* RetroArch reports POINTER_PRESSED for ANY button, so a right-click also
          * sets `pressed`. Without the !right guard this emitted a spurious LEFT
          * press alongside the right, and KAG consumed it as a left click
          * (advance/hide) — defeating the right-click KAG menu. */
-        int left  = mleft || (pressed && !right);
+        int left  = mleft || lbtn || (pressed && !right);
         int btn = 0, is_down = 0;
         if (left != prev_left)        { btn = 1; is_down = left;  prev_left  = left; }
         else if (right != prev_right) { btn = 3; is_down = right; prev_right = right; }
@@ -585,17 +600,17 @@ void krkr_pump_events(void) {
          * D-pad is translated here too — the engine no longer reads the
          * controller natively (KRKRSDL2_LIBRETRO), so this is the only route
          * pad arrows take to KAG menu navigation. */
-        enum { EMIT_NONE, EMIT_KEY, EMIT_WHEEL, EMIT_RIGHTCLICK };
+        enum { EMIT_NONE, EMIT_KEY, EMIT_WHEEL, EMIT_RIGHTCLICK, EMIT_PAD };
         struct { int mode; int code; } const PAD[16] = {
-            /*  id            mode            code (SDL keysym or mouse button) */
+            /*  id            mode            code (SDL keysym, mouse button, or SDL_CONTROLLER_BUTTON_*) */
             /*  B      */ { EMIT_KEY,         KRKR_SDLK_ESCAPE }, /* cancel/menu   */
             /*  Y      */ { EMIT_KEY,         KRKR_SDLK_s },      /* KAG accel 'S' */
             /*  SELECT */ { EMIT_KEY,         KRKR_SDLK_f },      /* KAG accel 'F' */
             /*  START  */ { EMIT_KEY,         KRKR_SDLK_a },      /* KAG accel 'A' */
-            /*  UP     */ { EMIT_KEY,         KRKR_SDLK_UP },
-            /*  DOWN   */ { EMIT_KEY,         KRKR_SDLK_DOWN },
-            /*  LEFT   */ { EMIT_KEY,         KRKR_SDLK_LEFT },
-            /*  RIGHT  */ { EMIT_KEY,         KRKR_SDLK_RIGHT },
+            /*  UP     */ { EMIT_PAD,         11 },               /* SDL_CONTROLLER_BUTTON_DPAD_UP    */
+            /*  DOWN   */ { EMIT_PAD,         12 },               /* SDL_CONTROLLER_BUTTON_DPAD_DOWN  */
+            /*  LEFT   */ { EMIT_PAD,         13 },               /* SDL_CONTROLLER_BUTTON_DPAD_LEFT  */
+            /*  RIGHT  */ { EMIT_PAD,         14 },               /* SDL_CONTROLLER_BUTTON_DPAD_RIGHT */
             /*  A      */ { EMIT_KEY,         KRKR_SDLK_RETURN }, /* advance       */
             /*  X      */ { EMIT_RIGHTCLICK, 3 },                 /* hide graphics */
             /*  L      */ { EMIT_WHEEL,       4 },                 /* scroll up     */
@@ -605,6 +620,20 @@ void krkr_pump_events(void) {
             /*  L3     */ { EMIT_NONE,        0 },
             /*  R3     */ { EMIT_NONE,        0 },                 /* pointer click */
         };
+        /* Why the D-pad is a CONTROLLER event, not arrow KEY events:
+         *
+         * KAG games distinguish the arrow *keys* from the D-pad via KiriKiri's
+         * virtual-pad VKs (VK_PADUP/PADDOWN/PADLEFT/PADRIGHT). Fata Morgana's
+         * MainWindow.tjs createPadKeyMap() maps exactly VK_PADLEFT->VK_LEFT,
+         * VK_PADDOWN->VK_DOWN, ... to drive menu focus; it has no branch for
+         * bare VK_LEFT/etc. So injecting arrow key events navigates the
+         * load/save list (plain KAG arrow handling) but leaves the title/menu
+         * screen un-navigable. The engine already accepts SDL_CONTROLLERBUTTON*
+         * and converts it to VK_PAD* (sdl_gamecontrollerbutton_to_vk_key,
+         * SDLApplication.cpp:216) — the shim was simply not using that route.
+         * Sending a controller event restores the VK_PAD path without the
+         * double-delivery that made us stop opening the controller natively
+         * (56529ca): the engine stays unopened, the shim is the only source. */
         static int prev[16];
         for (int i = 0; i < 16; i++) {
             int st = krkr_input_state(0, KRKR_RETRO_DEVICE_JOYPAD, 0, (unsigned)i);
@@ -617,6 +646,15 @@ void krkr_pump_events(void) {
                 *(unsigned int*)(ev+0)  = st ? KRKR_SDL_KEYDOWN : KRKR_SDL_KEYUP;
                 *(unsigned char*)(ev+12) = st ? 1 : 0;
                 *(int*)(ev+20)          = PAD[i].code;
+                break;
+            case EMIT_PAD:
+                /* SDL_ControllerButtonEvent: type(4) ts(4) which(8) button(1)
+                 * state(1) pad(2). which=0 (the shim has no joystick id; the
+                 * engine's handler ignores it). */
+                *(unsigned int*)(ev+0)  = st ? KRKR_SDL_CONTROLLERBUTTONDOWN
+                                             : KRKR_SDL_CONTROLLERBUTTONUP;
+                *(unsigned char*)(ev+12) = (unsigned char)PAD[i].code; /* button */
+                *(unsigned char*)(ev+13) = st ? 1 : 0;                 /* state  */
                 break;
             case EMIT_WHEEL:
                 *(unsigned int*)(ev+0)  = st ? KRKR_SDL_MOUSEBUTTONDOWN : KRKR_SDL_MOUSEBUTTONUP;

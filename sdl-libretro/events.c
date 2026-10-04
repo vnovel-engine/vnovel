@@ -5,6 +5,7 @@
 #include "../../key_remap.h"
 /* Which RetroPad button generates a right-click (-1 = none) */
 int SDL_libretro_rightclick_button = RIGHTCLICK_NONE;
+int SDL_libretro_leftclick_button  = RIGHTCLICK_NONE;
 
 /* ---- Test auto-advance ----
  * Set ONS_TEST_AUTODVANCE=<frames> to inject a RETURN keypress every
@@ -262,10 +263,15 @@ static void PumpMouseEvents(void)
   if (SDL_libretro_input_state_cb(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT)) {
     _pressed = 2;
   }
-  // RetroPad button mapped to right-click (menu)
+  // RetroPad button mapped to right-click (cancel/back / rmenu)
   if (SDL_libretro_rightclick_button >= 0 &&
       SDL_libretro_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, SDL_libretro_rightclick_button)) {
     _pressed = 2;
+  }
+  // RetroPad button mapped to left-click (primary act: confirm/advance)
+  if (SDL_libretro_leftclick_button >= 0 &&
+      SDL_libretro_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, SDL_libretro_leftclick_button)) {
+    _pressed = 1;
   }
 
   if (pressed) {

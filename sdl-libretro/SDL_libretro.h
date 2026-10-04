@@ -42,6 +42,7 @@ int SDL_libretro_key_from_ons_key(ons_key_t k);
 
 /* Which RetroPad button (if any) generates a right-click mouse event */
 extern int SDL_libretro_rightclick_button;
+extern int SDL_libretro_leftclick_button;
 enum { RIGHTCLICK_NONE = -1 };
 
 /* When true, the engine thread should block (paused by frontend) */
@@ -65,6 +66,8 @@ extern bool SDL_libretro_fastforward;
 long long ons_libretro_game_clock_ms(void);
 void      ons_libretro_clock_set(double scale);
 void      ons_libretro_clock_reset(void);
+void      ons_libretro_clock_pause(void);
+void      ons_libretro_clock_resume(void);
 
 #ifdef __cplusplus
 }

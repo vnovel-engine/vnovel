@@ -210,6 +210,7 @@ static long long clock_epoch_ms  = -1;  /* FF-on epoch (monotonic), -1 = off */
 static long long clock_epoch_bias= 0;   /* bias captured at FF-on */
 static long long clock_base_ms   = 0;   /* offset subtracted so the first
                                          * returned value starts near 0 */
+static long long pause_started_ms= -1;  /* wall ms when frontend paused, -1=off */
 
 static long long mono_ms(void)
 {
@@ -220,7 +221,16 @@ static long long mono_ms(void)
 
 long long ons_libretro_game_clock_ms(void)
 {
-  long long now = mono_ms();
+  /* While the frontend is paused (RetroArch menu / window unfocused) the core
+   * stops being driven, but the engine thread keeps running and reading this
+   * clock. If the clock kept advancing on wall time, every timer in the engine
+   * would see a huge elapsed delta the moment the frontend resumes — the engine
+   * then spends many frames "catching up" (sluggish render) until the backlog
+   * drains (which is what a fast-forward burst appears to fix). Freeze the
+   * clock at the pause instant so no time accrues while paused; resume shifts
+   * the base by the paused span so the clock stays continuous, not monotonic
+   * wall time. */
+  long long now = (pause_started_ms >= 0) ? pause_started_ms : mono_ms();
   if (clock_scale > 1.0)                          /* fast-forward active */
   {
     if (clock_epoch_ms < 0) { clock_epoch_ms = now; clock_epoch_bias = clock_bias_ms; }
@@ -233,6 +243,24 @@ long long ons_libretro_game_clock_ms(void)
   }
   if (clock_base_ms == 0) clock_base_ms = now;    /* first call: start at 0 */
   return (now - clock_base_ms) + clock_bias_ms;
+}
+
+/* Freeze the game clock while the frontend pauses the core. */
+void ons_libretro_clock_pause(void)
+{
+  if (pause_started_ms < 0) pause_started_ms = mono_ms();
+}
+
+/* Resume: shift the base past the paused span so the clock continues from
+ * where it stopped instead of jumping by the pause duration. */
+void ons_libretro_clock_resume(void)
+{
+  if (pause_started_ms < 0) return;
+  long long paused = mono_ms() - pause_started_ms;
+  if (clock_base_ms != 0) clock_base_ms += paused;
+  pause_started_ms = -1;
+  if (getenv("ONS_CLOCK_DEBUG"))
+    fprintf(stderr, "[clock] resume after %lldms pause\n", paused);
 }
 
 void ons_libretro_clock_set(double scale)
