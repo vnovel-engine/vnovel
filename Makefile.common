@@ -223,6 +223,13 @@ PONS_OBJS += $(PONS_C:.c=.pons.o)
 # =============================================================================
 # Core files (libretro API + C ABI wrappers for both engines)
 # =============================================================================
+# The bridge holds state the core and the engine modules both use. It is built
+# into every shared object that needs it; here that is only the core, since the
+# engines are not yet separate modules. When they are, this source is compiled
+# into the module too, and only one copy is loaded per process (see the
+# one-bridge-file contract in engine_bridge.c).
+SOURCES_C += $(CORE_DIR)/engine_bridge.c
+
 SOURCES_CXX += \
   $(CORE_DIR)/libretro.cpp \
   $(CORE_DIR)/embed_stub.cpp

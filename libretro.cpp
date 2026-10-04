@@ -105,6 +105,7 @@ static void ons_crash_handler(int sig)
 
 #include "libretro_core_options.h"
 #include "engine_cabi.h"
+#include "engine_bridge.h"
 
 #ifdef _WIN32
 #define ons_mkdir(path) mkdir(path)
@@ -120,7 +121,11 @@ static retro_log_printf_t          log_cb = fallback_log;
 static jmp_buf engine_error_jmp;
 static bool engine_error_jmp_valid = false;
 
-extern "C" void libretro_script_error_longjmp(void)
+/* The engines call libretro_script_error_longjmp(), which now lives in the
+ * bridge module so every engine can see the same symbol without the core
+ * exporting anything. The setjmp target is process-local (here), so the core
+ * registers this implementation once during init. */
+static void ons_script_error_longjmp(void)
 {
   if (engine_error_jmp_valid) longjmp(engine_error_jmp, 1);
 }
@@ -156,7 +161,8 @@ extern "C" void retro_request_dumpstate(const char *name)
 //don't use #include <onscripter/ONScripter.h>, use #include <ONScripterLabel.h> instead (stop including wrong header file)  
 #include <ONScripterLabel.h>
 
-retro_input_state_t  SDL_libretro_input_state_cb;
+/* SDL_libretro_input_state_cb is defined in the bridge module (engine_bridge.c)
+ * so the engine modules and the glue all resolve it to one object. */
 static retro_input_state_t frontend_input_state_cb;   /* the real frontend callback */
 bool SDL_libretro_input_ready = false;
 
@@ -246,7 +252,8 @@ static int16_t core_input_state_cb(unsigned port, unsigned device,
 {
   return pointer_synth_input_state(port, device, index, id);
 }
-SDL_AudioSpec       *SDL_libretro_audio_spec = NULL;
+/* SDL_libretro_audio_spec is defined in the bridge module: the engine's SDL
+ * publishes it, the core reads it. */
 SDL_sem             *SDL_libretro_event_sem  = NULL;
 /* Frame sync: when enabled, DUMMY_UpdateRects blocks on this semaphore
    after each screen flush. retro_run() posts it once per frame, giving
@@ -268,27 +275,18 @@ static double opt_ff_scale = 1.0;
 /* Rate currently installed in the clock; cached so retro_run only calls
  * ons_libretro_clock_set() when it actually changes. */
 static double clock_scale_applied = -1.0;
-float opt_mouse_sensitivity = 1.0;
+/* opt_mouse_sensitivity and remap_keys are defined in the bridge module; the
+ * core writes them from frontend options, the glue reads them. */
 /* Key remap state */
 #include "key_remap.h"
 
-int remap_keys[REMAP_COUNT] = {
-    [REMAP_ADVANCE]       = SDLK_RETURN,
-    [REMAP_MENU]          = SDLK_BACKSPACE,
-    [REMAP_SKIP]          = SDLK_s,
-    [REMAP_AUTO]          = SDLK_a,
-    [REMAP_LOOKBACK]      = SDLK_LEFTBRACKET,
-    [REMAP_PAGE_FORWARD]  = SDLK_RIGHTBRACKET,
-    [REMAP_TEXT_SPEED]    = SDLK_0,
-    [REMAP_FULLSCREEN]    = SDLK_F11,
-};
 static retro_video_refresh_t       video_cb;
 static retro_input_poll_t          input_poll_cb;
 static retro_audio_sample_batch_t  audio_batch_cb;
 static retro_environment_t         environ_cb;
-/* Same handle, exported so the SDL events layer (events.c) can read core
- * options without a separate plumbing path. */
-extern "C" retro_environment_t     environ_cb_global = nullptr;
+/* environ_cb_global is defined in the bridge module so the SDL events glue
+ * reads core options without a separate plumbing path. The core sets it in
+ * retro_set_environment. */
 static EngineHandle engine = nullptr;
 static const EngineVTable *vtable = nullptr;
 static volatile bool engine_running = false;
@@ -398,6 +396,9 @@ void retro_set_environment(retro_environment_t cb)
   static struct retro_log_callback log;
   environ_cb = cb;
   environ_cb_global = cb;
+  /* The engines call libretro_script_error_longjmp() (bridge-owned symbol) to
+   * unwind out of exit(); point it at our setjmp target. */
+  ons_bridge_script_error_longjmp = ons_script_error_longjmp;
   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
     log_cb = log.log;
   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_descs);
