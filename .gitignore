@@ -20,5 +20,8 @@ deploy-recalbox.py
 resources/fonts/fallback_font.h
 resources/fonts/extra_fallback_font.h
 
+# Local scratch review notes — the author's own working file, not project docs
+REVIEW.md
+
 # build output (make: build/$(platform)/)
 build/
