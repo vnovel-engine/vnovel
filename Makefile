@@ -50,18 +50,29 @@ PLATFLAGS     :=
 SDL_SYSTIMER  ?= unix/SDL_systimer.c
 
 # --- Platform configuration ---
+# Link-time extras that only apply to ELF/POSIX targets:
+#   -z muldefs      the symbol-rename machinery produces duplicate symbols on
+#                   purpose; ELF needs this, PE/COFF does not accept -z at all
+#   -ldl -lpthread  POSIX libraries with no Windows equivalent
+LINK_EXTRA_unix := -Wl,-z,muldefs
+LINK_LIBS_unix   := -ldl -lpthread
+
 ifeq ($(platform), unix)
    TARGET   := $(TARGET_NAME)_libretro.so
    fpic    := -fPIC
    CXXFLAGS += $(shell pkg-config --cflags freetype2 2>/dev/null)
    CFLAGS   += $(shell pkg-config --cflags freetype2 2>/dev/null)
    SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
+   LINK_EXTRA := $(LINK_EXTRA_unix)
+   LDFLAGS += $(LINK_LIBS_unix)
 
 else ifeq ($(platform), aarch64)
    CROSS   := aarch64-linux-gnu-
    TARGET   := $(TARGET_NAME)_libretro.so
    fpic    := -fPIC
    SHARED  := -shared -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
+   LINK_EXTRA := $(LINK_EXTRA_unix)
+   LDFLAGS += $(LINK_LIBS_unix)
    override CC := $(CROSS)gcc
    override CXX := $(CROSS)g++ -std=c++11
    AR      := $(CROSS)ar
@@ -73,14 +84,25 @@ else ifeq ($(platform), aarch64)
 else ifeq ($(platform), mingw)
    CROSS    := x86_64-w64-mingw32-
    TARGET    := $(TARGET_NAME)_libretro.dll
-   SHARED    := -shared -static-libgcc -static-libstdc++ -s \
-               -Wl,--version-script=$(CORE_DIR)/link.T -Wl,--no-undefined
+   # No --version-script: PE/COFF does not support it. It is not needed either —
+   # RETRO_API expands to __declspec(dllexport) on Windows, so exactly the
+   # retro_* entry points are exported and everything else stays private.
+   SHARED    := -shared -static-libgcc -static-libstdc++ -s -Wl,--no-undefined
    override CC  := $(CROSS)gcc
    override CXX := $(CROSS)g++ -std=c++11
    AR        := $(CROSS)ar
    PLATFLAGS := -DWIN32 -DFAKE_RECURSIVE_MUTEX=0 -Wno-narrowing
    SDL_SYSTIMER := win32/SDL_systimer.c
    LDFLAGS   += -lwinmm -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
+   # freetype comes from the mingw cross package, so ask the *cross* pkg-config:
+   # the native one reports host paths and the include never resolves.
+   MINGW_PKGCONFIG ?= $(CROSS)pkg-config
+   FT_CFLAGS := $(shell $(MINGW_PKGCONFIG) --cflags freetype2 2>/dev/null)
+   FT_LIBS   := $(shell PKG_CONFIG_LIBDIR=/usr/$(CROSS)lib/pkgconfig \
+                          $(MINGW_PKGCONFIG) --libs freetype2 2>/dev/null)
+   CXXFLAGS += $(FT_CFLAGS)
+   CFLAGS   += $(FT_CFLAGS)
+   LDFLAGS  += $(FT_LIBS)
 
 else ifeq ($(platform), win)
    # Native Windows (MSVC not supported; use mingw platform for cross-compile)
@@ -221,7 +243,7 @@ DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps
 
 $(TARGET): $(FALLBACK_FONT_HDR) $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(fpic) $(SHARED) -Wl,-z,muldefs -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS) -ldl -lpthread
+	$(Q)$(CXX) $(fpic) $(SHARED) $(LINK_EXTRA) -o $@ $(OBJECTS) $(BUILD_DIR)/libons_rn.a $(BUILD_DIR)/libpons_rn.a $(LDFLAGS)
 
 # --- Generic compile rules (output to BUILD_DIR, preserving subdirs) ---
 # -MMD -MP emits a .d per object listing its included headers; those are

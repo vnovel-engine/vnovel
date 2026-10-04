@@ -74,4 +74,16 @@
 #define SDL_THREAD_PTHREAD 1
 #define SDL_THREAD_PTHREAD_RECURSIVE_MUTEX 1
 
+/* Timer: must match the platform's systimer source, because each
+ * timer/<platform>/SDL_systimer.c is wrapped in its own #ifdef and compiles to
+ * nothing otherwise. deps/sdl/include/SDL_config.h hardcodes SDL_TIMER_UNIX (it
+ * was generated on Linux), so on mingw the win32 source was being preprocessed
+ * away entirely — leaving SDL_GetTicks undefined at link time. This file is
+ * force-included with -include, so defining the right one here wins. */
+#ifdef _WIN32
+#define SDL_TIMER_WIN32 1
+#else
+#define SDL_TIMER_UNIX 1
+#endif
+
 #endif /* _SDL_config_libretro_h */
