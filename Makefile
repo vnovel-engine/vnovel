@@ -118,6 +118,30 @@ endif
 # --- Global defines ---
 DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
 
+# Build stamp: the deployed .so carries this string, so `strings` identifies the
+# exact build (see ONSCRIPTER_EN_LIBRETRO_VERSION in libretro.cpp). A git
+# abbreviation is not fixed-width and "-dirty" adds six chars, so truncate hard
+# to the 15 the [16] buffer allows.
+#
+# Only trust `git describe` when the toplevel IS this tree. Buildroot copies the
+# sources to an out-of-tree build dir with no .git of its own, where a plain
+# `git -C` would walk up into whatever repo encloses it (the Recalbox tree) and
+# stamp a foreign hash — worse than no stamp, because it looks valid. Fall back
+# to "dev" there; the package recipe passes the real hash via BUILD_VERSION.
+#
+# NB: test _TOP for emptiness explicitly. `$(abspath )` of an empty value is the
+# current directory, which would compare equal to $(abspath $(CORE_DIR)) for an
+# out-of-tree build and wrongly select the git branch.
+_TOP := $(shell git -C $(CORE_DIR) rev-parse --show-toplevel 2>/dev/null)
+ifneq ($(_TOP),)
+ifeq ($(abspath $(_TOP)),$(abspath $(CORE_DIR)))
+_TREE_VERSION := $(shell git -C $(CORE_DIR) describe --always --dirty 2>/dev/null)
+endif
+endif
+BUILD_VERSION ?= $(if $(_TREE_VERSION),$(_TREE_VERSION),dev)
+BUILD_VERSION := $(shell printf '%s' '$(BUILD_VERSION)' | cut -c1-15)
+DEFINES += -DBUILD_VERSION='"$(BUILD_VERSION)"'
+
 # Ad-hoc stderr probes (input diagnostics). `make PROBES=1` to compile them in.
 ifeq ($(PROBES), 1)
    DEFINES += -DKRKR_DEBUG_PROBES

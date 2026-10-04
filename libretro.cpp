@@ -419,11 +419,26 @@ void retro_set_input_state(retro_input_state_t cb)
   frontend_input_state_cb = cb;
 }
 
+/* Deployment-identification stamp. A fixed-size NUL-terminated string that the
+ * build bakes in (see BUILD_VERSION in the Makefile), so `strings` on the
+ * deployed .so identifies exactly which build is running — no md5 comparison,
+ * no guessing. Reported to the frontend and greppable from the binary. */
+#ifndef BUILD_VERSION
+#  define BUILD_VERSION "dev"
+#endif
+/* A git abbreviation is not a fixed width (it grows when ambiguous) and
+ * "-dirty" adds six more, so the literal could outgrow the buffer. The Makefile
+ * truncates to fit; this fails the build loudly rather than overflow if some
+ * other caller sets BUILD_VERSION too long. */
+static_assert(sizeof(BUILD_VERSION) <= 16,
+              "BUILD_VERSION must fit ONSCRIPTER_EN_LIBRETRO_VERSION[16]");
+static const char ONSCRIPTER_EN_LIBRETRO_VERSION[16] = BUILD_VERSION;
+
 void retro_get_system_info(struct retro_system_info *info)
 {
   info->need_fullpath = true;
   info->valid_extensions = "txt|dat|___|ons";
-  info->library_version = "0.2";
+  info->library_version = ONSCRIPTER_EN_LIBRETRO_VERSION;
   info->library_name = "onscripter";
   info->block_extract = false;
 }
@@ -546,6 +561,7 @@ extern "C" {
   void krkr_start(void);
   void krkr_push_key(int sym, int down);
   int krkr_get_audio(int16_t *out_buf, int max_frames);
+  int krkr_audio_rate(void);
   void krkr_shutdown(void);
 }
 
@@ -1168,7 +1184,27 @@ void retro_run(void)
     // (see -wsfreq in engine_kirikiri_cabi.cpp) and we advertise the same.
     {
       static int16_t audio_buf[16384 * 2];
-      int got = krkr_get_audio(audio_buf, 16384);
+      /* Submit about one frame of audio, not the whole ring.
+       *
+       * The engine's FAudio thread produces audio in real time (48000 Hz) into
+       * a 16384-frame ring. If the engine ever gets ahead — a hitch, a pause, a
+       * slow first frame — the ring holds a large backlog, and draining it in
+       * full every frame means we hand RetroArch far more than real time. With
+       * audio_sync on, RA's threaded pipeline publishes into a ring of only
+       * AUDIO_PIPE_RING_FRAMES (3) video frames and blocks the core in an
+       * eventcount wait when that fills, so an over-submitting core stalls the
+       * whole frame (observed: 150-220 ms frame times, ~2% CPU, sawtooth) until
+       * fast-forward switches the pipeline to its non-blocking state.
+       *
+       * A video-novel core has no use for a multi-frame audio backlog: dropping
+       * it is strictly better than playing it late. So bound the submit to
+       * ceil(rate/fps) plus a little slack, and drop whatever is beyond it by
+       * advancing the read pointer (audio is a stream; stale samples have no
+       * value). The ring's own lapped-writer guard is not enough — the surplus
+       * must be discarded here, between frames. */
+      const int sub_rate = krkr_audio_rate() ? krkr_audio_rate() : 48000;
+      const int per_frame = sub_rate / 60 + 16;       /* one video frame + slack */
+      int got = krkr_get_audio(audio_buf, per_frame);
       if (got > 0 && audio_batch_cb)
         audio_batch_cb(audio_buf, got);
     }

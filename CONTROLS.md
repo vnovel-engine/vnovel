@@ -4,8 +4,12 @@ This document is the single source of truth for what every input does. It
 exists because the same physical action must mean one thing to the user, while
 the three engines behind this core expect different keys for it.
 
-## The three layers
+**Before changing input code, read [`INPUT-ARCHITECTURE.md`](INPUT-ARCHITECTURE.md)** —
+it covers the event-vs-polled-state split that the mappings below sit on top of,
+and the per-engine tables that keep injected input visible to games that *poll*
+key state (`System.getKeyState`) rather than only handling events.
 
+## The three layers
 | Layer | Owner | Where |
 |---|---|---|
 | 1. Physical button -> RetroPad id | RetroArch (Controls menu) | RetroArch config |

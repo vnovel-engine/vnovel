@@ -685,6 +685,12 @@ static int *krkr_audio_cap_ptr = NULL;
 static int *krkr_audio_freq_ptr = NULL;
 static int krkr_audio_resolved = 0;
 
+/* Sample rate the engine's ring runs at, for the core to size its submit.
+ * Resolved lazily alongside the ring; 0 until the engine has published it. */
+extern "C" int krkr_audio_rate(void) {
+    return (krkr_audio_resolved && krkr_audio_freq_ptr) ? *krkr_audio_freq_ptr : 0;
+}
+
 extern "C" int krkr_get_audio(int16_t *out_buf, int max_frames) {
     if (!krkr_audio_resolved) {
         krkr_audio_buf_pp = (float**)dlsym(krkr_dl, "SDL_libretro_audio_buf");
