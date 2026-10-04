@@ -68,9 +68,20 @@ static void pons_setResolution(EngineHandle h, int w, int hh) {
     ((PonscripterLabel*)h)->setPreferredWidth(buf);
 }
 
+/* Runtime accessors — see engine_runtime_accessors.h; shared with ONScripter
+ * because they only read this module's own SDL and glue. */
+#include "engine_runtime_accessors.h"
+
 extern "C" const EngineVTable pons_engine_vtable = {
     pons_create, pons_destroy, pons_init, pons_executeLabel, pons_eventLoop, pons_resetCommand,
     pons_setArchivePath, pons_setSavePath, pons_setKeyEXE, pons_setDebugLevel, pons_setTextSpeed,
     pons_getWidth, pons_getHeight, pons_isAutoMode, pons_isSkipMode, pons_dumpState,
-    pons_setResolution
+    pons_setResolution,
+    /* runtime accessors */
+    engine_getSurface, engine_getSampleRate, engine_isAudioPaused, engine_setAudioPaused,
+    /* thread accessors: stay with the core until SDL moves into this module (see
+     * engine_cabi.h on why the thread, its setjmp and its SDL belong together) */
+    NULL, NULL, NULL, NULL, NULL,
+    engine_pushKey, engine_pumpEvents, engine_drainUserEvents, engine_showCursor,
+    engine_timerStartedPtr, engine_timerRunningPtr
 };

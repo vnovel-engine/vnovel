@@ -118,17 +118,10 @@ static void ons_crash_handler(int sig)
 // longjmp function which jumps back to ons_main's setjmp checkpoint.
 static void                        fallback_log(enum retro_log_level level, const char *fmt, ...);
 static retro_log_printf_t          log_cb = fallback_log;
-static jmp_buf engine_error_jmp;
-static bool engine_error_jmp_valid = false;
-
-/* The engines call libretro_script_error_longjmp(), which now lives in the
- * bridge module so every engine can see the same symbol without the core
- * exporting anything. The setjmp target is process-local (here), so the core
- * registers this implementation once during init. */
-static void ons_script_error_longjmp(void)
-{
-  if (engine_error_jmp_valid) longjmp(engine_error_jmp, 1);
-}
+/* The setjmp/longjmp storage lives in the bridge module (static storage, one
+ * copy per process). The ENGINE runs both setjmp and longjmp on its own thread
+ * — longjmp must not cross threads — so the core only provides the storage and
+ * observes the valid flag. See engine_bridge.c. */
 
 /* ---- Snapshot & state dump mechanism ----
  * Engine scripts call snapshotsave("name") / dumpstate("name") which
@@ -396,9 +389,8 @@ void retro_set_environment(retro_environment_t cb)
   static struct retro_log_callback log;
   environ_cb = cb;
   environ_cb_global = cb;
-  /* The engines call libretro_script_error_longjmp() (bridge-owned symbol) to
-   * unwind out of exit(); point it at our setjmp target. */
-  ons_bridge_script_error_longjmp = ons_script_error_longjmp;
+  /* libretro_script_error_longjmp() and the setjmp storage it uses are both in
+   * the bridge module now; nothing to register here. */
   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
     log_cb = log.log;
   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_descs);
@@ -570,14 +562,14 @@ void retro_init(void)
 
 static int ons_main(void *data)
 {
-  if (setjmp(engine_error_jmp) != 0) {
+  if (setjmp(ons_script_error_jmp) != 0) {
     // ONScripter called errorAndExit() - caught by longjmp
     log_cb(RETRO_LOG_ERROR, "ONScripter script error - returning cleanly\n");
-    engine_error_jmp_valid = false;
+    ons_script_error_jmp_valid = false;
     engine_running = false;
     return 0;
   }
-  engine_error_jmp_valid = true;
+  ons_script_error_jmp_valid = true;
   engine_running = true;
   if (vtable->init(engine)) {
     return -1;
@@ -588,7 +580,7 @@ static int ons_main(void *data)
   SDL_ShowCursor(SDL_DISABLE);
   vtable->eventLoop(engine);
   engine_running = false;
-  engine_error_jmp_valid = false;
+  ons_script_error_jmp_valid = false;
   return 0;
 }
 // KiriKiri engine C functions (from engine_kirikiri_cabi.cpp)

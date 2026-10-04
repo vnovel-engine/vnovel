@@ -75,9 +75,22 @@ static void ons_setResolution(EngineHandle h, int w, int hh) {
     ((ONScripterLabel*)h)->setPreferredWidth(buf);
 }
 
+/* --- Runtime accessors -----------------------------------------------------
+ * The core used to call SDL directly for these. Now the engine owns its SDL,
+ * so it answers. The implementations are shared with PONScripter — they read
+ * only the module's own SDL and glue — and live in engine_runtime_accessors.h. */
+#include "engine_runtime_accessors.h"
+
 extern "C" const EngineVTable ons_engine_vtable = {
     ons_create, ons_destroy, ons_init, ons_executeLabel, ons_eventLoop, ons_resetCommand,
     ons_setArchivePath, ons_setSavePath, ons_setKeyEXE, ons_setDebugLevel, ons_setTextSpeed,
     ons_getWidth, ons_getHeight, ons_isAutoMode, ons_isSkipMode, ons_dumpState,
-    ons_setResolution
+    ons_setResolution,
+    /* runtime accessors */
+    engine_getSurface, engine_getSampleRate, engine_isAudioPaused, engine_setAudioPaused,
+    /* thread accessors: stay with the core until SDL moves into this module, so
+     * the thread, its setjmp and its SDL are all in one place (see engine_cabi.h) */
+    NULL, NULL, NULL, NULL, NULL,
+    engine_pushKey, engine_pumpEvents, engine_drainUserEvents, engine_showCursor,
+    engine_timerStartedPtr, engine_timerRunningPtr
 };

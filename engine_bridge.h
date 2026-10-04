@@ -14,6 +14,7 @@
 #include <SDL.h>
 #include <libretro.h>
 #include <SDL_keysym.h>
+#include <setjmp.h>
 #include "key_remap.h"
 
 #ifdef __cplusplus
@@ -35,10 +36,13 @@ extern float opt_mouse_sensitivity;
  * size the audio batch. NULL until audio is open. */
 extern SDL_AudioSpec *SDL_libretro_audio_spec;
 
-/* Unwinds out of engine code that called exit(). The setjmp target lives in the
- * core, so the core registers the implementation here during init; until then
- * the function is a no-op. The engines call this symbol directly. */
-extern void (*ons_bridge_script_error_longjmp)(void);
+/* Unwinds out of engine code that called exit(). The engines call this; the
+ * storage it jumps to also lives here. The setjmp that arms it runs on the
+ * engine's own thread (setjmp and longjmp must be on one thread), so the engine
+ * sets ons_script_error_jmp_valid and the core only provides the storage. See
+ * engine_bridge.c for the full contract. */
+extern jmp_buf ons_script_error_jmp;
+extern volatile int ons_script_error_jmp_valid;
 void libretro_script_error_longjmp(void);
 
 #ifdef __cplusplus

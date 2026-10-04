@@ -55,6 +55,7 @@
 // split.
 
 #include "engine_bridge.h"
+#include <setjmp.h>
 
 /* --- frontend callbacks ---------------------------------------------------- */
 
@@ -92,15 +93,29 @@ SDL_AudioSpec *SDL_libretro_audio_spec = 0;
 
 /* --- error unwinding ------------------------------------------------------ */
 
-/* The engines call libretro_script_error_longjmp() to unwind out of engine code
- * that called exit(). The setjmp buffer it longjmps to lives in the core
- * (libretro.cpp) alongside the engine thread, so the symbol lives here and the
- * implementation is registered by the core at init. Until then this is NULL and
- * the call is a no-op: the engines only reach it after init. */
-void (*ons_bridge_script_error_longjmp)(void) = 0;
+/* Storage for the setjmp/longjmp pair the engines use to unwind out of exit().
+ *
+ * The buffer lives here (static storage, one copy per process) but it is the
+ * ENGINE that executes both calls, on its own thread:
+ *
+ *     engine thread:  if (setjmp(ons_script_error_jmp)) { clean up; return; }
+ *                     ... run the script ...
+ *     anywhere:       errorAndExit() -> libretro_script_error_longjmp()
+ *
+ * setjmp and longjmp must run on the same thread — longjmp restores a stack
+ * frame, so jumping into a buffer captured on another thread is undefined. Since
+ * the engine owns its thread (see engine_cabi.h), it must own the setjmp, and
+ * this module only has to provide the storage both sides can name.
+ *
+ * The core sets ons_script_error_jmp_valid = 0 before the thread starts and may
+ * read it afterwards to learn whether the engine unwound; the engine sets it to
+ * 1 once its setjmp is armed, and to 0 on the way out. It is written by one
+ * thread and read by another, hence volatile. */
+jmp_buf ons_script_error_jmp;
+volatile int ons_script_error_jmp_valid = 0;
 
 void libretro_script_error_longjmp(void)
 {
-    if (ons_bridge_script_error_longjmp)
-        ons_bridge_script_error_longjmp();
+    if (ons_script_error_jmp_valid)
+        longjmp(ons_script_error_jmp, 1);
 }
