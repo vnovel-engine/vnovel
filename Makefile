@@ -369,6 +369,13 @@ PONS_MOD_OBJS:= $(PONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(PONS_EXTRA_CXX)
 # call into it by name (SDL_*, ons_libretro_game_clock_ms, ...), which is the
 # one direction where symbol resolution is required. That is also why it is the
 # runtime and not the core that holds them — the core stays hidden, per link.T.
+# The runtime exports its vendored libraries by name, under the Private prefix
+# the rename in sdl-vendored.h gives them. A version script was tried as a
+# replacement for that rename — hide SDL instead of renaming it — and it does not
+# simplify anything: `local: *` hides bzip2, ogg, vorbis, SMPEG, the glue and the
+# bridge symbols the engines link against, so the `global:` list has to name every
+# one of them. That is the same size as the rename list, spread across a second
+# file, with a build failure per missing entry instead of one generated header.
 RUNTIME_SHARED = -shared $(MOD_STATIC_RT) -Wl,-Bsymbolic-functions $(RUNTIME_EXPORTS)
 
 ONS_MOD   := $(BUILD_DIR)/onscripter-en_engine_ons$(MOD_EXT)
