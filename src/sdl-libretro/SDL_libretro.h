@@ -50,7 +50,7 @@ extern bool SDL_libretro_paused;
 
 /* Runtime control of the input diagnostics and the Y→ctrl tap length. The
  * debug flag otherwise comes from ONS_INPUT_DEBUG=1; the tap length from the
- * onscripter_en_ctrl_tap_frames core option (ONS_CTRL_TAP_FRAMES overrides). */
+ * vnovel_ctrl_tap_frames core option (ONS_CTRL_TAP_FRAMES overrides). */
 void SDL_libretro_set_input_debug(int on);
 void SDL_libretro_set_ctrl_tap_frames(int frames);
 /* True while a core reset is in progress: the engine thread must ignore the

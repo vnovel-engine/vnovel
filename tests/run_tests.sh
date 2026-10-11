@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-# Test harness for onscripter-en_libretro core.
+# Test harness for the vnovel libretro core.
 # Runs headless via Xvfb (virtual framebuffer).
 #
 # Usage:
@@ -9,13 +9,17 @@
 #   ./run_tests.sh --golden     # create/update golden references
 #   NO_XVFB=1 ./run_tests.sh    # run with visible window (debugging)
 
-CORE="${CORE:-$(realpath ../onscripter-en_libretro.so)}"
+CORE="${CORE:-$(realpath ../vnovel_libretro.so)}"
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 RA="${RA:-retroarch}"
 MAX_FRAMES="${MAX_FRAMES:-300}"
 TEST_WIDTH="${TEST_WIDTH:-640}"
 TEST_HEIGHT="${TEST_HEIGHT:-480}"
-RA_SAVE_DIR="${RA_SAVE_DIR:-$HOME/.config/retroarch/saves/onscripter/onscripter-en}"
+# The engine isolates saves per game folder (libretro.cpp derives a per-game
+# subdir so two games cannot overwrite each other's save1.dat), so snapshots
+# land in <save root>/<game folder>, not one flat directory. RetroArch's save
+# root is <savefile_directory>/<library_name> ("vnovel", from the .info).
+RA_SAVE_ROOT="${RA_SAVE_ROOT:-$HOME/.config/retroarch/saves/vnovel}"
 PASS=0
 FAIL=0
 GOLDEN=0
@@ -29,7 +33,11 @@ done
 
 # Start Xvfb for headless operation
 if [ -z "$NO_XVFB" ] && command -v Xvfb >/dev/null 2>&1; then
-    XVFB_PID=$(Xvfb :99 -screen 0 1280x720x24 2>/dev/null & echo $!)
+    # Redirect Xvfb's own stdout/stderr: it must not inherit the command
+    # substitution's pipe, or bash waits for that pipe to close - which Xvfb
+    # holds open for its whole life - and the harness hangs before the first
+    # test.
+    XVFB_PID=$(Xvfb :99 -screen 0 1280x720x24 >/dev/null 2>&1 & echo $!)
     export DISPLAY=:99
     export WAYLAND_DISPLAY=""  # force X11, not Wayland
     sleep 1
@@ -44,9 +52,13 @@ run_test() {
     local name="$1"
     local game="$2"
     local expect_file="$3"
-    
+
+    # `<name>` is "ons/01_basic"; the save folder is the game directory's
+    # basename, which is what libretro.cpp derives from the ROM path.
+    local RA_SAVE_DIR="$RA_SAVE_ROOT/$(basename "$name")"
+
     echo -n "  $name ... "
-    
+
     rm -f "$RA_SAVE_DIR"/*.bmp "$RA_SAVE_DIR"/*.txt 2>/dev/null
     
     ONS_TEST_WIDTH="$TEST_WIDTH" ONS_TEST_HEIGHT="$TEST_HEIGHT" \

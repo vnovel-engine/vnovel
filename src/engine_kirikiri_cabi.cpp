@@ -3,7 +3,7 @@
 #endif
 // engine_kirikiri_cabi.cpp — C ABI wrapper for krkrsdl2 engine (dlopen approach)
 //
-// krkrsdl2 is built as a separate shared library (onscripter-en_engine_krkrsdl2,
+// krkrsdl2 is built as a separate shared library (vnovel_engine_krkrsdl2,
 // an engine module beside the core like the ONS/PONScripter ones) to avoid
 // SDL 1.2/SDL2 symbol conflicts. This wrapper dlopen's it at runtime.
 // RTLD_DEEPBIND ensures krkrsdl2 uses its own SDL2, not the core's SDL 1.2.
@@ -73,6 +73,7 @@ typedef void (*krkrsdl2_run_main_loop_t)();
 typedef void (*krkrsdl2_cleanup_t)();
 typedef void (*krkr_set_flag_t)(int);
 typedef void (*krkr_notify_poll_t)(long long);
+typedef void (*krkr_set_int_t)(int);
 typedef void (*krkr_set_resolution_t)(int, int);
 
 // Global surface pointer — void* to avoid SDL 1.2/SDL2 type conflict
@@ -80,15 +81,15 @@ extern "C" void *SDL_libretro_surface = NULL;
 
 /* The engine's shared-library file name, per platform. It is a libretro engine
  * module like the ONS/PONScripter ones, so it follows the same
- * onscripter-en_engine_<name>.<ext> convention with no "lib" prefix anywhere.
+ * vnovel_engine_<name>.<ext> convention with no "lib" prefix anywhere.
  * The loader below is otherwise platform-neutral: it dlopen's whatever this
  * expands to. */
 #if defined(_WIN32)
-#  define KRKR_ENGINE_SONAME "onscripter-en_engine_krkrsdl2.dll"
+#  define KRKR_ENGINE_SONAME "vnovel_engine_krkrsdl2.dll"
 #elif defined(__APPLE__)
-#  define KRKR_ENGINE_SONAME "onscripter-en_engine_krkrsdl2.dylib"
+#  define KRKR_ENGINE_SONAME "vnovel_engine_krkrsdl2.dylib"
 #else
-#  define KRKR_ENGINE_SONAME "onscripter-en_engine_krkrsdl2.so"
+#  define KRKR_ENGINE_SONAME "vnovel_engine_krkrsdl2.so"
 #endif
 /* Join a directory and the engine library name into `out`. */
 static void krkr_join(char *out, size_t n, const char *dir)
@@ -111,6 +112,7 @@ static krkrsdl2_run_main_loop_t p_run_main_loop = NULL;
 static krkrsdl2_cleanup_t p_cleanup = NULL;
 static krkr_set_flag_t p_set_fastforward = NULL;
 static krkr_notify_poll_t p_notify_poll = NULL;
+static krkr_set_int_t p_set_audio_suspended = NULL;
 static krkr_set_resolution_t p_set_resolution = NULL;
 /* Engine restart hook (krkrsdl2_prepare_restart). Resolved and invoked inside
  * krkr_init, before the engine thread starts. */
@@ -254,6 +256,7 @@ int krkr_init(EngineHandle engine) {
     krkr_engine_stopped_ptr = (volatile int*)dlsym(krkr_dl, "krkrsdl2_engine_stopped");
     p_set_fastforward = (krkr_set_flag_t)dlsym(krkr_dl, "krkr_set_fastforward");
     p_notify_poll = (krkr_notify_poll_t)dlsym(krkr_dl, "krkr_notify_poll");
+    p_set_audio_suspended = (krkr_set_int_t)dlsym(krkr_dl, "krkr_set_audio_suspended");
     p_set_resolution = (krkr_set_resolution_t)dlsym(krkr_dl, "krkr_set_resolution");
     p_prepare_restart = (void (*)(void))dlsym(krkr_dl, "krkrsdl2_prepare_restart");
     p_request_quit = (void (*)(void))dlsym(krkr_dl, "krkrsdl2_request_quit");
@@ -325,6 +328,11 @@ extern "C" volatile int *krkr_get_engine_stopped_ptr(void) { return krkr_engine_
  * call — the engine infers it from a stale krkr_notify_poll heartbeat. */
 extern "C" void krkr_set_fastforward(int f) { if (p_set_fastforward) p_set_fastforward(f); }
 extern "C" void krkr_notify_poll(long long ms) { if (p_notify_poll) p_notify_poll(ms); }
+
+/* Tell the engine the frontend suspended audio (fullscreen/window transition).
+ * The engine then stops advancing its mixer, so it does not run ahead of a
+ * consumer that is not reading. */
+extern "C" void krkr_set_audio_suspended(int suspended) { if (p_set_audio_suspended) p_set_audio_suspended(suspended); }
 
 /* Force the engine's internal resolution (0,0 clears it). The symbol is only
  * resolved once krkr_init has dlopened the engine, so stash the request here
@@ -404,6 +412,7 @@ extern "C" int krkr_finish_stop(void) {
     krkr_engine_stopped_ptr = NULL;
     p_set_fastforward = NULL;
     p_notify_poll = NULL;
+    p_set_audio_suspended = NULL;
     p_prepare_restart = NULL;
     p_request_quit = NULL;
     return 1;

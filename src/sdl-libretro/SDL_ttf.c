@@ -19,6 +19,23 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 
+/*
+ * ALTERED SOURCE — this file is not the original SDL_ttf. Per restriction 2
+ * above, the changes made to the vnovel core's copy are:
+ *
+ *   - The FreeType 2 renderer was replaced with stb_truetype (vendored in
+ *     src/sdl-libretro/stb_truetype.h), because the core ships a fixed font
+ *     set and must not depend on a system fontconfig/FreeType.
+ *   - TTF_SetFallbackFontMem() was added: a process-wide last-resort font so a
+ *     codepoint the game's own font lacks renders instead of .notdef.
+ *   - Latin rendering was split into proportional and monospace paths. The
+ *     game's Latin face is probed lazily (latin_monospace) and, when its ASCII
+ *     advances are uniform, drawn with the proportional fallback so that
+ *     designed-monospace game fonts do not look cramped next to CJK text.
+ *   - Fixed-pitch CJK cells are laid out with the half-width metrics
+ *     ONScripter's text engine assumes.
+ */
+
 #include <string.h>
 #include "SDL_ttf.h"
 #define STB_TRUETYPE_IMPLEMENTATION

@@ -1,12 +1,13 @@
-# ONScripter-EN Libretro Core
+# vnovel Libretro Core
 
-A unified libretro core for playing visual novels built with ONScripter-EN
-and PONScripter in RetroArch. Supports both engines in a single `.so` with
-runtime detection based on script file type.
+A unified libretro core for playing Japanese visual novels in RetroArch.
+It covers the three major engines — ONScripter-EN, PONScripter and
+KiriKiri (KAG) — in a single distribution, detecting which one a game
+needs from its script/data file (`nscript.dat`, `pscript.dat`, `data.xp3`).
 
-It also integrates a **KiriKiri (krkrsdl2)** engine as a separately loaded
-shared library (`deps/krkrsdl2`), used for KiriKiri/KAG titles such as
-*The House in Fata Morgana*.
+The core ships with a libretro database (`vnovel.rdb`) that names known
+games by the fingerprint of that same file, so a scan in RetroArch shows
+*Tsukihime* rather than `nscript.dat`.
 
 ## Lineage
 
@@ -29,7 +30,7 @@ KiriKiri Z (krkrz, W.Dee / krkrsdl2 project)
   │           ↑ fork of github.com/FNA-XNA/FAudio by Matcha & Nova
   │           ↑ libretro audio capture (SPSC ring) by Matcha & Nova
   │
-onscripter-en-libretro (this repo, Matcha & Nova, 2026)
+vnovel (this repo, Matcha & Nova, 2026)
   ↑ SDL→libretro bridge derived from:
   onscripter-libretro (iyzsong, archived)
   ↑ Multi-engine architecture, build system, test suite, and engine
@@ -107,7 +108,7 @@ This port was AI-assisted (Nova, powered by GLM-5.2-FP8).
 
 ```bash
 # Clone with submodules
-git clone --recursive https://gitlab.com/matchaxnb/onscripter-en-libretro.git
+git clone --recursive https://gitlab.com/matchaxnb/vnovel.git
 
 # Build for Linux x86_64
 make
@@ -122,6 +123,31 @@ make platform=mingw
 make DEBUG=1
 ```
 
+The build produces four artifacts that must ship together — `vnovel_libretro.so`
+plus `vnovel_runtime.so` and the `vnovel_engine_ons.so` / `vnovel_engine_pons.so`
+modules (the core's rpath finds them beside itself). `make rdb` additionally
+builds the game database; see [Game database](#game-database-vnovelrdb).
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `src/` | The core's C/C++ sources (`libretro.cpp`, the engine C-ABI wrappers, the bridge, and `sdl-libretro/`). |
+| `Makefile`, `Makefile.common` | Build system. Kept at the root so `make` works from a pristine clone. |
+| `link.T`, `sdl-vendored.h` | Generated/linker manifests. Also at the root (generated, but tracked and reviewable). |
+| `tests/` | Headless test suite (`run_tests.sh`, golden snapshots). |
+| `dat/`, `vnovel.rdb` | The game database and its source. |
+| `resources/fonts/` | Embedded fallback fonts and their licences. |
+| `tools/` | Python (`make-rdb.py`, `hash-game.py`, `merge-submissions.py`, `validate-submission.py`, `embed_font.py`, `gen_sdl_vendored.py`). |
+| `deploy-system.py` | Recalbox deploy (host + core + system entry + database). |
+| `private/` | Author's working notes (gitignored — not shipped). |
+
+Standalone utilities that the core does not build against (XP3 archivers, the
+XP3/Fate decryption scripts, the NScripter XOR encoder, and the manual
+PONScripter smoke launchers) live in a companion repository,
+[vnovel-tools-misc](https://gitlab.com/matchaxnb/vnovel-tools-misc).
+
+
 ## Testing
 
 ```bash
@@ -135,6 +161,115 @@ Tests use `snapshotsave` and `dumpstate` commands (added to both engines
 under `__LIBRETRO__`) to capture BMP screenshots and variable/flag state
 dumps at specific script points. Output is compared pixel-perfect against
 golden references.
+
+## Game database (`vnovel.rdb`)
+
+RetroArch identifies content by hashing it and looking the hash up in a
+per-system `.rdb`. Ours is named after the core (`database = "vnovel"` in
+`vnovel_libretro.info`), and it fingerprints each game by the *script/data
+file the core already keys engine detection off*:
+
+| Engine | Fingerprinted file | Extension |
+|---|---|---|
+| ONScripter-EN | `nscript.dat` (`nscript.___` also accepted) | `dat` / `___` |
+| PONScripter | `pscript.dat` | `dat` |
+| KiriKiri (KAG) | `data.xp3` | `xp3` |
+
+Hashing that one file is what makes the feature work with RetroArch's
+scanner as it stands: the scanner iterates the ROM directory's files and
+looks each one up, and a visual novel's `nscript.dat`/`pscript.dat`/`data.xp3`
+*is* a file in that directory. A record therefore carries
+`name`/`description`/`developer`/`franchise`/… plus `rom_name`, `size`,
+`crc`, `md5` and `sha1` of that file, so a scan in RetroArch lists the game
+as *Tsukihime* instead of `nscript.dat`.
+
+`crc` is the indexed key, so lookups binary-search rather than walking the
+whole database (equally fine on a Pi).
+
+### Regenerating
+
+```bash
+make rdb    # dat/vnovel.dat -> vnovel.rdb
+```
+
+The seed set is small (the games this port has been tested against); adding
+a game is appending a `game (...)` block to `dat/vnovel.dat` with the CRCs
+of its script file and re-running `make rdb`:
+
+```bash
+# crc32 of a file (any tool; coreutils has crc32 on Arch)
+crc32 'My Game/pscript.dat'
+md5sum 'My Game/pscript.dat'
+sha1sum 'My Game/pscript.dat'
+```
+
+`tools/make-rdb.py` is a self-contained writer for the libretro db format
+(MessagePack records plus a binary-searchable index) so no RetroArch
+checkout or `c_converter` build is needed.
+
+### Contributing a game
+
+`tools/hash-game.py` fingerprints a game folder and prints a ready-to-paste
+`game (...)` block — the script/data file it hashes is the one the core
+launches, and it derives the display name the same way the engines do:
+
+```bash
+tools/hash-game.py ~/VN/MyGame/Game
+tools/hash-game.py ~/VN/MyGame/Game --append dat/vnovel.dat
+```
+
+Name precedence (matching ONScripter's own order):
+
+| Order | Source | Notes |
+|---|---|---|
+| 1 | `game.id` | sidecar file; present on ONScripter-EN ports |
+| 2 | `ons.cfg` `gameid=` | |
+| 3 | `;gameid` directive | inside the script header |
+| 4 | `versionstr` | `"^Title Ver1.0","^Copyright …"` |
+| 5 | `caption` | the window title / About string |
+
+KiriKiri has none of these; the tool falls back to `setup.ini` `AppName=`
+(cp932-aware) and then the launcher `.exe` basename.
+
+The `.exe` itself is **not** a source of game names: its PE version resource
+names the *engine* (`ProductName = ONScripter-EN`), and the title is not
+present in it at all. The title lives in the script, which is the file we
+hash anyway.
+
+### Submitting to the shared database
+
+Contributions are collected in a companion repository,
+[vnovel-database](https://gitlab.com/matchaxnb/vnovel-database), so nobody
+needs to open a merge request against the core to add a game:
+
+```bash
+tools/hash-game.py ~/VN/MyGame/Game --submit -   # fragment for a merge request
+tools/hash-game.py ~/VN/MyGame/Game --email -    # mail body, for mailing it in
+```
+
+Paste the fragment into `submissions/` there (or mail it). Maintainers merge
+with `tools/merge-submissions.py`, which deduplicates by crc and reports name
+conflicts:
+
+```bash
+tools/merge-submissions.py dat/vnovel.dat ../vnovel-database/submissions/*.dat \
+    -o dat/vnovel.dat && make rdb
+```
+
+### Installing for RetroArch
+
+Put `vnovel.rdb` where RetroArch looks for databases:
+
+| Frontend | Path |
+|---|---|
+| Generic RetroArch | `<RetroArch dir>/database/rdb/vnovel.rdb` (i.e. `~/.config/retroarch/database/rdb/`) |
+| Recalbox | `/recalbox/share/system/.config/retroarch/database/rdb/vnovel.rdb` (`deploy-system.py --db-only`) |
+
+Then either scan the ROM directory (RetroArch picks the database from the
+core's `.info`, matching the playlist/system named `vnovel`) or add the
+`.rdb` explicitly as a database in the manual scanner. A record shown means
+the fingerprint matched; a raw filename means it did not — which is the
+signal that the file is an unrecorded version.
 
 ## Architecture
 
@@ -280,7 +415,7 @@ whole frame via `kiri_frame()` and returns; ONS/PONS drive theirs inline.
 write the fault address and a backtrace to `/tmp/ons_crash.log` and then
 re-raise. Without them a core fault reaches the frontend only as
 `Process exitcode: -11`, with no address. Symbolicate with
-`aarch64-…-addr2line -f -C -e onscripter-en_libretro.so`.
+`aarch64-…-addr2line -f -C -e vnovel_libretro.so`.
 
 ### BGM playback and SMPEG priming
 
@@ -320,10 +455,9 @@ a black screen.
 ## Input Mapping
 
 **Canonical source: [`CONTROLS.md`](CONTROLS.md).** It defines the layer-2
-contract (physical button → semantic action) and the per-engine keys, and
-[`INPUT-ARCHITECTURE.md`](INPUT-ARCHITECTURE.md) explains the event-vs-polled-state
-split that the injected input must respect. The tables below are a summary; if
-they ever disagree with `CONTROLS.md`, that file wins.
+contract (physical button → semantic action) and the per-engine keys. The
+tables below are a summary; if they ever disagree with `CONTROLS.md`, that
+file wins.
 
 ### RetroPad (layer 2 — identical on every engine)
 

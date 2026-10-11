@@ -19,10 +19,18 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 
+/*
+ * ALTERED SOURCE — this header is not the original SDL_ttf.h. Per restriction
+ * 2 above: the FreeType 2 backend was swapped for stb_truetype, the fallback
+ * font API (TTF_SetFallbackFontMem) was added, and the Latin
+ * proportional/monospace split described in SDL_ttf.c is reflected in the
+ * declarations below. See src/sdl-libretro/SDL_ttf.c for the full list.
+ */
+
 /* This library is a wrapper around the excellent FreeType 2.0 library,
    available at:
 	http://www.freetype.org/
-*/
+   The vnovel build uses stb_truetype instead; see the notice above. */
 
 #ifndef _SDL_TTF_H
 #define _SDL_TTF_H

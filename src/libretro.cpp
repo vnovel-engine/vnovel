@@ -31,7 +31,7 @@
  * symbolicated backtrace to the crash log, then re-raise so the default
  * action still kills the process. Core crashes otherwise surface only as
  * RetroArch's "Process exitcode: -11" with no address; this makes them
- * diagnosable (`aarch64-…-addr2line -f -C -e onscripter-en_libretro.so`). */
+ * diagnosable (`aarch64-…-addr2line -f -C -e vnovel_libretro.so`). */
 /* Portable crash-log path. Hardcoding "/tmp/..." is not portable (Windows and
  * some sandboxed frontends have no /tmp); prefer the core's writable save
  * directory, which the frontend provides and which exists on every platform,
@@ -218,7 +218,7 @@ static int  opt_pointer_source = POINTER_SOURCE_RIGHT;
  * stick click, so no engine-side change is needed.
  *
  * Whether the pointer is offered, and which stick drives it, are core options
- * (onscripter_en_pointer_enable / _pointer_source): the core cannot know the
+ * (vnovel_pointer_enable / _pointer_source): the core cannot know the
  * user's pad, so refusing to guess is the point. */
 static int vlx_pos = -1, vly_pos = -1;   /* virtual pointer accumulator, -1 = unset */
 
@@ -537,15 +537,15 @@ void retro_set_input_state(retro_input_state_t cb)
  * truncates to fit; this fails the build loudly rather than overflow if some
  * other caller sets BUILD_VERSION too long. */
 static_assert(sizeof(BUILD_VERSION) <= 16,
-              "BUILD_VERSION must fit ONSCRIPTER_EN_LIBRETRO_VERSION[16]");
-static const char ONSCRIPTER_EN_LIBRETRO_VERSION[16] = BUILD_VERSION;
+              "BUILD_VERSION must fit VNOVEL_LIBRETRO_VERSION[16]");
+static const char VNOVEL_LIBRETRO_VERSION[16] = BUILD_VERSION;
 
 void retro_get_system_info(struct retro_system_info *info)
 {
   info->need_fullpath = true;
   info->valid_extensions = "txt|dat|___|ons";
-  info->library_version = ONSCRIPTER_EN_LIBRETRO_VERSION;
-  info->library_name = "onscripter";
+  info->library_version = VNOVEL_LIBRETRO_VERSION;
+  info->library_name = "vnovel";
   info->block_extract = false;
 }
 
@@ -634,6 +634,12 @@ void retro_init(void)
     extern int TTF_AddFallbackFontMem(const unsigned char *data, int size);
     TTF_SetFallbackFontMem(fallback_font_ttf, fallback_font_ttf_len);
     TTF_AddFallbackFontMem(extra_fallback_font_ttf, extra_fallback_font_ttf_len);
+
+    /* Publish the same CJK font to the engine as its last-resort whole-font
+     * fallback (see engine_bridge.h). The arrays are static, so the pointer is
+     * valid for the process's life. */
+    ons_fallback_font_data = fallback_font_ttf;
+    ons_fallback_font_len = fallback_font_ttf_len;
   }
 }
 
@@ -653,6 +659,7 @@ extern "C" {
   void krkr_set_input_callbacks(retro_input_state_t state_cb, retro_input_poll_t poll_cb);
   void krkr_set_fastforward(int f);
   void krkr_notify_poll(long long ms);
+  void krkr_set_audio_suspended(int suspended);
   void krkr_set_resolution(int w, int h);
   void krkr_request_stop(void);
   int  krkr_finish_stop(void);
@@ -697,6 +704,27 @@ static void krkr_abuf_fill(void)
   if (krkr_abuf_len > krkr_abuf_peak) krkr_abuf_peak = krkr_abuf_len;
 }
 
+/* Pacing state for the KiriKiri submit, shared by the drain and the suspend
+ * path so a suspend can re-arm the clock. See krkr_abuf_drain. */
+static long long krkr_drain_last_ms = 0;
+static long long krkr_drain_owed = 0;    /* fractional frames owed */
+
+/* Suspend the KiriKiri submit: the frontend's audio consumer is paused (audio
+ * suspended across a fullscreen/window transition, or the frontend parked).
+ * Discard whatever the engine produced and re-arm the pacing clock, so the next
+ * enabled call starts clean rather than accreting the suspended span and
+ * repaying it as a catch-up burst. Late audio has no value in a visual novel.
+ * Returns 0 frames. */
+static int krkr_abuf_drain_suspend(void)
+{
+  int g;
+  do { g = krkr_get_audio(krkr_abuf, KRKR_ABUF_MAX); } while (g == KRKR_ABUF_MAX);
+  krkr_abuf_len = 0;
+  krkr_drain_owed = 0;
+  krkr_drain_last_ms = 0;   /* next enabled drain re-seeds from its own now */
+  return 0;
+}
+
 /* Submit audio to the frontend, steered by RetroArch's audio-buffer-status
  * callback. Returns frames sent.
  *
@@ -719,32 +747,58 @@ static void krkr_abuf_fill(void)
  * slowdown. And the engine keeps producing for the first moments of a pause
  * before it notices, leaving a backlog that would otherwise never drain and
  * persist as growing latency. On such a gap the debt is cleared and the stale
- * audio is discarded: late audio has no value in a visual novel. */
+ * audio is discarded (the same thing an explicit suspend does). */
 static int krkr_abuf_drain(int rate)
 {
-  static long long last_ms = 0;
-  static long long owed = 0;             /* fractional frames owed */
   long long now = ons_libretro_game_clock_ms();
-  long long dt = last_ms ? now - last_ms : 0;
-  last_ms = now;
-  if (dt < 0 || dt > 250) {              /* first call, or resumed from a pause */
-    owed = 0;
-    /* Drain and discard whatever the engine produced while unpolled. */
-    int g;
-    do { g = krkr_get_audio(krkr_abuf, KRKR_ABUF_MAX); } while (g == KRKR_ABUF_MAX);
-    krkr_abuf_len = 0;
-    return 0;
+  long long dt = krkr_drain_last_ms ? now - krkr_drain_last_ms : 0;
+  krkr_drain_last_ms = now;
+  if (dt < 0 || dt > 250) {              /* first call, or a real pause */
+    if (dt > 250)
+      fprintf(stderr, "krkr_audio: pause gap dt=%lldms -> discard\n", dt);
+    return krkr_abuf_drain_suspend();
+  }
+  /* A gap beyond one frame is the frontend not calling retro_run for a while —
+   * a display reinit (a fullscreen toggle) or a hitch. The debt for that span is
+   * forgiven rather than accrued: accruing it makes this call hand the whole gap
+   * over as one burst, which overfills the frontend's ring, and under audio_sync
+   * the core is then blocked in the frontend's wait, slowing retro_run further —
+   * the spiral a fullscreen transition starts. Forgiving it means this call
+   * submits one frame like any other: no burst, and the audio the engine
+   * produced meanwhile stays in the buffer and plays out instead of being
+   * dropped. */
+  if (dt > 40) {
+    fprintf(stderr, "krkr_audio: gap dt=%lldms occ=%d%% -> forgive, play on\n",
+            dt, krkr_ring_occupancy);
+    /* Credit up to two frames: the frontend drained its ring during the gap, so
+     * it needs a little, but more than its ring holds would burst it. */
+    if (dt > 2000 / 60) dt = 2000 / 60;
   }
   krkr_abuf_fill();
-  owed += dt * (long long)rate;
-  if (owed > (long long)rate * 1000) owed = (long long)rate * 1000;  /* 1 s cap */
-  long long want = owed / 1000;
+  /* Bound the buffer to ~50 ms (three video frames). That is the latency we
+   * accept: enough to absorb a transition's output and the quantum/frame phase
+   * difference, small enough to stay real-time. A producer that runs away
+   * cannot grow it beyond this, and the surplus is dropped here rather than
+   * handed over as a backlog later — late audio has no value in a visual
+   * novel. */
+  {
+    const int hold = rate / 60 * 3;      /* ~50 ms */
+    if (krkr_abuf_len > hold) {
+      int drop = krkr_abuf_len - hold;
+      memmove(krkr_abuf, krkr_abuf + drop * 2,
+              (size_t)hold * 2 * sizeof(int16_t));
+      krkr_abuf_dropped += drop;
+      krkr_abuf_len = hold;
+    }
+  }
+  krkr_drain_owed += dt * (long long)rate;
+  long long want = krkr_drain_owed / 1000;
   if (want < 0) want = 0;
   int send = (int)want;
   if (send > krkr_abuf_len) send = krkr_abuf_len;   /* never pad */
   if (send > 0 && audio_batch_cb) {
-    owed -= (long long)send * 1000;
-    if (owed < 0) owed = 0;
+    krkr_drain_owed -= (long long)send * 1000;
+    if (krkr_drain_owed < 0) krkr_drain_owed = 0;
     audio_batch_cb(krkr_abuf, (size_t)send);
     memmove(krkr_abuf, krkr_abuf + send * 2,
             (size_t)(krkr_abuf_len - send) * 2 * sizeof(int16_t));
@@ -835,6 +889,24 @@ bool retro_load_game(const struct retro_game_info *game){
     canon_path(game_save_dir, sizeof(game_save_dir), game_save_dir);
   }
 
+  /* Asset override directory: loose files here win over the game's own files
+   * and .nsa/.sar archives (see engine_bridge.h). The engine's archive search
+   * tries loose files before archive contents and stops at the first hit, so
+   * prepending this directory is enough.
+   *
+   * It sits next to the game data — `.overrides/` beside nscript.dat,
+   * pscript.dat, or the KiriKiri archive — following the softpatch convention
+   * (a sibling folder, not a shared saves root; there is no unified standard
+   * yet, so match the shape softpatchers already use). archive_path is the
+   * ROM's game directory and ends in '/', so this is that directory plus the
+   * trailing component. Static storage: the engine holds the pointer for the
+   * process's life. */
+  {
+    static char override_dir[PATH_MAX_LENGTH];
+    snprintf(override_dir, sizeof(override_dir), "%s.overrides/", archive_path);
+    ons_override_dir = override_dir;
+  }
+
   // Internal rendering resolution. "native" uses the host display size;
   // otherwise tell the engine the frontend expects a fixed resolution, so it
   // sizes itself (and its window/layer) from that. Read once here so both
@@ -843,7 +915,7 @@ bool retro_load_game(const struct retro_game_info *game){
   int forced_res_w = 0, forced_res_h = 0;
   {
     struct retro_variable resvar = {0};
-    resvar.key = "onscripter_en_internal_resolution";
+    resvar.key = "vnovel_internal_resolution";
     if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
         strcmp(resvar.value, "native") != 0) {
       unsigned a = 0, b = 0;
@@ -956,7 +1028,7 @@ bool retro_load_game(const struct retro_game_info *game){
 
   // Read debug level option before starting engine
   struct retro_variable dbgvar = {0};
-  dbgvar.key = "onscripter_en_debug_level";
+  dbgvar.key = "vnovel_debug_level";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
     opt_debug_level = atoi(dbgvar.value);
   vtable->setDebugLevel(engine, opt_debug_level);
@@ -1065,7 +1137,7 @@ extern "C" void SDL_ThreadedTimerCheck(void);
 static void read_ff_speed_option(void)
 {
   struct retro_variable var = {0};
-  var.key = "onscripter_en_fastforward_speed";
+  var.key = "vnovel_fastforward_speed";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     int mult = 0;
     if (strcmp(var.value, "2x") == 0)       mult = 2;
@@ -1107,7 +1179,7 @@ static void read_frame_options(void)
   // Re-read core options each frame (allows hot-reload from Quick Menu)
   struct retro_variable var = {0};
 
-  var.key = "onscripter_en_frame_sync";
+  var.key = "vnovel_frame_sync";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     bool new_sync = (strcmp(var.value, "enabled") == 0);
     if (new_sync != opt_frame_sync) {
@@ -1119,11 +1191,11 @@ static void read_frame_options(void)
     }
   }
 
-  var.key = "onscripter_en_mode_indicators";
+  var.key = "vnovel_mode_indicators";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     opt_indicators = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "onscripter_en_debug_level";
+  var.key = "vnovel_debug_level";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     int new_debug = atoi(var.value);
     if (new_debug != opt_debug_level) {
@@ -1132,11 +1204,11 @@ static void read_frame_options(void)
     }
   }
 
-  var.key = "onscripter_en_software_cursor";
+  var.key = "vnovel_software_cursor";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     opt_software_cursor = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "onscripter_en_text_speed";
+  var.key = "vnovel_text_speed";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
     int new_speed = -1;
     if (strcmp(var.value, "slow") == 0)        new_speed = 0;
@@ -1152,7 +1224,25 @@ static void read_frame_options(void)
 
   read_ff_speed_option();   /* shared with the KiriKiri branch (line ~917) */
 
-  var.key = "onscripter_en_mouse_sensitivity";
+  /* Text-rendering behaviour, consumed by the ONScripter engine via the
+   * bridge (engine_bridge.h). Read each frame so Quick Menu changes apply. */
+  var.key = "vnovel_english_word_wrap";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    ons_english_word_wrap = (strcmp(var.value, "enabled") == 0);
+
+  var.key = "vnovel_fit_oversize_banners";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    ons_fit_oversize_banners = (strcmp(var.value, "enabled") == 0);
+
+  var.key = "vnovel_textbox_opacity";
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+    int pct = atoi(var.value);
+    if (pct < 0)   pct = 0;
+    if (pct > 200) pct = 200;
+    ons_textbox_opacity = pct;
+  }
+
+  var.key = "vnovel_mouse_sensitivity";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     opt_mouse_sensitivity = atof(var.value);
 #endif
@@ -1179,9 +1269,9 @@ static void read_frame_options(void)
     } \
   } while(0)
 
-  PARSE_KEY("onscripter_en_key_lookback", REMAP_LOOKBACK);
-  PARSE_KEY("onscripter_en_key_menu", REMAP_MENU);
-  PARSE_KEY("onscripter_en_key_advance", REMAP_ADVANCE);
+  PARSE_KEY("vnovel_key_lookback", REMAP_LOOKBACK);
+  PARSE_KEY("vnovel_key_menu", REMAP_MENU);
+  PARSE_KEY("vnovel_key_advance", REMAP_ADVANCE);
 }
 
 /* KiriKiri frame. The engine owns its own thread and publishes a video surface;
@@ -1450,10 +1540,37 @@ static void kiri_frame(void)
       video_cb(NULL, 0, 0, 0);
     }
     /* Audio (KiriKiri): submit what the engine has produced, once per call
-     * (see krkr_abuf_drain). */
+     * (see krkr_abuf_drain).
+     *
+     * A fullscreen/window transition is a pause of the audio consumer: RetroArch
+     * marks audio suspended across the display reinit (retroarch.c,
+     * CMD_EVENT_FULLSCREEN_TOGGLE), which GET_AUDIO_VIDEO_ENABLE reports as the
+     * audio bit clear. Feeding during it only piles a backlog into the frontend
+     * that it then throttles against (the drifting slowdown a switch caused).
+     * So treat it like the pause path: discard the stale audio and clear the
+     * debt, and resume cleanly when audio is enabled again. */
     {
-      const int rate = krkr_audio_rate() ? krkr_audio_rate() : 48000;
-      int got = krkr_abuf_drain(rate);
+      int av = 1;
+      bool audio_on = !(environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av))
+                      || (av & 1);
+      /* Tell the engine on the edge, so it stops advancing its mixer while the
+       * frontend is not consuming (and resumes cleanly after). Logged, because
+       * a window/fullscreen transition is the case this exists for and the log
+       * is how we confirm the core saw it. */
+      static bool audio_on_prev = true;
+      if (audio_on != audio_on_prev) {
+        fprintf(stderr, "krkr_audio: audio_av=%d (edge) -> engine suspended=%d\n",
+                audio_on ? 1 : 0, audio_on ? 0 : 1);
+        krkr_set_audio_suspended(audio_on ? 0 : 1);
+        audio_on_prev = audio_on;
+      }
+      int got;
+      if (!audio_on) {
+        got = krkr_abuf_drain_suspend();
+      } else {
+        const int rate = krkr_audio_rate() ? krkr_audio_rate() : 48000;
+        got = krkr_abuf_drain(rate);
+      }
       /* Audio diagnosis: what the engine's ring says its rate is, what the
        * frontend was told, and how many frames we actually hand it per second.
        * If the ring rate and the frontend rate disagree (or the produced rate
@@ -1625,10 +1742,10 @@ static void stamp_frontend_heartbeat(void)
 static void read_pointer_options(void)
 {
   struct retro_variable pvar = {0};
-  pvar.key = "onscripter_en_pointer_enable";
+  pvar.key = "vnovel_pointer_enable";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
     opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
-  pvar.key = "onscripter_en_pointer_source";
+  pvar.key = "vnovel_pointer_source";
   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
     opt_pointer_source = (strcmp(pvar.value, "left") == 0) ? POINTER_SOURCE_LEFT
                                                            : POINTER_SOURCE_RIGHT;

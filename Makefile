@@ -1,5 +1,5 @@
 # =============================================================================
-# ONScripter-EN Libretro Core — Makefile
+# vnovel Libretro Core — Makefile
 #
 # Build targets:
 #   make                    Linux x86_64 (.so)
@@ -32,12 +32,16 @@ endif
 
 # --- Core identity ---
 CORE_DIR     := .
+# C/C++ sources. The Makefiles and generated manifests (link.T, sdl-vendored.h)
+# stay at $(CORE_DIR) so `make` runs from a pristine clone; only the sources
+# move here.
+SRC_DIR      := $(CORE_DIR)/src
 
 # Auto-create symlinks to vendored deps from deps-overlay
 $(shell for d in bzip2 libmad libogg libvorbis sdl sdl-mixer libretro-common; do \
 	[ -e $(CORE_DIR)/deps/$$d ] || ln -s ../deps-overlay/deps/$$d $(CORE_DIR)/deps/$$d 2>/dev/null; \
 done)
-TARGET_NAME  := onscripter-en
+TARGET_NAME  := vnovel
 LIBM         := -lm
 
 # --- Defaults (overridden by platform blocks below) ---
@@ -74,14 +78,14 @@ MOD_EXT       := .so
 MOD_RPATH     := -Wl,-rpath,'$$ORIGIN'
 # Named once, before anything that expands it with := (a := captures the value
 # at that point, so a later definition would be invisible to these).
-RUNTIME_SONAME := onscripter-en_runtime
+RUNTIME_SONAME := $(TARGET_NAME)_runtime
 
 # The whole flag, not just the prefix: on PE there is no SONAME, and a
 # prefix-only variable would leave the bare module name in the link line, where
 # ld reads it as an input file.
 SONAME_RT   := -Wl,-soname,$(RUNTIME_SONAME)$(MOD_EXT)
-SONAME_ONS  := -Wl,-soname,onscripter-en_engine_ons$(MOD_EXT)
-SONAME_PONS := -Wl,-soname,onscripter-en_engine_pons$(MOD_EXT)
+SONAME_ONS  := -Wl,-soname,$(TARGET_NAME)_engine_ons$(MOD_EXT)
+SONAME_PONS := -Wl,-soname,$(TARGET_NAME)_engine_pons$(MOD_EXT)
 
 # How the linker is told about a sibling module. On ELF the module file itself
 # carries everything needed, so it is passed directly. On PE the DLL cannot be
@@ -89,8 +93,8 @@ SONAME_PONS := -Wl,-soname,onscripter-en_engine_pons$(MOD_EXT)
 # as undefined — so these become the .dll.a paths.
 RT_IMPLIB_FLAG :=
 RT_LINK        = $(BUILD_DIR)/$(RUNTIME_SONAME)$(MOD_EXT)
-ONS_LINK       = $(BUILD_DIR)/onscripter-en_engine_ons$(MOD_EXT)
-PONS_LINK      = $(BUILD_DIR)/onscripter-en_engine_pons$(MOD_EXT)
+ONS_LINK       = $(BUILD_DIR)/$(TARGET_NAME)_engine_ons$(MOD_EXT)
+PONS_LINK      = $(BUILD_DIR)/$(TARGET_NAME)_engine_pons$(MOD_EXT)
 
 # Locate the sibling modules next to the core/engine rather than at their build
 # path, so the four artifacts can be deployed as a set. $ORIGIN is ELF; PE has
@@ -149,11 +153,11 @@ else ifeq ($(platform), mingw)
    # PE: link the import libraries, and have each DLL emit one for the modules
    # that link against it.
    RT_IMPLIB_FLAG   = -Wl,--out-implib,$(BUILD_DIR)/lib$(RUNTIME_SONAME).dll.a
-   ONS_IMPLIB_FLAG  = -Wl,--out-implib,$(BUILD_DIR)/libonscripter-en_engine_ons.dll.a
-   PONS_IMPLIB_FLAG = -Wl,--out-implib,$(BUILD_DIR)/libonscripter-en_engine_pons.dll.a
+   ONS_IMPLIB_FLAG  = -Wl,--out-implib,$(BUILD_DIR)/lib$(TARGET_NAME)_engine_ons.dll.a
+   PONS_IMPLIB_FLAG = -Wl,--out-implib,$(BUILD_DIR)/lib$(TARGET_NAME)_engine_pons.dll.a
    RT_LINK        = $(BUILD_DIR)/lib$(RUNTIME_SONAME).dll.a
-   ONS_LINK       = $(BUILD_DIR)/libonscripter-en_engine_ons.dll.a
-   PONS_LINK      = $(BUILD_DIR)/libonscripter-en_engine_pons.dll.a
+   ONS_LINK       = $(BUILD_DIR)/lib$(TARGET_NAME)_engine_ons.dll.a
+   PONS_LINK      = $(BUILD_DIR)/lib$(TARGET_NAME)_engine_pons.dll.a
    # No --version-script: PE/COFF does not support it. It is not needed either —
    # RETRO_API expands to __declspec(dllexport) on Windows, so exactly the
    # retro_* entry points are exported and everything else stays private.
@@ -169,7 +173,7 @@ else ifeq ($(platform), mingw)
    # have to come after that too. Everything after -Bstatic is static until
    # -Bdynamic restores the default.
    # Only what is not already compiled into the runtime: bzip2, ogg, vorbis,
-   # libmad and SMPEG are built from source into onscripter-en_runtime, so
+   # libmad and SMPEG are built from source into $(TARGET_NAME)_runtime, so
    # linking the system -lbz2 as well collides (multiple definition of
    # BZ2_bzRead*). freetype needs zlib and brotli, which we do not vend.
    MOD_RT_LIBS   = -Wl,-Bstatic -lwinpthread -lfreetype -lz -lbrotlidec -lbrotlicommon -Wl,-Bdynamic
@@ -264,7 +268,7 @@ endif
 DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
 
 # Build stamp: the deployed .so carries this string, so `strings` identifies the
-# exact build (see ONSCRIPTER_EN_LIBRETRO_VERSION in libretro.cpp). A git
+# exact build (see VNOVEL_LIBRETRO_VERSION in libretro.cpp). A git
 # abbreviation is not fixed-width and "-dirty" adds six chars, so truncate hard
 # to the 15 the [16] buffer allows.
 #
@@ -351,7 +355,7 @@ $(EXTRA_FALLBACK_FONT_HDR): $(EXTRA_FALLBACK_FONT)
 # libretro.cpp includes the generated header; CORE_DIR is ".", so its object is
 # build/$(platform)/./libretro.o. Make the header before it compiles (the .d
 # file already tracks the header's contents after that).
-$(BUILD_DIR)/./libretro.o: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR)
+$(BUILD_DIR)/./src/libretro.o: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR)
 
 # Include compiler-generated header dependencies (-MMD). If a header changes,
 # the objects that include it rebuild. Missing .d files (first build) are
@@ -360,6 +364,13 @@ $(BUILD_DIR)/./libretro.o: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR)
 
 # --- Dependency symlinks (deps-overlay provides vendored libs) ---
 DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps/sdl-mixer deps/libretro-common
+
+
+# --- libretro database -------------------------------------------------------
+# Regenerates vnovel.rdb (the database the core's .info names) from the
+# clrmamepro DAT. `make rdb` after editing dat/vnovel.dat.
+DB_DAT := dat/vnovel.dat
+DB_RDB := vnovel.rdb
 
 
 # --- Shared modules ---------------------------------------------------------
@@ -398,8 +409,8 @@ PONS_MOD_OBJS:= $(PONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(PONS_EXTRA_CXX)
 # file, with a build failure per missing entry instead of one generated header.
 RUNTIME_SHARED = -shared $(MOD_STATIC_RT) -Wl,-Bsymbolic-functions $(RUNTIME_EXPORTS)
 
-ONS_MOD   := $(BUILD_DIR)/onscripter-en_engine_ons$(MOD_EXT)
-PONS_MOD  := $(BUILD_DIR)/onscripter-en_engine_pons$(MOD_EXT)
+ONS_MOD   := $(BUILD_DIR)/$(TARGET_NAME)_engine_ons$(MOD_EXT)
+PONS_MOD  := $(BUILD_DIR)/$(TARGET_NAME)_engine_pons$(MOD_EXT)
 RT_MOD    := $(BUILD_DIR)/$(RUNTIME_SONAME)$(MOD_EXT)
 
 # A PE module is linked against an import library, not against the DLL itself:
@@ -472,6 +483,14 @@ $(BUILD_DIR)/%.pons.o: %.c
 	@mkdir -p $(dir $@)
 	$(Q)$(CC) $(CFLAGS) $(DEPFLAGS) -fvisibility=hidden -c -o $@ $<
 
+# Built on demand, not part of `all`: it is regenerated only when its source
+# DAT changes, and it is tracked so a clone ships a usable database.
+$(DB_RDB): $(DB_DAT) tools/make-rdb.py
+	@echo "RDB $@"
+	$(Q)python3 tools/make-rdb.py $(DB_DAT) $@
+
+rdb: $(DB_RDB)
+
 clean:
 	rm -rf build
 	rm -f $(TARGET) $(TARGET_NAME)_runtime.so $(TARGET_NAME)_engine_ons.so $(TARGET_NAME)_engine_pons.so
@@ -497,7 +516,7 @@ regen-vendored:
 	$(Q)python3 tools/gen_sdl_vendored.py build/vendored-bootstrap sdl-vendored.h
 	$(Q)rm -rf build/vendored-bootstrap
 
-.PHONY: all clean install install-root stage-modules regen-vendored
+.PHONY: all clean install install-root stage-modules regen-vendored rdb
 
 print-%:
 	@echo '$*=$($*)'
@@ -506,29 +525,29 @@ print-%:
 # C ABI wrappers. Each compiles with only its own engine's include path, because
 # both engines have headers of the same names (ScriptHandler.h, and so on) and
 # including both paths in one command resolves the wrong one.
-$(BUILD_DIR)/engine_ons_cabi.o: engine_ons_cabi.cpp
+$(BUILD_DIR)/engine_ons_cabi.o: $(SRC_DIR)/engine_ons_cabi.cpp
 	@$(if $(Q),echo "CXX ons-cabi $<",)
 	@mkdir -p $(dir $@)
 	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
 		-I$(LIBRETRO_COMM)/include -I$(ONSCRIPTER_EN) -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
 		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(DEPS_DIR)/libogg/include \
 		-I$(DEPS_DIR)/libvorbis/include -I$(DEPS_DIR)/libmad -I$(DEPS_DIR)/bzip2 \
-		-I$(CORE_DIR) -I$(SMPEG_DIR) \
+		-I$(CORE_DIR) -I$(SRC_DIR) -I$(SMPEG_DIR) \
 		-include $(CORE_DIR)/sdl-vendored.h -include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
 
-$(BUILD_DIR)/engine_pons_cabi.o: engine_pons_cabi.cpp
+$(BUILD_DIR)/engine_pons_cabi.o: $(SRC_DIR)/engine_pons_cabi.cpp
 	@$(if $(Q),echo "CXX pons-cabi $<",)
 	@mkdir -p $(dir $@)
 	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
 		-I$(LIBRETRO_COMM)/include -I$(PONSCRIPTER) -I$(SDL_LIBRETRO) -I$(SDL_DIR)/include \
 		-I$(DEPS_DIR) -I$(DEPS_DIR)/sdl-mixer -I$(DEPS_DIR)/libogg/include \
 		-I$(DEPS_DIR)/libvorbis/include -I$(DEPS_DIR)/libmad -I$(DEPS_DIR)/bzip2 \
-		-I$(CORE_DIR) -I$(SMPEG_DIR) \
+		-I$(CORE_DIR) -I$(SRC_DIR) -I$(SMPEG_DIR) \
 		-include $(CORE_DIR)/sdl-vendored.h -include $(SDL_LIBRETRO)/SDL_config_libretro.h -c -o $@ $<
 
-$(BUILD_DIR)/engine_kirikiri_cabi.o: engine_kirikiri_cabi.cpp
+$(BUILD_DIR)/engine_kirikiri_cabi.o: $(SRC_DIR)/engine_kirikiri_cabi.cpp
 	@$(if $(Q),echo "CXX kirikiri-cabi $<",)
 	@mkdir -p $(dir $@)
 	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
-		-I$(LIBRETRO_COMM)/include -I$(CORE_DIR) \
+		-I$(LIBRETRO_COMM)/include -I$(CORE_DIR) -I$(SRC_DIR) \
 		-c -o $@ $<

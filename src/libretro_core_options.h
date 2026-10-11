@@ -12,7 +12,7 @@ extern "C" {
 
 struct retro_core_option_definition option_defs_us[] = {
    {
-      "onscripter_en_frame_sync",
+      "vnovel_frame_sync",
       "Frame Synchronization",
       "When enabled, every screen update is displayed exactly once for "
       "smooth animations and effects. Disable if you experience performance issues.",
@@ -24,7 +24,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "enabled"
    },
    {
-      "onscripter_en_mode_indicators",
+      "vnovel_mode_indicators",
       "Mode Indicators",
       "Show on-screen badges for auto mode and skip mode "
       "(green and yellow dots in the top-right corner).",
@@ -36,7 +36,58 @@ struct retro_core_option_definition option_defs_us[] = {
       "enabled"
    },
    {
-      "onscripter_en_debug_level",
+      "vnovel_english_word_wrap",
+      "English Word Wrap",
+      "In English mode, never break a line in the middle of a word: when a "
+      "word does not fit on the remaining line, move the whole word to the "
+      "next line. Disable for the classic per-character wrapping.",
+      {
+         { "enabled",  NULL },
+         { "disabled", NULL },
+         { NULL, NULL },
+      },
+      "enabled"
+   },
+   {
+      "vnovel_fit_oversize_banners",
+      "Fit Oversize Banners",
+      "Some English-patch title cards were exported much wider than the "
+      "game's screen (e.g. 1920px on a 640px screen), so the engine draws "
+      "them oversized and crops the sides. The patch authors assumed the "
+      "engine resized them; it does not. Enable to scale such a wide, short "
+      "image down to fit the screen.",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+      "disabled"
+   },
+   {
+      "vnovel_textbox_opacity",
+      "Textbox Backdrop Opacity",
+      "Multiplier applied to the text-window backdrop image's alpha channel. "
+      "100% = unchanged; raise it to make a backdrop cover the background more "
+      "solidly, lower it to let more of the scene show through. Only affects "
+      "windows whose backdrop is an image (a setwindow with a filename); "
+      "colour backdrops (#rrggbb, the common case) are unaffected. "
+      "100=normal, 200=double, 0=fully transparent.",
+      {
+         { "0",   NULL },
+         { "25",  NULL },
+         { "50",  NULL },
+         { "75",  NULL },
+         { "100", NULL },
+         { "125", NULL },
+         { "150", NULL },
+         { "175", NULL },
+         { "200", NULL },
+         { NULL, NULL },
+      },
+      "100"
+   },
+   {
+      "vnovel_debug_level",
       "Debug Level",
       "Log engine script parsing to RetroArch's log. 0=off, 3=verbose. "
       "Useful for reporting issues with specific visual novels.",
@@ -50,7 +101,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "0"
    },
    {
-      "onscripter_en_software_cursor",
+      "vnovel_software_cursor",
       "Software Cursor",
       "Draw a cursor directly on the screen. Enable for fullscreen "
  "where the host cursor is hidden. Disable for windowed mode.",
@@ -62,7 +113,7 @@ struct retro_core_option_definition option_defs_us[] = {
      "enabled"
    },
    {
-      "onscripter_en_pointer_enable",
+      "vnovel_pointer_enable",
       "Virtual Pointer",
       "When the frontend reports no real mouse/touch device, drive an "
       "on-screen pointer from a gamepad so pointer-only UIs (modal Yes/No "
@@ -76,7 +127,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "enabled"
    },
    {
-      "onscripter_en_pointer_source",
+      "vnovel_pointer_source",
       "Virtual Pointer Stick",
       "Which analog stick moves the virtual pointer. The other stick stays "
       "free for the frontend. Click is always the matching stick button "
@@ -89,7 +140,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "right"
    },
    {
-      "onscripter_en_fastforward_speed",
+      "vnovel_fastforward_speed",
       "Fast-Forward Speed",
       "Controls how fast the game advances during fast-forward. "
       "Higher values skip more time per frame, making text, "
@@ -106,7 +157,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "8x"
    },
    {
-      "onscripter_en_mouse_sensitivity",
+      "vnovel_mouse_sensitivity",
       "Mouse Sensitivity",
       "Scales mouse movement for the in-game cursor. "
       "Adjust if the software cursor moves faster or slower "
@@ -123,28 +174,28 @@ struct retro_core_option_definition option_defs_us[] = {
       "1.0"
    },
    {
-      "onscripter_en_key_lookback",
+      "vnovel_key_lookback",
       "Lookback Key",
       "Key to open the text history / lookback mode.",
       { {"[", NULL}, {"h", NULL}, {"q", NULL}, {"b", NULL}, { NULL, NULL } },
       "["
    },
    {
-      "onscripter_en_key_menu",
+      "vnovel_key_menu",
       "Menu Key",
       "Key to open the in-game right-click menu.",
       { {"backspace", NULL}, {"escape", NULL}, {"x", NULL}, { NULL, NULL } },
       "backspace"
    },
    {
-      "onscripter_en_key_advance",
+      "vnovel_key_advance",
       "Advance Text Key",
       "Key to advance text / confirm.",
       { {"return", NULL}, {"space", NULL}, {"z", NULL}, { NULL, NULL } },
       "return"
    },
    {
-      "onscripter_en_internal_resolution",
+      "vnovel_internal_resolution",
       "Internal Resolution",
       "Resolution the game engine is told the frontend expects. 'native' uses "
       "the host display's own size. A fixed size is reported to the engine as "
@@ -165,7 +216,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "native"
    },
    {
-      "onscripter_en_text_speed",
+      "vnovel_text_speed",
       "Text Speed",
       "Override the engine's text display speed. 'default' uses the "
       "game's built-in speed. Slower speeds display characters one by "
@@ -182,7 +233,7 @@ struct retro_core_option_definition option_defs_us[] = {
       "default"
    },
    {
-      "onscripter_en_ctrl_tap_frames",
+      "vnovel_ctrl_tap_frames",
       "Y Button (Ctrl Skip) Duration",
       "The Y button sends Ctrl, which both engines treat as hold-to-skip / "
       "fast-forward. Held Ctrl skips instantly and is hard to control, so Y is "

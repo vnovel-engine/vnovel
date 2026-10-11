@@ -1,0 +1,24 @@
+# Software Information
+display_name = "VNovel"
+display_version = "0.2"
+authors = "Ogapee; Seung Park (lightbinder); Haeleth; krkrsdl2; Matcha & Nova"
+categories = "Game engine"
+license = "GPLv2"
+permissions = ""
+supported_extensions = "txt|dat|___|ons|xp3"
+
+# Hardware Information
+manufacturer = "vnovel"
+systemname = "Visual Novel"
+systemid = "vnovel"
+
+# Libretro Features
+database = "vnovel"
+supports_no_game = "false"
+libretro_saves = "false"
+cheats = "false"
+needs_fullpath = "true"
+disk_control = "false"
+is_experimental = "true"
+
+description = "Multi-engine visual novel core: ONScripter-EN, PONScripter and KiriKiri (KAG). Identifies games by their nscript.dat / pscript.dat / data.xp3 via the vnovel database."

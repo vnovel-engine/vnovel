@@ -1,11 +1,11 @@
 # =============================================================================
-# ONScripter-EN Libretro Core — Source lists and include paths
+# vnovel Libretro Core — Source lists and include paths
 # =============================================================================
 
 # --- Directory layout ---
 DEPS_DIR        := $(CORE_DIR)/deps
 LIBRETRO_COMM   := $(DEPS_DIR)/libretro-common
-SDL_LIBRETRO    := $(CORE_DIR)/sdl-libretro
+SDL_LIBRETRO    := $(SRC_DIR)/sdl-libretro
 ONSCRIPTER_EN   := $(DEPS_DIR)/onscripter-en
 PONSCRIPTER     := $(DEPS_DIR)/ponscripter/src
 SMPEG_DIR       := $(CORE_DIR)/smpeg
@@ -25,6 +25,7 @@ INCFLAGS := \
   -I$(DEPS_DIR) \
   -I$(DEPS_DIR)/sdl-mixer \
   -I$(CORE_DIR) \
+  -I$(SRC_DIR) \
   -I$(CORE_DIR)/resources/fonts \
   -I$(SMPEG_DIR)
 
@@ -254,20 +255,20 @@ PONS_OBJS += $(PONS_C:.c=.pons.o)
 #
 # so core and engines all resolve SDL to the same runtime object.
 CORE_CXX := \
-  $(CORE_DIR)/libretro.cpp \
-  $(CORE_DIR)/engine_kirikiri_cabi.cpp
+  $(SRC_DIR)/libretro.cpp \
+  $(SRC_DIR)/engine_kirikiri_cabi.cpp
 
 # The bridge holds state core, runtime and engines all use. It lives in the
 # runtime so every module resolves the same copy (see the one-bridge-file
 # contract in engine_bridge.c).
-RUNTIME_C += $(CORE_DIR)/engine_bridge.c
+RUNTIME_C += $(SRC_DIR)/engine_bridge.c
 
 # embed_stub provides getResource(), which the engines call; it belongs with the
 # engine-side runtime rather than the core.
-RUNTIME_CXX += $(CORE_DIR)/embed_stub.cpp
+RUNTIME_CXX += $(SRC_DIR)/embed_stub.cpp
 
 # The C ABI wrapper for each engine compiles into that engine's module: it
 # constructs the engine class, which lives there, and only its vtable is
 # exported.
-ONS_EXTRA_CXX := $(CORE_DIR)/engine_ons_cabi.cpp
-PONS_EXTRA_CXX := $(CORE_DIR)/engine_pons_cabi.cpp
+ONS_EXTRA_CXX := $(SRC_DIR)/engine_ons_cabi.cpp
+PONS_EXTRA_CXX := $(SRC_DIR)/engine_pons_cabi.cpp

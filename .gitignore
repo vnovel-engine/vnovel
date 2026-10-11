@@ -12,20 +12,25 @@ deps/sdl
 deps/sdl-mixer
 .venv/
 deploy-recalbox.py
+deploy-system.local.py
 
 # generated font embed (from resources/fonts/*.ttf)
 resources/fonts/fallback_font.h
 resources/fonts/extra_fallback_font.h
-
-# Local scratch review notes — the author's own working file, not project docs
-REVIEW.md
 
 # build output (make: build/$(platform)/)
 build/
 
 # bootstrap pass for regenerating sdl-vendored.h
 build/vendored-bootstrap/
-tools/__pycache__/
+__pycache__/
 
 # Windows build artifacts land in the repo root
 *.dll
+
+# test-helper binary built from tests/xor_encode.c
+tests/xor_encode
+
+# Code review tool
+/REVIEW.md
+/.review-history/

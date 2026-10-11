@@ -14,7 +14,7 @@
 // silently splits — the core then reads values the engine never wrote. So ship
 // exactly one bridge binary, and never place a second copy under another name.
 //
-// On ELF the modules link -lonscripter-en_runtime, which contains this file. On
+// On ELF the modules link -lvnovel_runtime, which contains this file. On
 // Windows the loader reuses the already-loaded DLL when the import library
 // names it, so the same single instance is shared. Either way nothing has to be
 // exported from the core (link.T still hides everything but retro_*).
@@ -42,6 +42,18 @@ retro_environment_t environ_cb_global = 0;
 /* --- core options the glue consumes --------------------------------------- */
 
 float opt_mouse_sensitivity = 1.0;
+
+/* Text-rendering behaviour (see engine_bridge.h). Written by the core from the
+ * frontend options, read by the ONScripter engine. */
+int ons_english_word_wrap = 1;
+int ons_fit_oversize_banners = 0;
+
+/* Last-resort font and asset-override directory (see engine_bridge.h). Written
+ * by the core at start-up, read by the engine. */
+const unsigned char *ons_fallback_font_data = 0;
+int ons_fallback_font_len = 0;
+const char *ons_override_dir = 0;
+int ons_textbox_opacity = 100;
 
 int remap_keys[REMAP_COUNT] = {
     [REMAP_ADVANCE]      = SDLK_RETURN,

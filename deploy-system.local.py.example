@@ -1,0 +1,6 @@
+# Copy to deploy-system.local.py (gitignored) and fill in your host.
+# deploy-system.py imports HOST/USER/PASS from it, or reads the environment
+# variables VNOVEL_DEPLOY_HOST / VNOVEL_DEPLOY_USER / VNOVEL_DEPLOY_PASS.
+HOST = "recalbox.local"
+USER = "root"
+PASS = "changeme"

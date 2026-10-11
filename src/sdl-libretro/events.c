@@ -2,7 +2,7 @@
 #include <sdl/src/events/SDL_events_c.h>
 #include <sdl/src/video/dummy/SDL_nullevents_c.h>
 #include <stdlib.h>
-#include "../../key_remap.h"
+#include "../key_remap.h"
 /* Which RetroPad button generates a right-click (-1 = none) */
 int SDL_libretro_rightclick_button = RIGHTCLICK_NONE;
 int SDL_libretro_leftclick_button  = RIGHTCLICK_NONE;
@@ -71,7 +71,7 @@ static void input_debug_pad(const char *what, int idx, int engine_sym, int tap_l
 }
 
 /* Resolve the Y→ctrl tap length once: ONS_CTRL_TAP_FRAMES overrides the core
- * option onscripter_en_ctrl_tap_frames (default 20, 0 = legacy held ctrl). */
+ * option vnovel_ctrl_tap_frames (default 20, 0 = legacy held ctrl). */
 static int ctrl_tap_frames(void)
 {
   if (ons_ctrl_tap_frames < 0) {
@@ -82,7 +82,7 @@ static int ctrl_tap_frames(void)
       ons_ctrl_tap_frames = 20;
       extern retro_environment_t environ_cb_global;
       struct retro_variable v = {0};
-      v.key = "onscripter_en_ctrl_tap_frames";
+      v.key = "vnovel_ctrl_tap_frames";
       if (environ_cb_global && environ_cb_global(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value)
         ons_ctrl_tap_frames = atoi(v.value);
     }
@@ -122,11 +122,12 @@ static void maybe_inject_autoclick(void)
   }
 }
 
-/* RetroPad → ONScripter key mapping. There is no ONScripter-side way to set
- * the pad map (the game owns its key semantics), so this is chosen to match
- * the same portability layer used by the KiriKiri engine where the games
- * share key semantics ('s'=skip toggle, 'a'=auto toggle, 'o'=one-page, 'v'=
- * volume editor, Return=advance, Escape=menu, PageUp/Down=history scroll).
+/* RetroPad → engine key mapping. The engine owns its key semantics, so there
+ * is no engine-side way to set the pad map; this is chosen to match the
+ * portability layer the ONScripter-EN, PONScripter and KiriKiri engines share
+ * where their games agree on key semantics ('s'=skip toggle, 'a'=auto toggle,
+ * 'o'=one-page, 'v'=volume editor, Return=advance, Escape=menu,
+ * PageUp/Down=history scroll).
  * Directional d-pad is REMAPPED by the ONScripter engine into cursor keys, so
  * we pass UP/DOWN/LEFT/RIGHT straight through.
  *

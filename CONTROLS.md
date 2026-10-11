@@ -74,14 +74,14 @@ Y sends **Ctrl**, which ONS and PON both treat as the hold-to-skip /
 fast-forward modifier (`ctrl_pressed_status`) — it is *not* a save key in
 either engine, and no engine-level save key exists. Held Ctrl skips instantly
 and is hard to control, so Y is delivered as a **bounded tap**: pressing Y skips
-for `onscripter_en_ctrl_tap_frames` frames (default 20 ≈ ⅓ s) and then Ctrl
+for `vnovel_ctrl_tap_frames` frames (default 20 ≈ ⅓ s) and then Ctrl
 releases automatically even if Y stays held. A fresh press restarts the tap.
 Set the option to `0` for the legacy "held = skip" behaviour. (The tap is
 applied in the core's pad layer, so it is identical on both engines.)
 
 ## Key remap options
 
-`onscripter_en_key_lookback`, `_key_menu`, `_key_advance` (and the others in
+`vnovel_key_lookback`, `_key_menu`, `_key_advance` (and the others in
 `key_remap.h`) let the user pick which **keyboard** key triggers a semantic
 action, for hosts whose keyboard is bound to the game rather than the pad.
 They are applied to **both** engines: the translation happens wherever keyboard
