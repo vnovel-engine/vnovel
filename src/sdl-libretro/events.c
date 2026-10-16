@@ -12,17 +12,17 @@ int SDL_libretro_leftclick_button  = RIGHTCLICK_NONE;
  * first use. They live at module scope instead so the frontend (or a test) can
  * flip them at runtime through the setters below, and so the environment is
  * consulted once, not on every poll. -1 = "not yet resolved". */
-static int ons_input_debug    = -1;
-static int ons_ctrl_tap_frames = -1;  /* configured tap length, frames */
+static int vnovel_input_debug    = -1;
+static int vnovel_ctrl_tap_frames = -1;  /* configured tap length, frames */
 static int ons_ctrl_tap_left   = 0;   /* live countdown for the current tap */
 
-void SDL_libretro_set_input_debug(int on) { ons_input_debug = on ? 1 : 0; }
+void SDL_libretro_set_input_debug(int on) { vnovel_input_debug = on ? 1 : 0; }
 
 /* Set the Y→ctrl tap length directly. Also re-arms the countdown so a change
  * takes effect on the next press rather than mid-tap. */
 void SDL_libretro_set_ctrl_tap_frames(int frames)
 {
-  ons_ctrl_tap_frames = frames < 0 ? 0 : frames;
+  vnovel_ctrl_tap_frames = frames < 0 ? 0 : frames;
   ons_ctrl_tap_left = 0;
 }
 
@@ -44,11 +44,11 @@ static const char *const pad_name[16] = {
  * SDL_libretro_set_input_debug(1). */
 static int input_debug_enabled(void)
 {
-  if (ons_input_debug < 0) {
+  if (vnovel_input_debug < 0) {
     const char *e = getenv("ONS_INPUT_DEBUG");
-    ons_input_debug = e && *e && *e != '0';
+    vnovel_input_debug = e && *e && *e != '0';
   }
-  return ons_input_debug;
+  return vnovel_input_debug;
 }
 
 static void input_debug_kbd(int in_sym, int engine_sym, int down)
@@ -74,21 +74,21 @@ static void input_debug_pad(const char *what, int idx, int engine_sym, int tap_l
  * option vnovel_ctrl_tap_frames (default 20, 0 = legacy held ctrl). */
 static int ctrl_tap_frames(void)
 {
-  if (ons_ctrl_tap_frames < 0) {
+  if (vnovel_ctrl_tap_frames < 0) {
     const char *e = getenv("ONS_CTRL_TAP_FRAMES");
     if (e) {
-      ons_ctrl_tap_frames = atoi(e);
+      vnovel_ctrl_tap_frames = atoi(e);
     } else {
-      ons_ctrl_tap_frames = 20;
+      vnovel_ctrl_tap_frames = 20;
       extern retro_environment_t environ_cb_global;
       struct retro_variable v = {0};
       v.key = "vnovel_ctrl_tap_frames";
       if (environ_cb_global && environ_cb_global(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value)
-        ons_ctrl_tap_frames = atoi(v.value);
+        vnovel_ctrl_tap_frames = atoi(v.value);
     }
-    if (ons_ctrl_tap_frames < 0) ons_ctrl_tap_frames = 0;
+    if (vnovel_ctrl_tap_frames < 0) vnovel_ctrl_tap_frames = 0;
   }
-  return ons_ctrl_tap_frames;
+  return vnovel_ctrl_tap_frames;
 }
 
 /* ---- Test auto-advance ----

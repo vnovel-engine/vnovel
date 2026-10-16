@@ -13,15 +13,21 @@
 #
 # Usage:
 #   tools/build-mingw-vorbis.sh [PREFIX]
-# PREFIX defaults to /tmp/mingw-vorbis. The krkrsdl2 build reads it from
-# KRKRSDL2_MINGW_VORBIS_PREFIX (see deps/krkrsdl2/CMakeLists.txt):
-#   cmake -DKRKRSDL2_MINGW_VORBIS_PREFIX="$PREFIX" ...
+# PREFIX defaults to build/mingw-deps/vorbis under the tree. It used to default
+# to /tmp/mingw-vorbis, which a reboot wipes — and a wiped prefix does not fail
+# loudly: the krkrsdl2 configure simply reports "vorbis not found", the Windows
+# build proceeds without an .ogg decoder, and every KiriKiri BGM track is
+# silently absent. Keeping it under build/ (gitignored) makes it survive and
+# makes a rebuild cheap.
+# The krkrsdl2 build reads it from KRKRSDL2_MINGW_VORBIS_PREFIX
+# (see deps/krkrsdl2/CMakeLists.txt).
 #
 set -eu
 
 CORE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PREFIX="${1:-/tmp/mingw-vorbis}"
-TOOLCHAIN="${MINGW_TOOLCHAIN:-/tmp/mingw-toolchain.cmake}"
+PREFIX="${1:-$CORE_DIR/build/mingw-deps/vorbis}"
+DEPBUILD="$CORE_DIR/build/mingw-deps"
+TOOLCHAIN="${MINGW_TOOLCHAIN:-$DEPBUILD/mingw-toolchain.cmake}"
 OGG_SRC="$CORE_DIR/deps-overlay/deps/libogg"
 VORBIS_SRC="$CORE_DIR/deps-overlay/deps/libvorbis"
 
@@ -33,9 +39,12 @@ command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "mingw-w64 not installed"
 # it is gone so this script stands alone. CMAKE_SYSTEM_PROCESSOR must be
 # "amd64": the project's CMake gates SSE2/AVX2 and the DirectShow quartz link on
 # that value, not on "x86_64".
+mkdir -p "$DEPBUILD"
 if [ ! -f "$TOOLCHAIN" ]; then
   cat > "$TOOLCHAIN" <<'EOF'
 set(CMAKE_SYSTEM_NAME Windows)
+# Must be "amd64", not "x86_64": the engine's CMake gates its SSE2/AVX2 and
+# DirectShow paths on this exact value.
 set(CMAKE_SYSTEM_PROCESSOR amd64)
 set(CMAKE_C_COMPILER   x86_64-w64-mingw32-gcc)
 set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
@@ -54,8 +63,8 @@ EOF
 fi
 
 mkdir -p "$PREFIX"
-OGG_BUILD="${OGG_BUILD:-/tmp/bo-ogg}"
-VORBIS_BUILD="${VORBIS_BUILD:-/tmp/bo-vorbis}"
+OGG_BUILD="${OGG_BUILD:-$DEPBUILD/bo-ogg}"
+VORBIS_BUILD="${VORBIS_BUILD:-$DEPBUILD/bo-vorbis}"
 rm -rf "$OGG_BUILD" "$VORBIS_BUILD"
 
 # -DCMAKE_POLICY_VERSION_MINIMUM=3.5: these are autotools-era CMakeLists that

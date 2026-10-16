@@ -17,7 +17,8 @@
 // On ELF the modules link -lvnovel_runtime, which contains this file. On
 // Windows the loader reuses the already-loaded DLL when the import library
 // names it, so the same single instance is shared. Either way nothing has to be
-// exported from the core (link.T still hides everything but retro_*).
+// exported from the core (-fvisibility=hidden hides everything but what
+// RETRO_API and VNOVEL_EXPORT mark).
 //
 // These are plain globals rather than pointers allocated at load because a
 // pointer is only valid until its pointee is reallocated, and a stale pointer
@@ -33,37 +34,57 @@
 
 /* Set once by retro_set_input_state before any engine module is loaded; the
  * glue then calls it to read RetroPad state. */
-retro_input_state_t SDL_libretro_input_state_cb = 0;
+VNOVEL_EXPORT retro_input_state_t SDL_libretro_input_state_cb = 0;
 
 /* Set once by retro_set_environment. Exported (not static) because the SDL
  * events glue reads core options through it. */
-retro_environment_t environ_cb_global = 0;
+VNOVEL_EXPORT retro_environment_t environ_cb_global = 0;
 
 /* --- core options the glue consumes --------------------------------------- */
 
-float opt_mouse_sensitivity = 1.0;
+VNOVEL_EXPORT float opt_mouse_sensitivity = 1.0;
 
 /* Text-rendering behaviour (see engine_bridge.h). Written by the core from the
  * frontend options, read by the ONScripter engine. */
-int ons_english_word_wrap = 1;
-int ons_fit_oversize_banners = 0;
+VNOVEL_EXPORT int vnovel_english_word_wrap    = 1;
+VNOVEL_EXPORT int vnovel_fit_oversize_banners = 0;
+VNOVEL_EXPORT int vnovel_wrap_total_fit       = 0;
 
 /* Last-resort font and asset-override directory (see engine_bridge.h). Written
  * by the core at start-up, read by the engine. */
-const unsigned char *ons_fallback_font_data = 0;
-int ons_fallback_font_len = 0;
-const char *ons_override_dir = 0;
-int ons_textbox_opacity = 100;
+VNOVEL_EXPORT const unsigned char *vnovel_fallback_font_data = 0;
+VNOVEL_EXPORT int vnovel_fallback_font_len                   = 0;
+VNOVEL_EXPORT const char *vnovel_override_dir                = 0;
+VNOVEL_EXPORT int vnovel_textbox_opacity                     = 100;
+
+/* --- text plane (see engine_bridge.h) --------------------------------------
+ * Installed by the shell before any engine starts. An engine checks
+ * vnovel_text_plane_wanted() before separating text from its frame, so with no
+ * shell listening the feature costs nothing and behaviour is unchanged. */
+VNOVEL_EXPORT vnovel_text_plane_fn vnovel_text_plane_cb   = 0;
+VNOVEL_EXPORT void *vnovel_text_plane_userdata            = 0;
+
+VNOVEL_EXPORT int vnovel_text_plane_wanted(void)
+{
+   return vnovel_text_plane_cb != 0;
+}
+
+VNOVEL_EXPORT void vnovel_publish_text_plane(const VNovelTextPlane *plane)
+{
+   if (!vnovel_text_plane_cb || !plane)
+      return;
+   vnovel_text_plane_cb(plane, vnovel_text_plane_userdata);
+}
 
 int remap_keys[REMAP_COUNT] = {
-    [REMAP_ADVANCE]      = SDLK_RETURN,
-    [REMAP_MENU]         = SDLK_BACKSPACE,
-    [REMAP_SKIP]         = SDLK_s,
-    [REMAP_AUTO]         = SDLK_a,
-    [REMAP_LOOKBACK]     = SDLK_LEFTBRACKET,
-    [REMAP_PAGE_FORWARD] = SDLK_RIGHTBRACKET,
-    [REMAP_TEXT_SPEED]   = SDLK_0,
-    [REMAP_FULLSCREEN]   = SDLK_F11,
+      [REMAP_ADVANCE]      = SDLK_RETURN,
+      [REMAP_MENU]         = SDLK_BACKSPACE,
+      [REMAP_SKIP]         = SDLK_s,
+      [REMAP_AUTO]         = SDLK_a,
+      [REMAP_LOOKBACK]     = SDLK_LEFTBRACKET,
+      [REMAP_PAGE_FORWARD] = SDLK_RIGHTBRACKET,
+      [REMAP_TEXT_SPEED]   = SDLK_0,
+      [REMAP_FULLSCREEN]   = SDLK_F11,
 };
 
 /* --- audio ---------------------------------------------------------------- */
@@ -73,7 +94,7 @@ int remap_keys[REMAP_COUNT] = {
  *
  * The address of this variable is stable; the pointer it holds is not, and is
  * expected to change as audio opens and closes. Read it fresh each time. */
-SDL_AudioSpec *SDL_libretro_audio_spec = 0;
+VNOVEL_EXPORT SDL_AudioSpec *SDL_libretro_audio_spec = 0;
 
 /* --- error unwinding ------------------------------------------------------ */
 
@@ -82,7 +103,7 @@ SDL_AudioSpec *SDL_libretro_audio_spec = 0;
  * The buffer lives here (static storage, one copy per process) but it is the
  * ENGINE that executes both calls, on its own thread:
  *
- *     engine thread:  if (setjmp(ons_script_error_jmp)) { clean up; return; }
+ *     engine thread:  if (setjmp(vnovel_script_error_jmp)) { clean up; return; }
  *                     ... run the script ...
  *     anywhere:       errorAndExit() -> libretro_script_error_longjmp()
  *
@@ -91,15 +112,15 @@ SDL_AudioSpec *SDL_libretro_audio_spec = 0;
  * the engine owns its thread (see engine_cabi.h), it must own the setjmp, and
  * this module only has to provide the storage both sides can name.
  *
- * The core sets ons_script_error_jmp_valid = 0 before the thread starts and may
+ * The core sets vnovel_script_error_jmp_valid = 0 before the thread starts and may
  * read it afterwards to learn whether the engine unwound; the engine sets it to
  * 1 once its setjmp is armed, and to 0 on the way out. It is written by one
  * thread and read by another, hence volatile. */
-jmp_buf ons_script_error_jmp;
-volatile int ons_script_error_jmp_valid = 0;
+VNOVEL_EXPORT jmp_buf vnovel_script_error_jmp;
+VNOVEL_EXPORT volatile int vnovel_script_error_jmp_valid = 0;
 
-void libretro_script_error_longjmp(void)
+VNOVEL_EXPORT void libretro_script_error_longjmp(void)
 {
-    if (ons_script_error_jmp_valid)
-        longjmp(ons_script_error_jmp, 1);
+   if (vnovel_script_error_jmp_valid)
+      longjmp(vnovel_script_error_jmp, 1);
 }

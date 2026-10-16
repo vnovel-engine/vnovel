@@ -401,6 +401,45 @@ SDL_Surface* TTF_RenderGlyph_Shaded(TTF_Font* font,
     return surface;
 }
 
+/* Render a single character, "Solid" style.
+ *
+ * The vendored NP2kai menu's font manager (deps/np2kai-menu) calls this, and
+ * calls it with a one-character string - it sets `sString[0] = c; sString[1] =
+ * 0;` before each call, because it measures and caches glyphs one at a time.
+ * So a single-glyph implementation is faithful here rather than a compromise.
+ *
+ * A multi-character string returns NULL rather than silently rendering only the
+ * first glyph: a caller wanting several needs to lay them out itself, and
+ * returning a partial result would look like a working call that drops text.
+ *
+ * Upstream's "Solid" and "Shaded" differ only in the background: Solid leaves it
+ * as the colorkey (transparent), Shaded fills it. So this reuses the existing
+ * Shaded rasterizer with a transparent background and colorkeys index 0 - a
+ * colour-setup difference, not a second rasterizer. */
+SDL_Surface* TTF_RenderUNICODE_Solid(TTF_Font* font,
+                                     const Uint16 *text,
+                                     SDL_Color fg)
+{
+    if (!font || !text)
+        return NULL;
+
+    if (text[0] == 0 || text[1] != 0)
+        return NULL;
+
+    SDL_Color bg;
+    bg.r = 0;
+    bg.g = 0;
+    bg.b = 0;
+
+    SDL_Surface *surface = TTF_RenderGlyph_Shaded(font, text[0], fg, bg);
+
+    if (surface)
+        SDL_SetColorKey(surface, SDL_SRCCOLORKEY,
+                        (Uint32)SDL_MapRGB(surface->format, 0, 0, 0));
+
+    return surface;
+}
+
 void TTF_Quit( void )
 {
 }

@@ -3,7 +3,7 @@ clrmamepro (
 	description "Visual novels (ONScripter-EN, PONScripter, KiriKiri)"
 	version 2026.10.11
 	author "Matcha & Nova"
-	homepage "https://gitlab.com/matchaxnb/onscripter-en-libretro/blob/master/dat/vnovel.dat"
+	homepage "https://gitlab.com/matchaxnb/vnovel/blob/main/dat/vnovel.dat"
 )
 
 comment (

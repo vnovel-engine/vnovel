@@ -18,95 +18,97 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-/* All functions take a handle returned by engine_create. */
-typedef void* EngineHandle;
+   /* All functions take a handle returned by engine_create. */
+   typedef void *EngineHandle;
 
-/* The engine's framebuffer, as the core needs it: dimensions and a pointer to
+   /* The engine's framebuffer, as the core needs it: dimensions and a pointer to
  * 32-bit pixels. Deliberately a plain struct rather than SDL_Surface* — the
  * core never includes SDL headers, so it cannot be confused by (or link
  * against) the frontend's SDL, and the engine keeps its SDL entirely private.
  * `pitch` is in bytes. The pixels belong to the engine and stay valid until the
  * engine is destroyed. */
-typedef struct EngineSurface {
-    void  *pixels;
-    int    width;
-    int    height;
-    int    pitch;
-} EngineSurface;
+   typedef struct EngineSurface
+   {
+      void *pixels;
+      int width;
+      int height;
+      int pitch;
+   } EngineSurface;
 
-/* Common interface — both engines implement all of these. */
-typedef struct {
-    EngineHandle (*create)(void);
-    void         (*destroy)(EngineHandle);
-    int          (*init)(EngineHandle);
-    void         (*executeLabel)(EngineHandle);
-    void         (*eventLoop)(EngineHandle);
-    void         (*resetCommand)(EngineHandle);
-    void         (*setArchivePath)(EngineHandle, const char*);
-    void         (*setSavePath)(EngineHandle, const char*);
-    void         (*setKeyEXE)(EngineHandle, const char*);
-    void         (*setDebugLevel)(EngineHandle, int);
-    void         (*setTextSpeed)(EngineHandle, int);
-    int          (*getWidth)(EngineHandle);
-    int          (*getHeight)(EngineHandle);
-    int          (*isAutoMode)(EngineHandle);
-    int          (*isSkipMode)(EngineHandle);
-    void         (*dumpState)(EngineHandle, void*);  /* FILE* */
-    /* Optional: force the engine's internal rendering resolution (w/h in
+   /* Common interface — both engines implement all of these. */
+   typedef struct
+   {
+      EngineHandle (*create)(void);
+      void (*destroy)(EngineHandle);
+      int (*init)(EngineHandle);
+      void (*executeLabel)(EngineHandle);
+      void (*eventLoop)(EngineHandle);
+      void (*resetCommand)(EngineHandle);
+      void (*setArchivePath)(EngineHandle, const char *);
+      void (*setSavePath)(EngineHandle, const char *);
+      void (*setKeyEXE)(EngineHandle, const char *);
+      void (*setDebugLevel)(EngineHandle, int);
+      void (*setTextSpeed)(EngineHandle, int);
+      int (*getWidth)(EngineHandle);
+      int (*getHeight)(EngineHandle);
+      int (*isAutoMode)(EngineHandle);
+      int (*isSkipMode)(EngineHandle);
+      /* Optional: force the engine's internal rendering resolution (w/h in
      * pixels, 0/0 = native, i.e. whatever the game requests). May be NULL.
      * Must be called before init(). */
-    void         (*setResolution)(EngineHandle, int w, int h);
+      void (*setResolution)(EngineHandle, int w, int h);
 
-    /* --- runtime accessors -------------------------------------------------
+      /* --- runtime accessors -------------------------------------------------
      * The core reaches SDL only through these: the engine owns its SDL, so the
      * core never links or includes it. Each is valid after init() has returned;
      * a NULL return or a zeroed surface means "not up yet" and the core skips
      * the frame rather than presenting garbage. */
 
-    /* Current framebuffer, or NULL before the video mode is set. */
-    const EngineSurface *(*getSurface)(EngineHandle);
+      /* Current framebuffer, or NULL before the video mode is set. */
+      const EngineSurface *(*getSurface)(EngineHandle);
 
-    /* Sample rate the engine negotiated with SDL; 0 before SDL_OpenAudio. */
-    int  (*getSampleRate)(EngineHandle);
-    int  (*isAudioPaused)(EngineHandle);
-    void (*setAudioPaused)(EngineHandle, int paused);
-    /* Pull mixed stereo frames from the engine's mixer. Returns frames
+      /* Sample rate the engine negotiated with SDL; 0 before SDL_OpenAudio. */
+      int (*getSampleRate)(EngineHandle);
+      int (*isAudioPaused)(EngineHandle);
+      void (*setAudioPaused)(EngineHandle, int paused);
+      /* Pull mixed stereo frames from the engine's mixer. Returns frames
      * written; 0 when audio is closed or paused. */
-    int  (*getAudio)(EngineHandle, int16_t *out, int max_frames);
+      int (*getAudio)(EngineHandle, int16_t *out, int max_frames);
 
-    /* Thread ownership. The engine spawns and owns its script thread, because
+      /* Thread ownership. The engine spawns and owns its script thread, because
      * that thread calls into the engine's own SDL (SDL_WaitEvent, timers,
      * surface updates) and a thread created through the frontend's SDL would
      * touch the wrong library. The core only asks it to start and to stop. */
-    int  (*startThread)(EngineHandle);   /* 0 on success */
-    void (*requestStop)(EngineHandle);   /* post SDL_QUIT to the engine queue */
-    int  (*isRunning)(EngineHandle);     /* 0 once the thread has exited */
-    void (*joinThread)(EngineHandle);    /* wait for it; safe to call twice */
-    void (*killThread)(EngineHandle);    /* last resort when join would hang */
+      int (*startThread)(EngineHandle);  /* 0 on success */
+      void (*requestStop)(EngineHandle); /* post SDL_QUIT to the engine queue */
+      int (*isRunning)(EngineHandle);    /* 0 once the thread has exited */
+      void (*joinThread)(EngineHandle);  /* wait for it; safe to call twice */
+      void (*killThread)(EngineHandle);  /* last resort when join would hang */
 
-    /* Input injection: the core turns RetroPad/frontend input into the SDL
+      /* Input injection: the core turns RetroPad/frontend input into the SDL
      * events the script expects, and hands them to the engine's own queue. */
-    void (*pushKey)(EngineHandle, int sym, int down);
-    void (*pumpEvents)(EngineHandle);
+      void (*pushKey)(EngineHandle, int sym, int down);
+      void (*pumpEvents)(EngineHandle);
 
-    /* Drain queued SDL_USEREVENTs (used after unpausing, so a burst of timer
+      /* Drain queued SDL_USEREVENTs (used after unpausing, so a burst of timer
      * events accumulated while paused does not replay at once). */
-    void (*drainUserEvents)(EngineHandle);
+      void (*drainUserEvents)(EngineHandle);
 
-    /* Show or hide the software cursor. */
-    void (*showCursor)(EngineHandle, int show);
+      /* Show or hide the software cursor. */
+      void (*showCursor)(EngineHandle, int show);
 
-    /* Engine-owned timer diagnostics, for the "Timer state" log line. Either
+      /* Engine-owned timer diagnostics, for the "Timer state" log line. Either
      * pointer may be NULL if the engine does not expose them. */
-    const int *(*timerStartedPtr)(EngineHandle);
-    const int *(*timerRunningPtr)(EngineHandle);
-} EngineVTable;
+      const int *(*timerStartedPtr)(EngineHandle);
+      const int *(*timerRunningPtr)(EngineHandle);
+   } EngineVTable;
 
-extern const EngineVTable ons_engine_vtable;
-extern const EngineVTable pons_engine_vtable;
+   extern const EngineVTable ons_engine_vtable;
+   extern const EngineVTable pons_engine_vtable;
 
 #ifdef __cplusplus
 }

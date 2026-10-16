@@ -17,6 +17,7 @@ import paramiko
 import re
 import sys
 import os
+import subprocess
 import time
 
 # Credentials are never committed. Provide them in a gitignored
@@ -34,18 +35,46 @@ if not PASS:
           "(copy deploy-system.local.py.example) or set VNOVEL_DEPLOY_PASS.")
     sys.exit(1)
 
-LOCAL_SO = os.path.expanduser("~/dev/vnovel/vnovel_libretro.so")
-LOCAL_ENGINE_ONS = os.path.expanduser("~/dev/vnovel/vnovel_engine_ons.so")
-LOCAL_ENGINE_PONS = os.path.expanduser("~/dev/vnovel/vnovel_engine_pons.so")
-LOCAL_INFO = os.path.expanduser("~/dev/vnovel/vnovel_libretro.info")
-LOCAL_RDB = os.path.expanduser("~/dev/vnovel/vnovel.rdb")
-REMOTE_CORE = "/overlay/upper/usr/lib/libretro/vnovel_libretro.so"
-REMOTE_ENGINE_ONS = "/overlay/upper/usr/lib/libretro/vnovel_engine_ons.so"
-REMOTE_ENGINE_PONS = "/overlay/upper/usr/lib/libretro/vnovel_engine_pons.so"
-REMOTE_INFO = "/overlay/upper/usr/lib/libretro/vnovel_libretro.info"
+# Artifacts come from this script's own repository, so a checkout anywhere
+# works. Override with VNOVEL_LOCAL_DIR for a build staged elsewhere.
+REPO_DIR = os.environ.get(
+    "VNOVEL_LOCAL_DIR", os.path.dirname(os.path.abspath(__file__)))
+
+LOCAL_SO = os.path.join(REPO_DIR, "vnovel_libretro.so")
+LOCAL_INFO = os.path.join(REPO_DIR, "vnovel_libretro.info")
+LOCAL_RDB = os.path.join(REPO_DIR, "vnovel.rdb")
+REMOTE_DIR = "/usr/lib/libretro"
+REMOTE_CORE = REMOTE_DIR + "/vnovel_libretro.so"
+REMOTE_INFO = REMOTE_DIR + "/vnovel_libretro.info"
+
+# Recalbox's RetroArch sets libretro_directory to ~/.config/retroarch/cores, and
+# that is the directory it loads cores from — /usr/lib/libretro is only where the
+# image ships them. Deploying to just the system directory left the core the
+# frontend actually ran untouched, so a fix could land without ever taking
+# effect (it did: an old onscripter-en_libretro.so from the image shadowed
+# everything for days). Both are written; the frontend's copy is the one that
+# matters and the system copy keeps an installed-tree deployment consistent.
+REMOTE_CORES_DIR = "/recalbox/share/system/.config/retroarch/cores"
+REMOTE_CORES_CORE = REMOTE_CORES_DIR + "/vnovel_libretro.so"
+REMOTE_CORES_INFO = REMOTE_CORES_DIR + "/vnovel_libretro.info"
 REMOTE_RDB = "/recalbox/share/system/.config/retroarch/database/rdb/vnovel.rdb"
 
 SYSTEMLIST = "/recalbox/share/system/.emulationstation/systemlist.xml"
+# The image ships the same file read-only; EmulationStation seeds the writable
+# copy from it on a settings reset, so it must agree with SYSTEMLIST or the old
+# core name comes back.
+SYSTEMLIST_INIT = "/recalbox/share_init/system/.emulationstation/systemlist.xml"
+
+# EmulationStation's EmulatorManager reads "<system>.core"/"<system>.emulator"
+# from recalbox.conf and uses them in preference to the systemlist default. The
+# core name it yields is fed to configgen, which builds the core path as
+# /usr/lib/libretro/<core>_libretro.so (libretroCores.py / recalboxFiles.py) —
+# a hardcoded directory, not libretro_directory. Both facts bit us: a stale
+# "vnovel.core=onscripter-en" sent the frontend looking for a core that no
+# longer existed, and the path it looked in was /usr/lib/libretro regardless of
+# where the core was deployed.
+RECALBOX_CONF = "/recalbox/share/system/recalbox.conf"
+CORE_NAME = "vnovel"
 
 # The vnovel system XML to inject
 SYSTEM_XML = '''  <system uuid="c2e3b2c6-2a11-49b4-9d90-1903b7a55488" name="vnovel" fullname="Visual Novels">
@@ -59,39 +88,160 @@ SYSTEM_XML = '''  <system uuid="c2e3b2c6-2a11-49b4-9d90-1903b7a55488" name="vnov
     </emulatorList>
   </system>'''
 
+def _remote_arch(ssh):
+    """'aarch64', 'x86_64', ... — or None if uname is unavailable."""
+    try:
+        _, out, _ = ssh.exec_command("uname -m")
+        return out.read().decode().strip() or None
+    except Exception:
+        return None
+
+
+def _local_arch(path):
+    """The ELF machine of a local file, via readelf; None if unknown."""
+    try:
+        out = subprocess.run(["readelf", "-h", path],
+                             capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            if "Machine:" in line:
+                return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+
+def _norm_arch(machine):
+    """Normalise readelf's 'Machine:' / uname's -m to a comparable form."""
+    m = (machine or "").lower()
+    if "aarch64" in m or "arm64" in m:
+        return "aarch64"
+    if "x86-64" in m or "x86_64" in m:
+        return "x86_64"
+    return m
+
+
 def deploy_core(ssh):
-    """Deploy the .so core to Recalbox."""
-    if not os.path.exists(LOCAL_SO):
-        print(f"Error: {LOCAL_SO} not found")
+    """Deploy the single self-contained core.
+
+    The core is one file: the runtime and both engines are linked in, so
+    nothing else has to land beside it.
+
+    The core is architecture-checked before it is uploaded: uploading a core
+    built for another platform silently replaces a good one and fails at
+    load time with no obvious cause.
+    """
+    required = (LOCAL_SO,)
+    missing = [p for p in required if not os.path.exists(p)]
+    if missing:
+        print("Error: build artifacts missing:")
+        for p in missing:
+            print(f"  {p}")
+        print("Run 'make' first.")
         return False
+
+    remote_arch = _norm_arch(_remote_arch(ssh))
+    if remote_arch:
+        local_arch = _norm_arch(_local_arch(LOCAL_SO))
+        if local_arch and local_arch != remote_arch:
+            print(f"Error: architecture mismatch — target is {remote_arch}, "
+                  f"core is {local_arch}")
+            print("Rebuild for the target (make platform="
+                  f"{'aarch64' if remote_arch == 'aarch64' else 'unix'}).")
+            return False
+        print(f"Architecture check: core is {remote_arch} (ok)")
 
     print("Remounting root read-write...")
     ssh.exec_command("mount -o remount,rw /")
     time.sleep(0.5)
 
     sftp = ssh.open_sftp()
-    print(f"Uploading core to {REMOTE_CORE}...")
-    sftp.put(LOCAL_SO, REMOTE_CORE)
-    sftp.chmod(REMOTE_CORE, 0o755)
-
-    for local_engine, remote_engine, name in [
-        (LOCAL_ENGINE_ONS, REMOTE_ENGINE_ONS, "ons"),
-        (LOCAL_ENGINE_PONS, REMOTE_ENGINE_PONS, "pons"),
-    ]:
-        if os.path.exists(local_engine):
-            print(f"Uploading {name} engine to {remote_engine}...")
-            sftp.put(local_engine, remote_engine)
-            sftp.chmod(remote_engine, 0o755)
-
-    if os.path.exists(LOCAL_INFO):
-        print(f"Uploading core info to {REMOTE_INFO}...")
-        sftp.put(LOCAL_INFO, REMOTE_INFO)
+    to_send = [
+        (LOCAL_SO, REMOTE_CORE, True),
+        (LOCAL_INFO, REMOTE_INFO, False),
+        (LOCAL_SO, REMOTE_CORES_CORE, True),
+        (LOCAL_INFO, REMOTE_CORES_INFO, False),
+    ]
+    for local_path, remote_path, required in to_send:
+        if not os.path.exists(local_path):
+            if required:
+                print(f"Error: {local_path} missing")
+                sftp.close()
+                return False
+            print(f"Skipping {os.path.basename(local_path)} (not built)")
+            continue
+        name = os.path.basename(local_path)
+        # Upload beside the target and rename, so a running frontend never
+        # loads a half-written core.
+        tmp = remote_path + ".new"
+        print(f"Uploading {name}...")
+        sftp.put(local_path, tmp)
+        # The SD-card share is vfat/exfat: it carries no POSIX mode bits, so
+        # chmod there fails with EACCES even though the write succeeded. The
+        # mode only matters where it is meaningful, so a failure here is not
+        # fatal — the rename below still has to happen.
+        try:
+            sftp.chmod(tmp, 0o755 if name.endswith(".so") else 0o644)
+        except IOError:
+            pass
+        ssh.exec_command(f"mv -f {tmp} {remote_path}")
+        time.sleep(0.2)
 
     sftp.close()
     print("Remounting root read-only...")
     ssh.exec_command("mount -o remount,ro /")
     time.sleep(0.5)
     return True
+
+def deploy_emulator_selection(ssh):
+    """Pin <system>.core/<system>.emulator in recalbox.conf.
+
+    Without this the frontend falls back to whatever the user last selected (or
+    to the image default, which named a core that no longer exists). Set both
+    keys idempotently; leave every other line untouched.
+    """
+    print("Remounting root read-write...")
+    ssh.exec_command("mount -o remount,rw /")
+    time.sleep(0.5)
+
+    sftp = ssh.open_sftp()
+    try:
+        with sftp.open(RECALBOX_CONF, 'r') as f:
+            lines = f.read().decode().splitlines()
+    except IOError:
+        print(f"Error: {RECALBOX_CONF} not found")
+        sftp.close()
+        return False
+
+    wanted = {f"{CORE_NAME}.core": CORE_NAME, f"{CORE_NAME}.emulator": "libretro"}
+    seen = set()
+    out = []
+    for line in lines:
+        key = line.split('=', 1)[0] if '=' in line else None
+        if key in wanted:
+            new = f"{key}={wanted[key]}"
+            if line != new:
+                print(f"Rewriting: {line!r} -> {new!r}")
+            out.append(new)
+            seen.add(key)
+        else:
+            out.append(line)
+    for key, value in wanted.items():
+        if key not in seen:
+            print(f"Appending: {key}={value}")
+            out.append(f"{key}={value}")
+
+    content = "\n".join(out)
+    if not content.endswith("\n"):
+        content += "\n"
+    with sftp.open(RECALBOX_CONF, 'w') as f:
+        f.write(content)
+    sftp.close()
+
+    ssh.exec_command("mount -o remount,ro /")
+    time.sleep(0.5)
+    print(f"Updated {RECALBOX_CONF}")
+    return True
+
 
 def deploy_system(ssh):
     """Add the vnovel system to systemlist.xml."""
@@ -118,8 +268,47 @@ def deploy_system(ssh):
     sftp.close()
     print(f"Updated {SYSTEMLIST}")
 
+    deploy_systemlist_init(ssh)
+
     ssh.exec_command("mkdir -p /recalbox/share/roms/vnovel")
     time.sleep(0.5)
+    return True
+
+def deploy_systemlist_init(ssh):
+    """Re-point the read-only systemlist template at the current core name.
+
+    EmulationStation copies this over SYSTEMLIST when settings are reset, so a
+    stale core name here silently reintroduces the bug. Rewritten in place only
+    when it still mentions the old name.
+    """
+    print("Remounting root read-write...")
+    ssh.exec_command("mount -o remount,rw /")
+    time.sleep(0.5)
+
+    sftp = ssh.open_sftp()
+    try:
+        with sftp.open(SYSTEMLIST_INIT, 'r') as f:
+            content = f.read().decode()
+    except IOError:
+        print(f"Skipping {SYSTEMLIST_INIT} (not present)")
+        sftp.close()
+        ssh.exec_command("mount -o remount,ro /")
+        return True
+
+    if f'<core name="{CORE_NAME}"' in content and 'onscripter-en' not in content:
+        sftp.close()
+        ssh.exec_command("mount -o remount,ro /")
+        return True
+
+    content = re.sub(
+        r'<core name="onscripter-en"', f'<core name="{CORE_NAME}"', content)
+    with sftp.open(SYSTEMLIST_INIT, 'w') as f:
+        f.write(content)
+    sftp.close()
+
+    ssh.exec_command("mount -o remount,ro /")
+    time.sleep(0.5)
+    print(f"Updated {SYSTEMLIST_INIT}")
     return True
 
 def deploy_database(ssh):
@@ -148,9 +337,15 @@ def deploy_database(ssh):
     return True
 
 def restart_es(ssh):
-    """Restart EmulationStation to pick up changes."""
+    """Restart EmulationStation to pick up changes.
+
+    Recalbox has no systemd; EmulationStation is supervised by the S31 init
+    script. killall alone leaves it down, so start it explicitly.
+    """
     print("Restarting EmulationStation...")
-    ssh.exec_command("systemctl restart emulationstation.service 2>/dev/null || killall -9 emulationstation 2>/dev/null")
+    ssh.exec_command(
+        "killall -TERM emulationstation 2>/dev/null; sleep 3; "
+        "/etc/init.d/S31emulationstation start >/dev/null 2>&1 &")
 
 def main():
     do_core = "--system-only" not in sys.argv and "--db-only" not in sys.argv
@@ -163,14 +358,24 @@ def main():
     print(f"Connecting to {USER}@{HOST}...")
     ssh.connect(HOST, username=USER, password=PASS)
 
+    failed = False
+
     if do_core:
-        deploy_core(ssh)
+        failed |= not deploy_core(ssh)
 
     if do_system:
-        deploy_system(ssh)
+        failed |= not deploy_system(ssh)
+
+    if do_system or do_core:
+        failed |= not deploy_emulator_selection(ssh)
 
     if do_db:
-        deploy_database(ssh)
+        failed |= not deploy_database(ssh)
+
+    if failed:
+        print("One or more steps failed; nothing else was attempted.")
+        ssh.close()
+        return 1
 
     if do_restart:
         restart_es(ssh)
@@ -183,4 +388,4 @@ def main():
         print("Done!")
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

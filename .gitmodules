@@ -14,3 +14,7 @@
 	path = deps/krkrsdl2
 	url = https://gitlab.com/matchaxnb/krkrsdl2.git
 	branch = main
+[submodule "deps/kirikiri2"]
+	path = deps/kirikiri2
+	url = https://gitlab.com/matchaxnb/kirikiri2.git
+	branch = port

@@ -32,6 +32,19 @@ INCFLAGS := \
 CFLAGS   += $(INCFLAGS)
 CXXFLAGS += $(INCFLAGS)
 
+# Append points for a caller that needs to add flags.
+#
+# A caller must NOT pass CFLAGS/CXXFLAGS/LDFLAGS on the make command line for
+# this: a command-line assignment replaces the variable outright and silences
+# every `+=` in these files, so the include paths and defines above — including
+# the vendored-SDL rename and the freetype include — silently disappear. (A
+# buildroot recipe did exactly that, and the failure surfaced as a missing
+# ft2build.h rather than as the flag it actually was.) These variables extend
+# rather than replace, so the makefiles keep working the same way.
+CFLAGS   += $(EXTRA_CFLAGS)
+CXXFLAGS += $(EXTRA_CXXFLAGS)
+LDFLAGS  += $(EXTRA_LDFLAGS)
+
 # Force our SDL config (dummy backends only) on all platforms.
 # sdl-vendored.h comes first and renames our SDL/SDL_mixer/SMPEG/TTF/IMG symbols
 # to a Private prefix, so they cannot collide with the SDL2/SDL3 the frontend
@@ -137,6 +150,9 @@ RUNTIME_C += $(addprefix $(DEPS_DIR)/sdl-mixer/, \
 RUNTIME_C += $(addprefix $(LIBRETRO_COMM)/, \
   compat/compat_strl.c \
   encodings/encoding_utf.c \
+  encodings/encoding_crc32.c \
+  streams/file_stream.c \
+  vfs/vfs_implementation.c \
   string/stdstring.c \
   time/rtime.c \
   file/file_path.c \
@@ -201,6 +217,7 @@ $(ONS_OBJS): CXXFLAGS += -fvisibility=hidden
 # Same approach — hidden visibility, separate object files.
 # =============================================================================
 PONS_CXX := $(addprefix $(PONSCRIPTER)/, \
+  PonscripterWrap.cpp \
   PonscripterLabel.cpp \
   PonscripterLabel_animation.cpp \
   PonscripterLabel_command.cpp \
@@ -256,7 +273,16 @@ PONS_OBJS += $(PONS_C:.c=.pons.o)
 # so core and engines all resolve SDL to the same runtime object.
 CORE_CXX := \
   $(SRC_DIR)/libretro.cpp \
-  $(SRC_DIR)/engine_kirikiri_cabi.cpp
+  $(SRC_DIR)/menu.cpp \
+  $(SRC_DIR)/wrap.cpp
+
+# KiriKiri is opt-in: its engine is still being brought up, so it is not part
+# of a release build. Off, engine_kirikiri_cabi.cpp is not compiled, the
+# krkrsdl2 archive is not linked, and libretro.cpp compiles the KiriKiri path
+# out entirely (see VNOVEL_KIRIKIRI). Build it with `make KRKR_ENABLE=1`.
+ifeq ($(KRKR_ENABLE),1)
+   CORE_CXX += $(SRC_DIR)/engine_kirikiri_cabi.cpp
+endif
 
 # The bridge holds state core, runtime and engines all use. It lives in the
 # runtime so every module resolves the same copy (see the one-bridge-file
@@ -267,8 +293,51 @@ RUNTIME_C += $(SRC_DIR)/engine_bridge.c
 # engine-side runtime rather than the core.
 RUNTIME_CXX += $(SRC_DIR)/embed_stub.cpp
 
+# engine_ons_cabi.o / engine_pons_cabi.o are built by the generic
+# $(BUILD_DIR)/%.o rule, so their engine-specific flags have to be attached to
+# the object target, not to a hand-written rule. A hand-written
+# `$(BUILD_DIR)/engine_ons_cabi.o:` rule does not match anything: the object is
+# produced at $(BUILD_DIR)/src/engine_ons_cabi.o, so such a rule is dead code
+# that silently drops its flags. (It was, until this comment existed.)
+$(BUILD_DIR)/$(SRC_DIR)/engine_ons_cabi.o: CXXFLAGS += $(ONS_RENAME)
+$(BUILD_DIR)/$(SRC_DIR)/engine_pons_cabi.o: CXXFLAGS += $(PONS_RENAME)
+
 # The C ABI wrapper for each engine compiles into that engine's module: it
 # constructs the engine class, which lives there, and only its vtable is
 # exported.
 ONS_EXTRA_CXX := $(SRC_DIR)/engine_ons_cabi.cpp
 PONS_EXTRA_CXX := $(SRC_DIR)/engine_pons_cabi.cpp
+
+# --- NP2kai menu (vendored, MIT (c) 2017 AZO) ---
+# The native menu's foundation, vendored bottom-up: the VRAM abstraction and
+# font manager first, the menu itself later. See deps/np2kai-menu/README.md for
+# the adaptation layer, and why the vendored sources are unmodified.
+#
+# The defines are upstream's own for its SDL target: all three colour depths
+# together, the TTF path selected, and the SDL1 TTF API - which is what this
+# tree's src/sdl-libretro/SDL_ttf.h implements, even though the engine side is
+# SDL2 (the same arrangement the rest of the core uses).
+NP2KAI_MENU := $(DEPS_DIR)/np2kai-menu
+
+RUNTIME_C += $(addprefix $(NP2KAI_MENU)/, \
+  common/rect.c common/resize.c common/lstarray.c common/strres.c \
+  embed/vramhdl.c embed/vrammix.c embed/fontmng.c \
+  embed/menubase/menubase.c embed/menubase/menudlg.c \
+  embed/menubase/menuicon.c embed/menubase/menumbox.c \
+  embed/menubase/menures.c embed/menubase/menusys.c \
+  embed/menubase/menuvram.c \
+  host.c \
+)
+
+# The vendor directory mirrors upstream's own layout (common/, embed/), so the
+# sources' includes - <embed/menubase/menubase.h>, <common/rect.h>, and the bare
+# <fontmng.h> that upstream's SDL build resolves from its sdl/ directory - all
+# resolve without editing them. include/ holds only this port's adaptation layer.
+NP2KAI_INCLUDES := -I$(NP2KAI_MENU)/include -I$(NP2KAI_MENU) -I$(NP2KAI_MENU)/embed
+NP2KAI_DEFINES := -DSUPPORT_16BPP -DSUPPORT_24BPP -DSUPPORT_32BPP \
+                  -DSUPPORT_SDL_TTF -DUSE_SDL=1
+# Both languages: menu.cpp is C++ and includes the same headers as the C
+# sources it drives.
+CFLAGS   += $(NP2KAI_INCLUDES) $(NP2KAI_DEFINES)
+CXXFLAGS += $(NP2KAI_INCLUDES) $(NP2KAI_DEFINES)
+

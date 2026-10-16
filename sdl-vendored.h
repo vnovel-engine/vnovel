@@ -17,12 +17,10 @@
 
 #ifdef RENAME_SDL_SYMBOLS
 
-#define IMG_Load PrivateIMG_Load
-#define IMG_LoadJPG_RW PrivateIMG_LoadJPG_RW
-#define IMG_LoadPNG_RW PrivateIMG_LoadPNG_RW
-#define IMG_Load_RW PrivateIMG_Load_RW
-#define IMG_isJPG PrivateIMG_isJPG
-#define IMG_isPNG PrivateIMG_isPNG
+/* Neutralise SDL's export attribute; see the generator for why. */
+#define DECLSPEC
+#define SDL_DECLSPEC
+
 #define Mix_AllocateChannels PrivateMix_AllocateChannels
 #define Mix_ChannelFinished PrivateMix_ChannelFinished
 #define Mix_CloseAudio PrivateMix_CloseAudio
@@ -516,30 +514,13 @@
 #define SMPEG_status PrivateSMPEG_status
 #define SMPEG_stop PrivateSMPEG_stop
 #define SMPEG_wantedSpec PrivateSMPEG_wantedSpec
-#define TTF_AddFallbackFontMem PrivateTTF_AddFallbackFontMem
-#define TTF_CloseFont PrivateTTF_CloseFont
-#define TTF_FontAscent PrivateTTF_FontAscent
-#define TTF_FontDescent PrivateTTF_FontDescent
-#define TTF_FontHeight PrivateTTF_FontHeight
-#define TTF_FontLineSkip PrivateTTF_FontLineSkip
-#define TTF_GetFontOutline PrivateTTF_GetFontOutline
-#define TTF_GetFontStyle PrivateTTF_GetFontStyle
-#define TTF_GlyphMetrics PrivateTTF_GlyphMetrics
-#define TTF_Init PrivateTTF_Init
-#define TTF_Linked_Version PrivateTTF_Linked_Version
-#define TTF_OpenFont PrivateTTF_OpenFont
-#define TTF_OpenFontDPI PrivateTTF_OpenFontDPI
-#define TTF_OpenFontDPIRW PrivateTTF_OpenFontDPIRW
-#define TTF_OpenFontIndex PrivateTTF_OpenFontIndex
-#define TTF_OpenFontIndexDPI PrivateTTF_OpenFontIndexDPI
-#define TTF_OpenFontIndexDPIRW PrivateTTF_OpenFontIndexDPIRW
-#define TTF_OpenFontIndexRW PrivateTTF_OpenFontIndexRW
-#define TTF_OpenFontRW PrivateTTF_OpenFontRW
-#define TTF_Quit PrivateTTF_Quit
-#define TTF_RenderGlyph_Shaded PrivateTTF_RenderGlyph_Shaded
-#define TTF_SetFallbackFontMem PrivateTTF_SetFallbackFontMem
-#define TTF_SetFontOutline PrivateTTF_SetFontOutline
-#define TTF_SetFontStyle PrivateTTF_SetFontStyle
+
+/* `SDL_CreateThread' is a function-like macro under (defined(SDL_PASSED_BEGINTHREAD_ENDTHREAD)); renamed only
+   where it is not, so the declaration survives and call sites
+   stay intact. */
+#if !(defined(SDL_PASSED_BEGINTHREAD_ENDTHREAD))
+#define SDL_CreateThread PrivateSDL_CreateThread
+#endif
 #endif /* RENAME_SDL_SYMBOLS */
 
 #endif /* SDL_VENDORED_H */

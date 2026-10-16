@@ -1,0 +1,91 @@
+/* The core's own API to the native menu (src/menu.cpp).
+ *
+ * Our header, not the menu's: deps/np2kai-menu is vendored C whose own headers
+ * (menubase.h and friends) are an implementation detail of menu.cpp. Nothing
+ * outside menu.cpp should include them, so the menu's bitmask encodings and
+ * struct layouts stay behind this boundary.
+ */
+#ifndef VNOVEL_MENU_H
+#define VNOVEL_MENU_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Menu navigation, as presses rather than held state: the menu treats a bit as
+ * a one-shot command (OK opens the focused submenu, LEFT/RIGHT move the
+ * highlight), so the caller sends each press once and never repeats it while
+ * the key is held. */
+enum {
+	VNOVEL_MENU_UP     = 1 << 0,
+	VNOVEL_MENU_DOWN   = 1 << 1,
+	VNOVEL_MENU_LEFT   = 1 << 2,
+	VNOVEL_MENU_RIGHT  = 1 << 3,
+	VNOVEL_MENU_OK     = 1 << 4,
+	VNOVEL_MENU_CANCEL = 1 << 5
+};
+
+/* Create the menu's font handles and icon tables. Called once at start-up;
+ * harmless to call twice. `font_path` may be NULL. */
+void vnovel_menu_init(const char *font_path);
+
+/* Open the menu bar at `w`x`h` (the live frame size). Returns non-zero on
+ * success. The menu bar is a floating overlay: there is no window frame in a
+ * libretro core, so the win32-style windowed menu bar is not available. */
+int vnovel_menu_open(int w, int h);
+int vnovel_menu_is_open(void);
+void vnovel_menu_close(void);
+
+/* Let the menu advance one frame. Must be called whether or not it is drawn, so
+ * it can run its own timers while open. */
+void vnovel_menu_proc(void);
+
+/* F12. Opens the menu bar if nothing is open, otherwise shows/hides it. */
+void vnovel_menu_toggle(void);
+
+/* What the script asked for (the native Menu's `visible` property). */
+void vnovel_menu_set_visible(int on);
+
+/* Whether the frame path should composite the menu this frame: it is open and
+ * either the script or the hotkey wants it shown. */
+int vnovel_menu_should_draw(void);
+
+/* The geometry the menu opens at, published from the live frame so the menu
+ * matches the running game rather than a hardcoded size. */
+void vnovel_menu_set_pref_geometry(int w, int h);
+
+/* Pointer input, one frame. `btn` is NP2kai's convention: 0 = move only,
+ * 1 = left down, 2 = left up (up outside the menu closes it). `x`/`y` are in
+ * frame pixels. */
+int vnovel_menu_input(int x, int y, int btn);
+
+/* Key input, a VNOVEL_MENU_* mask of presses. */
+void vnovel_menu_key_mask(unsigned mask);
+
+/* Latch a press from the edge-driven keyboard callback, consumed by the next
+ * frame. A poll cannot see a tap that begins and ends between frames, so keys
+ * arrive this way; the menu is then fed once per frame. */
+void vnovel_menu_latch_key(unsigned mask);
+unsigned vnovel_menu_take_latched_keys(void);
+
+/* The menu's pixels for compositing, or NULL when none is open.
+ *
+ * Both planes are 32bpp/8bpp and `mpitch`/`apitch` are per row. The alpha plane
+ * is what says which pixels the menu owns - the pixel buffer alone cannot, since
+ * untouched VRAM is opaque. Both buffers belong to the menu and stay valid until
+ * it is closed.
+ *
+ * The caller composites onto its own copy of the frame, never onto the engine's
+ * framebuffer: modifying that would break the engine's redraw/dirty-rect
+ * tracking. */
+const unsigned char *vnovel_menu_draw(int *w, int *h, int *pitch,
+                                      const unsigned char **alpha,
+                                      int *alpha_pitch);
+
+void vnovel_menu_shutdown(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* VNOVEL_MENU_H */

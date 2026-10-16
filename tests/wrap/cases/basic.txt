@@ -1,0 +1,9 @@
+# One case per line; cells come from the caller (--cells, default 38), so these
+# pin the engine's break decisions at a known width. The first cases are the
+# ones reported from play, and every one of them is here because a wrap
+# regression renders as plausible-looking text — only the offsets show it.
+The quick brown fox jumps over the lazy dog and memorizing doesn't break.
+The children's toys aren't where they're supposed to be.
+qqq , rrr and more text here to wrap around.
+AAAAAA l'ange de la mort est arrive ici pour nous.
+I can't believe it's already over; we're not going back there, are we?

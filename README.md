@@ -1,5 +1,7 @@
 # vnovel Libretro Core
 
+<img src="resources/logo.png" alt="vnovel — Visual Novels: onscripter, ponscripter, kikikiri" width="360">
+
 A unified libretro core for playing Japanese visual novels in RetroArch.
 It covers the three major engines — ONScripter-EN, PONScripter and
 KiriKiri (KAG) — in a single distribution, detecting which one a game
@@ -42,6 +44,12 @@ and local commits (see `deps/krkrsdl2/LINEAGE.md`, `…/external/krkrz/LINEAGE.m
 `…/external/FAudio/LINEAGE.md`).
 
 ### Upstream commits
+
+Fork points are recorded against **upstream** only. Our own commit ids are
+deliberately not listed anywhere: they go stale on any history rewrite (a
+squash has already invalidated them once), and the fork point is the stable
+fact. Local changes are documented by subject — see each fork's `CHANGELOG.md`
+and its `LINEAGE.md`.
 
 | Component | Upstream | Commit | URL |
 |-----------|----------|--------|-----|
@@ -121,23 +129,96 @@ make platform=mingw
 
 # Debug build
 make DEBUG=1
+
+# Include the KiriKiri engine (see below)
+make KRKR_ENABLE=1
 ```
 
-The build produces four artifacts that must ship together — `vnovel_libretro.so`
-plus `vnovel_runtime.so` and the `vnovel_engine_ons.so` / `vnovel_engine_pons.so`
-modules (the core's rpath finds them beside itself). `make rdb` additionally
-builds the game database; see [Game database](#game-database-vnovelrdb).
+**KiriKiri is opt-in.** A default build contains ONScripter-EN and PONScripter
+only; it does not compile `engine_kirikiri_cabi.cpp`, does not build or link the
+krkrsdl2 archives, and does not pull in SDL2/fontconfig/vorbisfile. `make
+KRKR_ENABLE=1` turns all of that on. Fate/stay night runs to the disclaimer and
+into the game with it, message text and all — the opaque fill that used to
+overpaint KAG link text is the modern layer-compositing algorithm, and the
+per-game compatibility table selects the pre-2006 one for the titles that need
+it. Other titles are less well covered, so treat the engine as opt-in rather
+than as one of the default two.
 
-## Repository layout
+The build produces one self-contained `vnovel_libretro.so`: the runtime and the
+selected engines are linked into it, so nothing else has to ship beside it. That
+is the shape a distribution needs — libretro's buildbot copies exactly one file
+per core. With `KRKR_ENABLE=1` the KiriKiri engine's static archives are built
+from `deps/krkrsdl2` with CMake on demand, so a tree that has not built it still
+produces a working ONScripter/PONScripter core.
+`make rdb` additionally builds the game database; see
+[Game database](#game-database-vnovelrdb).
+
+## Engine data (the KiriKiri polyfill)
+
+The core is one file, but the KiriKiri engine needs a small set of
+**non-compiled** assets at runtime. This build has no native `KAGParser` plugin,
+so the TJS polyfill parses every scenario.
+
+They live in a per-core subdirectory of the frontend's system ("BIOS")
+directory, the same shape the BIOS directory already uses for cores needing
+several files (`PPSSPP/`, `dolphin-emu/`):
+
+| Platform | Directory |
+|---|---|
+| Recalbox / Pi | `/recalbox/share/bios/vnovel` |
+| Windows (same share) | `K:\Recalbox\bios\vnovel` |
+| RetroArch elsewhere | `<system_directory>/vnovel` |
+
+```
+bios/vnovel/
+    overrides.txt             plugin override table (builtin shims + names)
+    startup.tjs
+    mona.ttf                  fallback font
+    system_polyfill/
+        KAGParser.tjs         the KAG scenario parser
+        LayerCompat.tjs
+        MenuItem.tjs
+        PluginStubs.tjs       readFile, p.dll, extrans, ...
+        Util.tjs
+```
+
+This is arranged so that one directory serves every deployment: it ships with
+the share (so it travels to the Windows box and the Pi alike), it needs no
+per-machine setup, and it does not depend on replacing the core.
+
+**The core resolves it with no configuration.** At startup it asks the frontend
+for its system directory and, if `<system_directory>/vnovel/system_polyfill/`
+exists, points `KRKRSDL2_DATA_PATH` there. `KRKRSDL2_OVERRIDE_PATH` is set to the
+same system directory, so `overrides.txt` is found too. An explicit environment
+variable wins over both, and if the `vnovel/` copy is absent the engine falls
+back to the compiled-in default (`/usr/share/krkrsdl2`), which is where a
+packaged install places it.
+
+Two files are load-bearing and easy to break:
+
+* **`PluginStubs.tjs` must keep its UTF-8 BOM.** Without it the engine cannot
+  decode the file, which aborts the whole polyfill before any of its globals are
+  installed — every stub goes missing, including `readFile`, and the failure
+  surfaces much later as an unrelated script error.
+* **`overrides.txt` must be found.** Without it the engine will not recognise a
+  plugin as a builtin and will try to load the game's own Windows PE instead,
+  which aborts startup. On Windows this previously failed silently because the
+  override search path was split on `:`, which every absolute Windows path
+  contains.
+
+`tools/deploy-engine-data.sh` installs the set and verifies it byte-for-byte.
+
+## Repository layout## Repository layout## Repository layout
 
 | Path | Contents |
 |---|---|
 | `src/` | The core's C/C++ sources (`libretro.cpp`, the engine C-ABI wrappers, the bridge, and `sdl-libretro/`). |
 | `Makefile`, `Makefile.common` | Build system. Kept at the root so `make` works from a pristine clone. |
-| `link.T`, `sdl-vendored.h` | Generated/linker manifests. Also at the root (generated, but tracked and reviewable). |
+| `sdl-vendored.h` | Generated rename manifest, tracked and reviewable. Symbol visibility is source-level (`RETRO_API`, `VNOVEL_EXPORT`), not a version script. |
 | `tests/` | Headless test suite (`run_tests.sh`, golden snapshots). |
 | `dat/`, `vnovel.rdb` | The game database and its source. |
 | `resources/fonts/` | Embedded fallback fonts and their licences. |
+| `resources/logo.png` | The project logo (README, release bundles). |
 | `tools/` | Python (`make-rdb.py`, `hash-game.py`, `merge-submissions.py`, `validate-submission.py`, `embed_font.py`, `gen_sdl_vendored.py`). |
 | `deploy-system.py` | Recalbox deploy (host + core + system entry + database). |
 | `private/` | Author's working notes (gitignored — not shipped). |

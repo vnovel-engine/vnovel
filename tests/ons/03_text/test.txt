@@ -1,0 +1,17 @@
+*define
+mode_ext
+english
+game
+*start
+bg #000000,0
+repaint
+monocro #FFFFFF
+texton
+>This is a test line.
+br
+>Second line of text.
+textshow
+repaint
+snapshotsave "textplane_01_text"
+dumpstate "textplane_01_text"
+end

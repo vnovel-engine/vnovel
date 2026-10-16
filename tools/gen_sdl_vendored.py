@@ -114,18 +114,30 @@ def symbols_from_objects(build_dir: Path) -> list[str]:
                 continue
             if name.startswith(NAMESPACES) and not EXCLUDE.match(name) and not GENERATED.search(name):
                 syms.add(name)
-    return sorted(s for s in syms if not is_function_like_macro(s))
+    return sorted(syms)
 
 
-def is_function_like_macro(name: str) -> bool:
-    """True if SDL itself defines `name` as a function-like macro.
+def function_like_guard(name: str) -> str | None:
+    """The preprocessor condition under which `name` is a function-like macro.
 
-    SDL_stdinc.h defines SDL_revcpy(dst, src, len) and SDL_CreateThread(fn, data)
-    as macros. Renaming those would be a redefinition of an existing macro, and
-    the call sites (SDL_revcpy(a, b, c)) would then expand to nonsense. The
-    underlying function still exists for the cases SDL falls back to, and it
-    carries the same risk of binding to the host, but a broken build is worse:
-    skip these and let the fallback path use the plain name.
+    Returns the guard expression, or None if there is no such define at all.
+
+    Needed because "is a function-like macro" is not a property of the name but
+    of the platform: SDL_thread.h defines SDL_CreateThread(fn,data) only when
+    SDL_PASSED_BEGINTHREAD_ENDTHREAD is set, which SDL sets for everything EXCEPT
+    mingw; SDL_stdinc.h defines SDL_revcpy(...) only for __GNUC__ && i386. On a
+    target where the guard is false the plain function is what actually exists,
+    and it leaks like any other unrenamed symbol.
+
+    That distinction did not matter while -fvisibility=hidden could hide a leak.
+    On PE it cannot (PE has no visibility attribute; only dllexport governs, and
+    DECLSPEC is neutralised here), so a name that leaks on Windows collides with
+    the engine's own SDL2 — SDL_CreateThread was a hard link error against
+    libSDL2.a.
+
+    Returning the guard rather than a bare bool lets the caller emit the rename
+    under `#if !(guard)`: renamed where the name is a real function, skipped
+    where a #define would swallow the declaration or corrupt call sites.
     """
     pattern = re.compile(r"^\s*#\s*define\s+" + re.escape(name) + r"\s*\(", re.MULTILINE)
     for root in ("deps/sdl/include", "deps/sdl-mixer", "sdl-libretro", "smpeg"):
@@ -137,10 +149,26 @@ def is_function_like_macro(name: str) -> bool:
                 text = header.read_text(errors="ignore")
             except OSError:
                 continue
-            if pattern.search(text):
-                return True
-    return False
-
+            if not pattern.search(text):
+                continue
+            # The guard SDL actually uses, recognised by the macro it keys on.
+            # SDL_CreateThread is the only name safe to treat this way: where
+            # the function-like macro is off (mingw, which does not define
+            # SDL_PASSED_BEGINTHREAD_ENDTHREAD) its declaration sits in the
+            # #else branch with no `#ifndef SDL_CreateThread` around it, so the
+            # rename does not swallow it. Where the macro is active the rename
+            # is skipped, which is what keeps call sites working.
+            #
+            # SDL_revcpy cannot be handled this way: its declaration IS wrapped
+            # in `#ifndef SDL_revcpy`, so on x86_64 — where the macro is off and
+            # the rename would therefore apply — the #define would make that
+            # guard false and the declaration would vanish, leaving call sites
+            # with no prototype. It is skipped unconditionally and handled at
+            # the symbol level instead.
+            if name == "SDL_CreateThread":
+                return "defined(SDL_PASSED_BEGINTHREAD_ENDTHREAD)"
+            return "1"
+    return None
 
 def main() -> int:
     build_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "build/unix")
@@ -149,9 +177,53 @@ def main() -> int:
     if not syms:
         print("error: no vendored symbols found (build first)", file=sys.stderr)
         return 1
-    defines = "\n".join(f"#define {s} {PREFIX}{s}" for s in syms)
+    # DECLSPEC is SDL's export attribute. On GCC it expands to
+    # __attribute__((visibility("default"))), which overrides the build's
+    # -fvisibility=hidden — so every function SDL declares with it is exported
+    # regardless of what the makefile asks for. It is #ifndef-guarded, so
+    # defining it empty here neutralises the forced export and lets the
+    # visibility flag do its job. Our SDL is never a shared library of its own,
+    # so it needs no exported symbols at all.
+    #
+    # This is what hides the ~200 plain SDL_* names on ELF, where
+    # -fvisibility=hidden applies. Renaming them all via the #define list is the
+    # other half of the mechanism, and on PE it is the ONLY half: PE has no
+    # visibility attribute, so an unrenamed symbol is exported and collides with
+    # the engine's own SDL2 whichever way the frontend loads.
+    #
+    # Names that SDL also declares as a function-like macro on some platform are
+    # renamed only where that macro is inactive, since an active one would
+    # swallow the declaration (#ifndef NAME) or mangle call sites. On a platform
+    # where the macro is off — mingw for SDL_CreateThread, x86_64 for SDL_revcpy
+    # — the plain function is what exists and it must be renamed or it collides
+    # with the engine's SDL2 at link time on PE, where visibility cannot hide it.
+    unconditional: list[str] = []
+    guarded: list[tuple[str, str]] = []
+    for s in syms:
+        guard = function_like_guard(s)
+        if guard is None:
+            unconditional.append(s)
+        elif guard != "1":
+            guarded.append((s, guard))
+
+    defines = "\n".join(f"#define {s} {PREFIX}{s}" for s in unconditional)
+    if guarded:
+        blocks = []
+        for s, guard in guarded:
+            blocks.append(
+                f"/* `{s}' is a function-like macro under ({guard}); renamed only\n"
+                f"   where it is not, so the declaration survives and call sites\n"
+                f"   stay intact. */\n"
+                f"#if !({guard})\n#define {s} {PREFIX}{s}\n#endif"
+            )
+        defines += "\n\n" + "\n".join(blocks)
+    defines = (
+        "/* Neutralise SDL's export attribute; see the generator for why. */\n"
+        "#define DECLSPEC\n"
+        "#define SDL_DECLSPEC\n\n" + defines
+    )
     out_path.write_text(HEADER.format(defines=defines))
-    print(f"wrote {out_path} ({len(syms)} symbols)")
+    print(f"wrote {out_path} ({len(syms)} symbols, {len(guarded)} guarded)")
     return 0
 
 

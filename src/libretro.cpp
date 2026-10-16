@@ -1,6 +1,7 @@
 #include <SDL_libretro.h>
 #include <retro_miscellaneous.h>
 #include <file/file_path.h>
+#include <encodings/crc32.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -17,10 +18,10 @@
  * handler still logs the signal and fault address, which is the part that
  * matters most. */
 #if defined(__GLIBC__)
-#  include <execinfo.h>
-#  define ONS_HAVE_BACKTRACE 1
+#include <execinfo.h>
+#define ONS_HAVE_BACKTRACE 1
 #else
-#  define ONS_HAVE_BACKTRACE 0
+#define ONS_HAVE_BACKTRACE 0
 #endif
 /* Vendored fallback font, generated from resources/fonts/ by the Makefile;
  * registered in retro_init for glyphs the game fonts lack. */
@@ -55,90 +56,157 @@ static char ons_crash_log_path[PATH_MAX_LENGTH] = "ons_crash.log";
  * needs no platform knowledge. */
 static void canon_path(char *out, size_t n, const char *in)
 {
-  if (!out || n == 0) return;
-  if (!in) { out[0] = '\0'; return; }
-  size_t j = 0;
-  for (size_t i = 0; in[i] && j + 1 < n; i++) out[j++] = (in[i] == '\\') ? '/' : in[i];
-  while (j > 1 && out[j - 1] == '/') j--;
-  out[j] = '\0';
+   if (!out || n == 0)
+      return;
+   if (!in)
+   {
+      out[0] = '\0';
+      return;
+   }
+   size_t j = 0;
+   for (size_t i = 0; in[i] && j + 1 < n; i++)
+      out[j++] = (in[i] == '\\') ? '/' : in[i];
+   while (j > 1 && out[j - 1] == '/')
+      j--;
+   out[j] = '\0';
 }
 /* Realize a canonical path for the platform. Returns `scratch` (a native copy)
  * on Windows, or `canon` itself where the native form is already canonical. */
 static const char *realize_path(const char *canon, char *scratch, size_t n)
 {
 #ifdef _WIN32
-  if (!scratch || n == 0) return canon;
-  size_t j = 0;
-  for (size_t i = 0; canon[i] && j + 1 < n; i++) scratch[j++] = (canon[i] == '/') ? '\\' : canon[i];
-  scratch[j] = '\0';
-  return scratch;
+   if (!scratch || n == 0)
+      return canon;
+   size_t j = 0;
+   for (size_t i = 0; canon[i] && j + 1 < n; i++)
+      scratch[j++] = (canon[i] == '/') ? '\\' : canon[i];
+   scratch[j] = '\0';
+   return scratch;
 #else
-  (void)scratch; (void)n;
-  return canon;
+   (void)scratch;
+   (void)n;
+   return canon;
 #endif
 }
 
 static void ons_set_crash_log_path(const char *dir)
 {
-  if (dir && dir[0]) {
-    char cdir[PATH_MAX_LENGTH];
-    canon_path(cdir, sizeof(cdir), dir);
-    fill_pathname_join(ons_crash_log_path, cdir, "ons_crash.log", sizeof(ons_crash_log_path));
-  }
+   if (dir && dir[0])
+   {
+      char cdir[PATH_MAX_LENGTH];
+      canon_path(cdir, sizeof(cdir), dir);
+      fill_pathname_join(ons_crash_log_path,
+                         cdir,
+                         "ons_crash.log",
+                         sizeof(ons_crash_log_path));
+   }
+}
+
+/* --- Game identity ---------------------------------------------------------
+ * The id a game is known by, everywhere in this project: the crc32 of the file
+ * the core uses for engine detection (data.xp3 on the KiriKiri path), as eight
+ * upper-case hex digits. That is exactly what tools/hash-game.py writes into a
+ * dat/vnovel.dat record and what vnovel.rdb is indexed on, so the engine's
+ * per-game compat table can be keyed by a value the database and the tools
+ * already agree on — one game, one id, no second fingerprint scheme.
+ *
+ * Returns `out` on success, NULL when the file cannot be read (in which case
+ * the game simply has no table entry and the engine falls back to its
+ * default era). */
+static const char *game_id_for_file(const char *path, char *out, size_t n)
+{
+   if (!path || !path[0] || !out || n < 9)
+      return NULL;
+   FILE *f = fopen(path, "rb");
+   if (!f)
+      return NULL;
+   unsigned char *buf = (unsigned char *)malloc(1 << 20);
+   if (!buf)
+   {
+      fclose(f);
+      return NULL;
+   }
+   uint32_t crc = 0;
+   size_t got;
+   while ((got = fread(buf, 1, 1 << 20, f)) > 0)
+      crc = encoding_crc32(crc, buf, got);
+   free(buf);
+   bool err = ferror(f) != 0;
+   fclose(f);
+   if (err)
+      return NULL;
+   snprintf(out, n, "%08X", crc);
+   return out;
 }
 
 #if !defined(_WIN32)
 static void ons_crash_handler(int sig, siginfo_t *si, void *ctx)
 {
-  (void)ctx;
-  static volatile int reentry = 0;
-  if (reentry) { signal(sig, SIG_DFL); raise(sig); return; }
-  reentry = 1;
+   (void)ctx;
+   static volatile int reentry = 0;
+   if (reentry)
+   {
+      signal(sig, SIG_DFL);
+      raise(sig);
+      return;
+   }
+   reentry = 1;
 #else
 /* signal() on Windows passes only the signal number. */
 static void ons_crash_handler(int sig)
 {
-  static volatile int reentry = 0;
-  if (reentry) { signal(sig, SIG_DFL); raise(sig); return; }
-  reentry = 1;
-  const void *si_addr = NULL;
+   static volatile int reentry = 0;
+   if (reentry)
+   {
+      signal(sig, SIG_DFL);
+      raise(sig);
+      return;
+   }
+   reentry             = 1;
+   const void *si_addr = NULL;
 #endif
 
-  int fd = open(ons_crash_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd >= 0) {
-    char buf[256];
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+   int fd = open(ons_crash_log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+   if (fd >= 0)
+   {
+      char buf[256];
+      struct timespec ts;
+      clock_gettime(CLOCK_REALTIME, &ts);
 #if !defined(_WIN32)
-    const void *crash_addr = si ? si->si_addr : NULL;
+      const void *crash_addr = si ? si->si_addr : NULL;
 #else
-    const void *crash_addr = si_addr;
+      const void *crash_addr = si_addr;
 #endif
-    int n = snprintf(buf, sizeof buf,
-                     "=== signal %d (%s) addr=%p at %lld.%03lds ===\n",
-                     sig,
-                     sig == SIGSEGV ? "SIGSEGV" :
+      int n = snprintf(buf,
+                       sizeof buf,
+                       "=== signal %d (%s) addr=%p at %lld.%03lds ===\n",
+                       sig,
+                       sig == SIGSEGV ? "SIGSEGV" :
 #ifdef SIGBUS
-                     sig == SIGBUS ? "SIGBUS" :
+                       sig == SIGBUS ? "SIGBUS"
+                       :
 #endif
-                     sig == SIGABRT ? "SIGABRT" : "signal",
-                     crash_addr,
-                     (long long)ts.tv_sec, ts.tv_nsec / 1000000);
-    if (n > 0) write(fd, buf, n);
+                       sig == SIGABRT ? "SIGABRT"
+                                      : "signal",
+                       crash_addr,
+                       (long long)ts.tv_sec,
+                       ts.tv_nsec / 1000000);
+      if (n > 0)
+         write(fd, buf, n);
 #if ONS_HAVE_BACKTRACE
-    void *bt[64];
-    int frames = backtrace(bt, 64);
-    backtrace_symbols_fd(bt, frames, fd);
+      void *bt[64];
+      int frames = backtrace(bt, 64);
+      backtrace_symbols_fd(bt, frames, fd);
 #else
-    /* No symbolication on this platform; the address above is still the
+      /* No symbolication on this platform; the address above is still the
      * most useful single fact for a crash report. */
-    const char *note = "(no backtrace: platform lacks backtrace())\n";
-    write(fd, note, strlen(note));
+      const char *note = "(no backtrace: platform lacks backtrace())\n";
+      write(fd, note, strlen(note));
 #endif
-    close(fd);
-  }
-  signal(sig, SIG_DFL);
-  raise(sig);
+      close(fd);
+   }
+   signal(sig, SIG_DFL);
+   raise(sig);
 }
 
 #include "libretro_core_options.h"
@@ -154,56 +222,33 @@ static void ons_crash_handler(int sig)
 // Both engines call exit() on script errors and SDL init failures.
 // We catch these via longjmp. errorAndExit() calls the engine-specific
 // longjmp function which jumps back to the engine thread's setjmp checkpoint.
-static void                        fallback_log(enum retro_log_level level, const char *fmt, ...);
-static retro_log_printf_t          log_cb = fallback_log;
+static void fallback_log(enum retro_log_level level, const char *fmt, ...);
+static retro_log_printf_t log_cb = fallback_log;
 /* The setjmp/longjmp storage lives in the bridge module (static storage, one
  * copy per process). The ENGINE runs both setjmp and longjmp on its own thread
  * — longjmp must not cross threads — so the core only provides the storage and
  * observes the valid flag. See engine_bridge.c. */
 
-/* ---- Snapshot & state dump mechanism ----
- * Engine scripts call snapshotsave("name") / dumpstate("name") which
- * set a pending request. retro_run() checks these in the frame-sync gap
- * (engine thread blocked in DUMMY_UpdateRects) — no race condition.
- */
-#define MAX_REQ_NAME 256
-static char pending_snapshot[MAX_REQ_NAME] = {0};
-static char pending_dumpstate[MAX_REQ_NAME] = {0};
-static const char *test_output_dir = ".";  /* set in retro_load_game */
-
-extern "C" void retro_request_snapshot(const char *name)
-{
-  if (name) {
-    strncpy(pending_snapshot, name, MAX_REQ_NAME - 1);
-    pending_snapshot[MAX_REQ_NAME - 1] = '\0';
-    log_cb(RETRO_LOG_INFO, "Snapshot requested: %s\n", name);
-  }
-}
-
-extern "C" void retro_request_dumpstate(const char *name)
-{
-  if (name) {
-    strncpy(pending_dumpstate, name, MAX_REQ_NAME - 1);
-    pending_dumpstate[MAX_REQ_NAME - 1] = '\0';
-    log_cb(RETRO_LOG_INFO, "State dump requested: %s\n", name);
-  }
-}
-
-//don't use #include <onscripter/ONScripter.h>, use #include <ONScripterLabel.h> instead (stop including wrong header file)  
+//don't use #include <onscripter/ONScripter.h>, use #include <ONScripterLabel.h> instead (stop including wrong header file)
 #include <ONScripterLabel.h>
 
 /* SDL_libretro_input_state_cb is defined in the bridge module (engine_bridge.c)
  * so the engine modules and the glue all resolve it to one object. */
-static retro_input_state_t frontend_input_state_cb;   /* the real frontend callback */
+static retro_input_state_t
+      frontend_input_state_cb; /* the real frontend callback */
 bool SDL_libretro_input_ready = false;
 
 /* Virtual pointer (pad->pointer synthesis) options. Declared before the
  * synthesizer that reads them: enabled by default so pointer-only UIs stay
  * reachable out of the box; the stick follows the usual right-stick
  * convention. */
-enum { POINTER_SOURCE_RIGHT = 0, POINTER_SOURCE_LEFT = 1 };
+enum
+{
+   POINTER_SOURCE_RIGHT = 0,
+   POINTER_SOURCE_LEFT  = 1
+};
 static bool opt_pointer_enable = true;
-static int  opt_pointer_source = POINTER_SOURCE_RIGHT;
+static int opt_pointer_source  = POINTER_SOURCE_RIGHT;
 
 /* Engine-agnostic RetroPad -> pointer synthesis.
  *
@@ -220,57 +265,126 @@ static int  opt_pointer_source = POINTER_SOURCE_RIGHT;
  * Whether the pointer is offered, and which stick drives it, are core options
  * (vnovel_pointer_enable / _pointer_source): the core cannot know the
  * user's pad, so refusing to guess is the point. */
-static int vlx_pos = -1, vly_pos = -1;   /* virtual pointer accumulator, -1 = unset */
+static int vlx_pos = -1,
+           vly_pos = -1; /* virtual pointer accumulator, -1 = unset */
+
+/* The same pointer as an absolute position, to hand to an engine that prefers
+ * one over deltas. Kept alongside the accumulator rather than derived from it:
+ * the two have different origins, and the engine reads whichever its input path
+ * prefers.
+ *
+ * The units are libretro's, which are the raw int16 the frontend returns - an
+ * engine decodes them as (value + 32768) over 0..65535, so the centre here is 0,
+ * not 32768. Getting that wrong railed the cursor at once.
+ *
+ * This is the form a position-only UI needs. A click carries no delta, so an
+ * engine that only integrates deltas has nothing to aim a click with; an
+ * absolute pointer can be walked onto a link or a menu item and then clicked. */
+static int vabs_x = 0, vabs_y = 0;
+
+/* The native menu (src/menu.h). */
+#include "menu.h"
 
 /* Synthesize pointer/mouse reads from the stick chosen by opt_pointer_source.
  * Returns the value for (device,id), or defers to the frontend. Clicking uses
  * the matching stick button (L3 for the left stick, R3 for the right), so the
  * "click" input follows the stick the user picked. */
-static int16_t pointer_synth_input_state(unsigned port, unsigned device,
-                                          unsigned index, unsigned id)
+static int16_t pointer_synth_input_state(unsigned port,
+                                         unsigned device,
+                                         unsigned index,
+                                         unsigned id)
 {
-  if (!opt_pointer_enable || port != 0 ||
-      (device != RETRO_DEVICE_MOUSE && device != RETRO_DEVICE_POINTER))
-    return frontend_input_state_cb(port, device, index, id);
+   if (!opt_pointer_enable || port != 0 ||
+       (device != RETRO_DEVICE_MOUSE && device != RETRO_DEVICE_POINTER))
+      return frontend_input_state_cb(port, device, index, id);
 
-  bool left_stick = (opt_pointer_source == POINTER_SOURCE_LEFT);
-  unsigned analog_index = left_stick ? RETRO_DEVICE_INDEX_ANALOG_LEFT
-                                     : RETRO_DEVICE_INDEX_ANALOG_RIGHT;
-  unsigned stick_btn    = left_stick ? RETRO_DEVICE_ID_JOYPAD_L3
-                                     : RETRO_DEVICE_ID_JOYPAD_R3;
+   bool left_stick       = (opt_pointer_source == POINTER_SOURCE_LEFT);
+   unsigned analog_index = left_stick ? RETRO_DEVICE_INDEX_ANALOG_LEFT
+                                      : RETRO_DEVICE_INDEX_ANALOG_RIGHT;
+   unsigned stick_btn =
+         left_stick ? RETRO_DEVICE_ID_JOYPAD_L3 : RETRO_DEVICE_ID_JOYPAD_R3;
 
-  int16_t sx = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG, analog_index,
-                     RETRO_DEVICE_ID_ANALOG_X);
-  int16_t sy = frontend_input_state_cb(0, RETRO_DEVICE_ANALOG, analog_index,
-                     RETRO_DEVICE_ID_ANALOG_Y);
-  int16_t click = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, stick_btn);
-  int moved = 0;
-  if (sx > 4000 || sx < -4000) { vlx_pos = (vlx_pos < 0 ? 0 : vlx_pos) + sx / 4096; moved = 1; }
-  if (sy > 4000 || sy < -4000) { vly_pos = (vly_pos < 0 ? 0 : vly_pos) + sy / 4096; moved = 1; }
+   int16_t sx = frontend_input_state_cb(
+         0, RETRO_DEVICE_ANALOG, analog_index, RETRO_DEVICE_ID_ANALOG_X);
+   int16_t sy = frontend_input_state_cb(
+         0, RETRO_DEVICE_ANALOG, analog_index, RETRO_DEVICE_ID_ANALOG_Y);
+   int16_t click =
+         frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, stick_btn);
+   int moved = 0;
+   if (sx > 4000 || sx < -4000)
+   {
+      vlx_pos = (vlx_pos < 0 ? 0 : vlx_pos) + sx / 4096;
+      moved   = 1;
+   }
+   if (sy > 4000 || sy < -4000)
+   {
+      vly_pos = (vly_pos < 0 ? 0 : vly_pos) + sy / 4096;
+      moved   = 1;
+   }
+   /* The absolute pointer follows the same stick. The rate is chosen so the
+    * full 0..65535 range is crossed in about as long as the delta accumulator
+    * takes to cross the screen (~1.7 s at full deflection): the deltas move
+    * sx/4096 pixels per poll, and 65536/800 is about 82 of those steps. */
+   /* Full deflection moves the whole range in about two seconds at 60 Hz, which
+    * is the same feel as the delta accumulator's sweep and is fine enough to
+    * land on a menu row. */
+   if (sx > 4000 || sx < -4000)
+   {
+      vabs_x += sx / 1024;
+      if (vabs_x < -32768) vabs_x = -32768;
+      if (vabs_x > 32767) vabs_x = 32767;
+   }
+   if (sy > 4000 || sy < -4000)
+   {
+      vabs_y -= sy / 1024; /* the stick's Y grows up, libretro's grows down */
+      if (vabs_y < -32768) vabs_y = -32768;
+      if (vabs_y > 32767) vabs_y = 32767;
+   }
 
-  if (device == RETRO_DEVICE_MOUSE)
-  {
-    if (id == RETRO_DEVICE_ID_MOUSE_X) {
-      int16_t r = frontend_input_state_cb(port, device, index, id);
-      return r ? r : (moved ? (int16_t)(sx / 4096) : 0);
-    }
-    if (id == RETRO_DEVICE_ID_MOUSE_Y) {
-      int16_t r = frontend_input_state_cb(port, device, index, id);
-      return r ? r : (moved ? (int16_t)(sy / 4096) : 0);
-    }
-    if (id == RETRO_DEVICE_ID_MOUSE_LEFT)
-      return frontend_input_state_cb(port, device, index, id) || click;
-  }
-  /* A frontend with no pointer device reports 0,0 for the absolute pointer,
-   * which the engines would read as the screen centre; treat that as "no
-   * pointer input". */
-  if (device == RETRO_DEVICE_POINTER &&
-      (id == RETRO_DEVICE_ID_POINTER_X || id == RETRO_DEVICE_ID_POINTER_Y) &&
-      frontend_input_state_cb(0, RETRO_DEVICE_POINTER, 0,
-                              RETRO_DEVICE_ID_POINTER_COUNT) == 0)
-    return 0;
+   if (device == RETRO_DEVICE_MOUSE)
+   {
+      if (id == RETRO_DEVICE_ID_MOUSE_X)
+      {
+         int16_t r = frontend_input_state_cb(port, device, index, id);
+         return r ? r : (moved ? (int16_t)(sx / 4096) : 0);
+      }
+      if (id == RETRO_DEVICE_ID_MOUSE_Y)
+      {
+         int16_t r = frontend_input_state_cb(port, device, index, id);
+         return r ? r : (moved ? (int16_t)(sy / 4096) : 0);
+      }
+      if (id == RETRO_DEVICE_ID_MOUSE_LEFT)
+         return frontend_input_state_cb(port, device, index, id) || click;
+   }
+   if (device == RETRO_DEVICE_POINTER &&
+       (id == RETRO_DEVICE_ID_POINTER_X || id == RETRO_DEVICE_ID_POINTER_Y))
+   {
+      /* The frontend's absolute pointer, when it actually carries a position.
+       *
+       * RetroArch with a mouse bound reports POINTER_COUNT > 0 but answers X/Y
+       * with 0,0 - it supplies mouse *deltas* and no absolute position at all.
+       * Handing that on is worse than useless: an engine reads 0,0 as the
+       * centre of the screen (libretro's encoding is raw int16, so 0 IS the
+       * middle), and either parks its cursor there or, guarded against that,
+       * ignores the pointer entirely and integrates deltas from an origin it
+       * cannot know. Measured, that put the cursor a constant (+240,-152) away
+       * from the physical pointer, which is why the game's links could not be
+       * clicked - the cursor could be moved but never aimed.
+       *
+       * So the frontend is believed only when it names a position, and the
+       * synthesized pointer otherwise. The two agree at rest (both are the
+       * centre), so nothing moves until the stick is used. */
+      int16_t fx = frontend_input_state_cb(
+            0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
+      int16_t fy = frontend_input_state_cb(
+            0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
+      if (fx != 0 || fy != 0)
+         return id == RETRO_DEVICE_ID_POINTER_X ? fx : fy;
+      if (id == RETRO_DEVICE_ID_POINTER_X) return (int16_t)vabs_x;
+      if (id == RETRO_DEVICE_ID_POINTER_Y) return (int16_t)vabs_y;
+   }
 
-  return frontend_input_state_cb(port, device, index, id);
+   return frontend_input_state_cb(port, device, index, id);
 }
 
 /* The one callback installed into every input path. Keeps the synthesizer
@@ -278,14 +392,196 @@ static int16_t pointer_synth_input_state(unsigned port, unsigned device,
  * "how the core answers an input read", and pointer_synth_input_state owns the
  * one synthesized source. Future sources (e.g. a keyboard-to-pad shim) belong
  * next to it, composed here, not by growing the synthesizer. */
-static int16_t core_input_state_cb(unsigned port, unsigned device,
-                                   unsigned index, unsigned id)
+/* Whether the menu owned the input for the frame now in progress.
+ *
+ * Latched at the top of retro_run rather than read live here, because the menu
+ * is fed before the engine and a click *outside* it closes it during that call.
+ * Reading `vnovel_menu_should_draw()` live would then be false by the time the
+ * engine polls, and the very click that dismissed the menu would fall through
+ * onto whatever the game has under it. Latching at frame start means the frame
+ * that closes the menu still suppresses, and the next frame no longer does. */
+static int menu_owns_input = 0;
+
+static int16_t
+core_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id)
 {
-  return pointer_synth_input_state(port, device, index, id);
+   /* While the menu owns the input the engine must see nothing, or a click on a
+    * menu row also lands on whatever the game has under it. This is the single
+    * funnel both engines pull from (ONScripter/PONScripter through their event
+    * pump, KiriKiri through krkr_set_input_callbacks), so suppressing here
+    * covers both without either engine knowing about the menu.
+    *
+    * Parking the pointer at rest (0,0 - libretro's centre) rather than
+    * returning the live position also keeps a stray hover from highlighting a
+    * link under the menu. */
+   if (menu_owns_input &&
+       (device == RETRO_DEVICE_MOUSE || device == RETRO_DEVICE_POINTER ||
+        device == RETRO_DEVICE_JOYPAD || device == RETRO_DEVICE_KEYBOARD))
+      return 0;
+
+   return pointer_synth_input_state(port, device, index, id);
 }
+
+/* Composite the native menu onto a destination frame.
+ *
+ * The menu's own VRAM carries its pixels and its alpha plane *separately* (see
+ * _VRAMHDL in vramhdl.h), so the pixel buffer alone cannot say which pixels the
+ * menu owns - untouched VRAM is opaque garbage. The alpha plane is the map:
+ * a non-zero byte marks a menu pixel. This mirrors upstream's own compositor
+ * (NP2kai sdl/scrnmng.c scrnmng_menudraw), which reads `a[x]` the same way.
+ *
+ * `dst` is a copy of the engine's frame (the shadow buffer); the engine's own
+ * framebuffer is never touched, so its redraw/dirty-rect tracking is unaffected.
+ *
+ * Both present paths (ONScripter and KiriKiri) need this, hence one function:
+ * the menu must behave identically in either engine. */
+static void composite_menu(Uint32 *dst, int dst_pitch, int dst_w, int dst_h)
+{
+   int mw = 0, mh = 0, mpitch = 0, apitch = 0;
+   const unsigned char *alpha = NULL;
+   const unsigned char *mpix =
+         vnovel_menu_draw(&mw, &mh, &mpitch, &alpha, &apitch);
+   if (!mpix || !alpha || mw <= 0 || mh <= 0 || mpitch <= 0 || apitch <= 0)
+      return;
+
+   int rows = mh < dst_h ? mh : dst_h;
+   int cols = mw < dst_w ? mw : dst_w;
+   for (int y = 0; y < rows; y++)
+   {
+      const Uint32 *srow = (const Uint32 *)(mpix + (size_t)y * mpitch);
+      const unsigned char *arow = alpha + (size_t)y * apitch;
+      Uint32 *drow = dst + (size_t)y * dst_pitch;
+      for (int x = 0; x < cols; x++)
+      {
+         if (!arow[x])
+            continue; /* not the menu's pixel: leave the game showing */
+         drow[x] = srow[x];
+      }
+   }
+}
+
+/* The live frame size, published by whichever present path ran last. The menu
+ * opens at this size so it matches the running game instead of assuming
+ * 640x480 (the engine may have chosen another internal resolution). */
+static int vnovel_frame_w = 640, vnovel_frame_h = 480;
+static void vnovel_publish_frame_size(int w, int h)
+{
+   if (w > 0 && h > 0 && (w != vnovel_frame_w || h != vnovel_frame_h))
+   {
+      vnovel_frame_w = w;
+      vnovel_frame_h = h;
+      vnovel_menu_set_pref_geometry(w, h);
+   }
+}
+
+/* Feed the menu the pointer, straight from the frontend - not through
+ * core_input_state_cb, which now reports nothing while the menu is open.
+ *
+ * The menu takes the same absolute pointer the engines do, mapped from
+ * libretro's [-32768..32767] onto the frame the menu was opened at. The button
+ * edges matter: NP2kai's convention is 0 = move, 1 = down, 2 = up, and a click
+ * outside the menu closes it on the *up* edge. */
+static void vnovel_menu_poll_input(void)
+{
+   if (!vnovel_menu_should_draw())
+      return;
+
+   int16_t ax = frontend_input_state_cb(
+         0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
+   int16_t ay = frontend_input_state_cb(
+         0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
+
+   static int last_x = -1, last_y = -1;
+   int x = last_x, y = last_y;
+   if (ax != 0 || ay != 0)
+   {
+      x = ((int)ax + 32768) * vnovel_frame_w / 65536;
+      y = ((int)ay + 32768) * vnovel_frame_h / 65536;
+      if (x < 0) x = 0; else if (x >= vnovel_frame_w) x = vnovel_frame_w - 1;
+      if (y < 0) y = 0; else if (y >= vnovel_frame_h) y = vnovel_frame_h - 1;
+      last_x = x;
+      last_y = y;
+   }
+   if (x < 0 || y < 0)
+      return;
+
+   int16_t left = frontend_input_state_cb(
+         0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT);
+   if (!left && SDL_libretro_leftclick_button >= 0)
+      left = frontend_input_state_cb(
+            0, RETRO_DEVICE_JOYPAD, 0, SDL_libretro_leftclick_button);
+
+   /* Edge-detect the button so the menu gets one event per press, not a
+    * continuous stream; the position is sent every frame so hover works. */
+   static int16_t last_left = 0;
+   int btn = 0;
+   if (left && !last_left)
+      btn = 1;
+   else if (!left && last_left)
+      btn = 2;
+   last_left = left;
+
+   vnovel_menu_input(x, y, btn);
+}
+
+/* Feed the menu the keys it navigates with, as the inputmng.h bitmask.
+ *
+ * The menu is also the only UI on a device with no mouse, so keyboard and
+ * gamepad must walk it: directions move the highlight, Enter activates, and a
+ * cancel button is what closes a popup without choosing anything. Read straight
+ * from the frontend, like the pointer, because core_input_state_cb deliberately
+ * reports nothing to the engines while the menu is open. */
+static void vnovel_menu_poll_keys(void)
+{
+   if (!vnovel_menu_should_draw())
+      return;
+
+   /* Keys latched by the keyboard callback since the last frame. The menu treats
+    * a key as a one-shot *command* (menusys_key: KEY_ENTER opens, LEFT/RIGHT
+    * move the highlight), NOT as held state, so they must be delivered as
+    * presses - and a poll cannot see a tap whose press and release both land
+    * between frames, which is exactly what a frontend key tap is. */
+   unsigned latched = vnovel_menu_take_latched_keys();
+   if (latched)
+      vnovel_menu_key_mask(latched);
+
+   /* Directions are booleans here and become the menu's own bitmask inside
+    * menu.cpp: inputmng.h is a menu-internal header, so its encoding does not
+    * leak into the core. */
+   /* Gamepad buttons are edge-detected here for the same reason the keyboard is
+    * latched: the menu wants a press, and a short tap must not be missed. */
+   static int16_t pad_up = 0, pad_down = 0, pad_left = 0, pad_right = 0;
+   static int16_t pad_a = 0, pad_b = 0;
+   int16_t n_up    = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                                            RETRO_DEVICE_ID_JOYPAD_UP);
+   int16_t n_down  = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                                            RETRO_DEVICE_ID_JOYPAD_DOWN);
+   int16_t n_left  = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                                            RETRO_DEVICE_ID_JOYPAD_LEFT);
+   int16_t n_right = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                                            RETRO_DEVICE_ID_JOYPAD_RIGHT);
+   int16_t n_a     = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                                            RETRO_DEVICE_ID_JOYPAD_A);
+   int16_t n_b     = frontend_input_state_cb(0, RETRO_DEVICE_JOYPAD, 0,
+                                            RETRO_DEVICE_ID_JOYPAD_B);
+
+   unsigned mask = 0;
+   if (n_up && !pad_up)       mask |= VNOVEL_MENU_UP;
+   if (n_down && !pad_down)   mask |= VNOVEL_MENU_DOWN;
+   if (n_left && !pad_left)   mask |= VNOVEL_MENU_LEFT;
+   if (n_right && !pad_right) mask |= VNOVEL_MENU_RIGHT;
+   if (n_a && !pad_a)         mask |= VNOVEL_MENU_OK;
+   if (n_b && !pad_b)         mask |= VNOVEL_MENU_CANCEL;
+   pad_up = n_up; pad_down = n_down; pad_left = n_left; pad_right = n_right;
+   pad_a = n_a; pad_b = n_b;
+
+   if (mask)
+      vnovel_menu_key_mask(mask);
+}
+
 /* SDL_libretro_audio_spec is defined in the bridge module: the engine's SDL
  * publishes it, the core reads it. */
-SDL_sem             *SDL_libretro_event_sem  = NULL;
+SDL_sem *SDL_libretro_event_sem = NULL;
 /* Frame sync: when enabled, DUMMY_UpdateRects blocks on this semaphore
    after each screen flush. retro_run() posts it once per frame, giving
    1:1 frame synchronization — every flush() is displayed.
@@ -296,11 +592,11 @@ static SDL_sem *fs_sem = NULL;
 #endif
 
 /* Core options (set via retro_set_environment, read in retro_run) */
-static bool opt_frame_sync = true;
-static bool opt_indicators = true;
-static int  opt_debug_level = 0;
+static bool opt_frame_sync      = true;
+static bool opt_indicators      = true;
+static int opt_debug_level      = 0;
 static bool opt_software_cursor = true;
-static int  opt_text_speed = -1;
+static int opt_text_speed       = -1;
 /* Fast-forward rate for the single game clock (1.0 = off, N = "Nx"). */
 static double opt_ff_scale = 1.0;
 /* Rate currently installed in the clock; cached so retro_run only calls
@@ -311,33 +607,131 @@ static double clock_scale_applied = -1.0;
 /* Key remap state */
 #include "key_remap.h"
 
-static retro_video_refresh_t       video_cb;
-static retro_input_poll_t          input_poll_cb;
-static retro_audio_sample_batch_t  audio_batch_cb;
-static retro_environment_t         environ_cb;
+static retro_video_refresh_t video_cb;
+static retro_input_poll_t input_poll_cb;
+static retro_audio_sample_batch_t audio_batch_cb;
+static retro_environment_t environ_cb;
 /* environ_cb_global is defined in the bridge module so the SDL events glue
  * reads core options without a separate plumbing path. The core sets it in
  * retro_set_environment. */
-static EngineHandle engine = nullptr;
+static EngineHandle engine        = nullptr;
 static const EngineVTable *vtable = nullptr;
 
 /* Frontend audio-ring occupancy (percent full), last reported by the
  * audio-buffer-status callback. -1 until the first report. It is the only
  * feedback the core gets about the ring it feeds; the KiriKiri submit rate is
  * steered by it. */
+#ifdef VNOVEL_KIRIKIRI
 static volatile int krkr_ring_occupancy = -1;
 /* Frontend's forecast that the ring will run dry during the next frame. The
  * submit controller acts on this and on the occupancy above. */
 static volatile int krkr_underrun_likely = 0;
-/* Wrapper called from retro_run to dump engine state to a FILE* */
-static void engine_dump_state(EngineHandle h, FILE *f)
-{
-  if (vtable && vtable->dumpState)
-    vtable->dumpState(h, f);
-}
-static uint32_t                    delta;
+#endif
+static uint32_t delta;
 static char last_archive_path[PATH_MAX_LENGTH];
 static char last_save_path[PATH_MAX_LENGTH];
+
+/* --- The captured text plane, engine-neutral -------------------------------
+ *
+ * Engines publish their text separately from the frame through the bridge
+ * (see VNovelTextPlane in engine_bridge.h); this is where the core keeps the
+ * latest copy. Engine-neutral on purpose: ONScripter draws sentences into a
+ * surface and KiriKiri composites layers, but both arrive here in the same
+ * shape, so the consumer below needs no per-engine branch.
+ *
+ * `plane_dirty` says a new update has arrived since the consumer last looked,
+ * the same handshake the KiriKiri frame uses. The pixels are copied rather than
+ * held by pointer because the engine rewrites its surface in place. */
+static unsigned char *text_plane_pixels = NULL;
+static size_t text_plane_capacity       = 0;
+static int text_plane_w = 0, text_plane_h = 0, text_plane_pitch = 0;
+static int text_plane_changed_x = 0, text_plane_changed_y = 0;
+static int text_plane_changed_w = 0, text_plane_changed_h = 0;
+static int text_plane_origin_x = 0, text_plane_origin_y = 0;
+static int text_plane_restart  = 0;
+static unsigned long long text_plane_serial = 0;
+
+/* Phase 4 of the text-plane plan, in its smallest useful form: present the
+ * captured page instead of the game frame.
+ *
+ * The point of the seam is that text can be shown as a page, restyled or
+ * scrolled, rather than being baked into the picture. This mode is what proves
+ * the capture is real end to end - the frames it presents are the engine's own
+ * text surface, so OCR of them reads the game's dialogue and nothing else.
+ *
+ * Selected by KRKRSDL2_TEXT_PAGE=1 so a normal run is untouched; a user-facing
+ * control (menu entry, hotkey) belongs with the reader that replaces it. */
+static int text_page_mode = 0;
+
+/* Read the captured page. Returns 0 when nothing has been captured. The
+ * buffers belong to the core; the caller must not free them, and they may be
+ * replaced by the next publication, so a caller that keeps them copies. */
+static int text_page_get(const unsigned char **pixels, int *w, int *h, int *pitch)
+{
+   if (!text_plane_pixels || text_plane_w <= 0 || text_plane_h <= 0)
+      return 0;
+   if (pixels) *pixels = text_plane_pixels;
+   if (w)      *w      = text_plane_w;
+   if (h)      *h      = text_plane_h;
+   if (pitch)  *pitch  = text_plane_pitch;
+   return 1;
+}
+static volatile int text_plane_dirty = 0;
+
+
+/* The sink the bridges call. Copied here so the consumer runs on the core's
+ * thread with stable pixels, for the same reason the engine's surfaces are
+ * copied: the engine rewrites its own in place. */
+static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
+{
+   (void)userdata;
+
+   /* pitch keeps its sign: the engine's bitmaps are bottom-up, so a negative
+    * stride is the row direction. Rejecting it discarded every publication. */
+   if (!plane || !plane->pixels || plane->width <= 0 || plane->height <= 0 ||
+       plane->pitch == 0)
+      return;
+
+   /* Bound the geometry before trusting it: the values cross a thread
+    * boundary, and a bad pitch would turn the copy below into a heap
+    * overrun. The same guard the frame path uses. */
+   {
+      const int ap = plane->pitch < 0 ? -plane->pitch : plane->pitch;
+      if (plane->width > 8192 || plane->height > 8192 ||
+          ap < plane->width * 4 || ap > plane->width * 8)
+         return;
+   }
+
+   /* The stride's sign is direction, not size; the byte count is the
+    * magnitude. */
+   /* The stride's sign is direction, not size; the byte count is the
+    * magnitude. */
+   const size_t stride = (size_t)(plane->pitch < 0 ? -plane->pitch
+                                                    : plane->pitch);
+   const size_t needed = stride * (size_t)plane->height;
+   if (needed > text_plane_capacity)
+   {
+      unsigned char *np = (unsigned char *)realloc(text_plane_pixels, needed);
+      if (!np)
+         return; /* keep the previous plane rather than publish a torn one */
+      text_plane_pixels   = np;
+      text_plane_capacity = needed;
+   }
+   memcpy(text_plane_pixels, plane->pixels, needed);
+   text_plane_w         = plane->width;
+   text_plane_h         = plane->height;
+   text_plane_pitch     = plane->pitch;
+   text_plane_changed_x = plane->changed_x;
+   text_plane_changed_y = plane->changed_y;
+   text_plane_changed_w = plane->changed_w;
+   text_plane_changed_h = plane->changed_h;
+   text_plane_origin_x  = plane->origin_x;
+   text_plane_origin_y  = plane->origin_y;
+   text_plane_restart   = plane->restart;
+   text_plane_serial    = plane->serial;
+   text_plane_dirty     = 1;
+
+}
 
 /* Dedicated audio diagnostic log. The launcher pipes the core's stderr into a
  * buffer that is only flushed to es_launch_stderr.log when the game *exits*,
@@ -347,15 +741,17 @@ static char last_save_path[PATH_MAX_LENGTH];
 static FILE *audio_log = NULL;
 static void audio_logf(const char *fmt, ...)
 {
-  if (!audio_log) {
-    audio_log = fopen("/tmp/ons_audio.log", "w");
-    if (!audio_log) return;
-  }
-  va_list ap;
-  va_start(ap, fmt);
-  vfprintf(audio_log, fmt, ap);
-  va_end(ap);
-  fflush(audio_log);   /* live-readable */
+   if (!audio_log)
+   {
+      audio_log = fopen("/tmp/ons_audio.log", "w");
+      if (!audio_log)
+         return;
+   }
+   va_list ap;
+   va_start(ap, fmt);
+   vfprintf(audio_log, fmt, ap);
+   va_end(ap);
+   fflush(audio_log); /* live-readable */
 }
 
 /* Recursive mkdir (all components). Needed because per-game save dirs are
@@ -364,40 +760,42 @@ static void audio_logf(const char *fmt, ...)
  * splitting on '/' alone would pass the whole path to a single-level mkdir. */
 static void mkdir_p(const char *path)
 {
-  char tmp[PATH_MAX_LENGTH];
-  size_t len = strlen(path);
-  if (len == 0 || len >= sizeof(tmp)) return;
-  memcpy(tmp, path, len + 1);
-  for (char *p = tmp + 1; *p; p++) {
-    if (*p == '/' || *p == '\\') {
-      char sep = *p;
-      *p = '\0';
-      ons_mkdir(tmp);
-      *p = sep;
-    }
-  }
-  ons_mkdir(tmp);
+   char tmp[PATH_MAX_LENGTH];
+   size_t len = strlen(path);
+   if (len == 0 || len >= sizeof(tmp))
+      return;
+   memcpy(tmp, path, len + 1);
+   for (char *p = tmp + 1; *p; p++)
+   {
+      if (*p == '/' || *p == '\\')
+      {
+         char sep = *p;
+         *p       = '\0';
+         ons_mkdir(tmp);
+         *p = sep;
+      }
+   }
+   ons_mkdir(tmp);
 }
-
 
 static void show_message(const char *msg)
 {
-  struct retro_message message = { .msg = msg, .frames = 120 };
-  environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
+   struct retro_message message = {.msg = msg, .frames = 120};
+   environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
 }
 
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 {
-  (void)level;
-  va_list va;
-  va_start(va, fmt);
-  vfprintf(stderr, fmt, va);
-  va_end(va);
+   (void)level;
+   va_list va;
+   va_start(va, fmt);
+   vfprintf(stderr, fmt, va);
+   va_end(va);
 }
 
 unsigned retro_api_version(void)
 {
-  return RETRO_API_VERSION;
+   return RETRO_API_VERSION;
 }
 
 /* RetroPad -> semantic action. This is the contract the user sees in
@@ -407,101 +805,218 @@ unsigned retro_api_version(void)
  * RetroArch Controls level, which maps physical buttons to these RetroPad ids;
  * the core always reads the ids the same way. */
 static struct retro_input_descriptor input_descs[] = {
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "Focus Previous" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "Focus Next" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "Focus Previous" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "Focus Next" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "Advance / Confirm" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "Cancel / Back" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Hide Text Window" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Save" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Skip (toggle)" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Auto Mode (toggle)" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "History Back" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "History Forward" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,     "History Back" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "History Forward" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "Pointer Click (Left)" },
-  { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Pointer Click (Right)" },
-  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X,      "Mouse X" },
-  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y,      "Mouse Y" },
-  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT,   "Click" },
-  { 0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT,  "Menu" },
-  { 0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X,   "Touch X" },
-  { 0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y,   "Touch Y" },
-  { 0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED, "Touch" },
-  { 0, 0, 0, 0, NULL },
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP, "Focus Previous"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN, "Focus Next"},
+      {0,
+       RETRO_DEVICE_JOYPAD,
+       0,
+       RETRO_DEVICE_ID_JOYPAD_LEFT,
+       "Focus Previous"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Focus Next"},
+      {0,
+       RETRO_DEVICE_JOYPAD,
+       0,
+       RETRO_DEVICE_ID_JOYPAD_A,
+       "Advance / Confirm"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Cancel / Back"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X, "Hide Text Window"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y, "Save"},
+      {0,
+       RETRO_DEVICE_JOYPAD,
+       0,
+       RETRO_DEVICE_ID_JOYPAD_SELECT,
+       "Skip (toggle)"},
+      {0,
+       RETRO_DEVICE_JOYPAD,
+       0,
+       RETRO_DEVICE_ID_JOYPAD_START,
+       "Auto Mode (toggle)"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L, "History Back"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R, "History Forward"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2, "History Back"},
+      {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2, "History Forward"},
+      {0,
+       RETRO_DEVICE_JOYPAD,
+       0,
+       RETRO_DEVICE_ID_JOYPAD_L3,
+       "Pointer Click (Left)"},
+      {0,
+       RETRO_DEVICE_JOYPAD,
+       0,
+       RETRO_DEVICE_ID_JOYPAD_R3,
+       "Pointer Click (Right)"},
+      {0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X, "Mouse X"},
+      {0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y, "Mouse Y"},
+      {0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT, "Click"},
+      {0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT, "Menu"},
+      {0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X, "Touch X"},
+      {0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y, "Touch Y"},
+      {0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED, "Touch"},
+      {0, 0, 0, 0, NULL},
 };
 
-static bool kiri_input_wired = false;  /* reset clears this so a new engine re-wires */
+#ifdef VNOVEL_KIRIKIRI
+static bool kiri_input_wired =
+      false; /* reset clears this so a new engine re-wires */
 static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t);
+#endif
+
+/* Keys the *core* acts on, as opposed to keys the game should see. Edge-driven
+ * so a tap cannot be missed between frames, which is why this exists rather than
+ * a poll in retro_run.
+ *
+ * Called from whichever keyboard callback the frontend was given: this function
+ * directly for ONScripter/PONScripter, and from krkr_keyboard_cb for the
+ * KiriKiri build, because RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK can only be
+ * set once per session. */
+static bool vnovel_core_keyboard_handle(bool down, unsigned keycode)
+{
+   if (keycode == RETROK_F12)
+   {
+      if (down)
+         vnovel_menu_toggle();
+      return true; /* consumed: never forwarded to the game */
+   }
+
+   /* While the menu is up it owns the keyboard, so navigation keys are latched
+    * here and never reach the game - the same rule the pointer follows.
+    * Latching rather than polling matters: this callback is edge-driven, so a
+    * tap cannot be missed, whereas a per-frame poll can.
+    *
+    * Non-navigation keys still fall through (return false) so they are not
+    * silently swallowed for the game once the menu closes; the engines get no
+    * input at all while it is open, because core_input_state_cb reports nothing.
+    */
+   if (down && vnovel_menu_should_draw())
+   {
+      unsigned mask = 0;
+      switch (keycode)
+      {
+      case RETROK_UP:     mask = VNOVEL_MENU_UP;     break;
+      case RETROK_DOWN:   mask = VNOVEL_MENU_DOWN;   break;
+      case RETROK_LEFT:   mask = VNOVEL_MENU_LEFT;   break;
+      case RETROK_RIGHT:  mask = VNOVEL_MENU_RIGHT;  break;
+      case RETROK_RETURN: mask = VNOVEL_MENU_OK;     break;
+      case RETROK_ESCAPE: mask = VNOVEL_MENU_CANCEL; break;
+      default: break;
+      }
+      if (mask)
+      {
+         vnovel_menu_latch_key(mask);
+         return true;
+      }
+   }
+   return false;
+}
+
+#ifndef VNOVEL_KIRIKIRI
+static void vnovel_core_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
+{
+   vnovel_core_keyboard_handle(down, keycode);
+}
+#endif
 
 void retro_set_environment(retro_environment_t cb)
 {
-  static struct retro_log_callback log;
-  environ_cb = cb;
-  environ_cb_global = cb;
-  /* libretro_script_error_longjmp() and the setjmp storage it uses are both in
+   static struct retro_log_callback log;
+   environ_cb        = cb;
+   environ_cb_global = cb;
+   /* libretro_script_error_longjmp() and the setjmp storage it uses are both in
    * the bridge module now; nothing to register here. */
-  if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
-    log_cb = log.log;
-  environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_descs);
+   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+      log_cb = log.log;
+   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_descs);
 
-  // Real keyboard events (Enter/Space/arrow keys) must reach the engine:
-  // RetroArch's default retropad map does not carry Space.
-  static struct retro_keyboard_callback kb_cb = { krkr_keyboard_cb };
-  environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb_cb);
+   // Real keyboard events (Enter/Space/arrow keys) must reach the engine:
+   // RetroArch's default retropad map does not carry Space.
+#ifdef VNOVEL_KIRIKIRI
+   static struct retro_keyboard_callback kb_cb = {krkr_keyboard_cb};
+   environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb_cb);
+#endif
 
-  // Core options: frame sync, indicators, debug level
-  libretro_set_core_options(environ_cb, &opt_frame_sync, &opt_indicators, &opt_debug_level);
+   /* A core-level keyboard callback for keys the *core* owns, registered in
+    * every configuration.
+    *
+    * The F12 toggle cannot rely on polling the key state in retro_run: that
+    * state is a level sampled once per frame, so a tap whose press and release
+    * both land between two frames is simply never seen. The callback is
+    * edge-driven, so it cannot miss one. It is a separate registration from the
+    * KiriKiri one above because that callback forwards keys to the engine and
+    * this one must not.
+    *
+    * RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK can only be set once per frontend
+    * session, so when the KiriKiri callback is registered it is the one that
+    * arrives and it must dispatch core keys too - see krkr_keyboard_cb. This
+    * registration covers the ONScripter/PONScripter build, where nothing else
+    * claims it. */
+#ifndef VNOVEL_KIRIKIRI
+   {
+      static struct retro_keyboard_callback core_kb_cb = {vnovel_core_keyboard_cb};
+      environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &core_kb_cb);
+   }
+#endif
 
-  // Callback to let RetroArch know we support updating options at runtime
-  struct retro_core_options_update_display_callback update_cb = {
-    .callback = []() -> bool {
-      // Options are re-read via retro_variable at each retro_run
-      return true;
-    }
-  };
-  environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK, &update_cb);
+   // Core options: frame sync, indicators, debug level
+   libretro_set_core_options(
+         environ_cb, &opt_frame_sync, &opt_indicators, &opt_debug_level);
 
-  /* Audio buffer occupancy reporting. The frontend calls this once per frame
+   // Callback to let RetroArch know we support updating options at runtime
+   struct retro_core_options_update_display_callback update_cb = {
+         .callback = []() -> bool
+         {
+            // Options are re-read via retro_variable at each retro_run
+            return true;
+         }};
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK,
+              &update_cb);
+
+   /* Audio buffer occupancy reporting. The frontend calls this once per frame
    * with the audio ring's occupancy (percent full) and raises `underrun_likely`
    * when it expects the ring to run dry during the next frame. This is the only
    * feedback the core gets about the ring it feeds — RetroArch's own statistics
    * printout is #ifdef DEBUG and only at deinit — and the KiriKiri submit
    * controller steers on it (see krkr_abuf_drain). We also log transitions so
    * an underrun shows up in the core stderr log with a timestamp. */
-  static struct retro_audio_buffer_status_callback audio_status_cb = {
-    [] (bool active, unsigned occupancy, bool underrun_likely) {
-      static bool last_underrun = false;
-      static unsigned n = 0;
-      if (active) {
-        krkr_ring_occupancy = (int)occupancy;
-      }
-      krkr_underrun_likely = underrun_likely ? 1 : 0;
-      /* Log only on state change (and the first report), not every frame. */
-      if (n++ == 0 || underrun_likely != last_underrun) {
-        fprintf(stderr, "audio_status: active=%d occupancy=%u%% underrun_likely=%d\n",
-                active ? 1 : 0, occupancy, underrun_likely ? 1 : 0);
-        last_underrun = underrun_likely;
-      }
-    }
-  };
-  environ_cb(RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK, &audio_status_cb);
+#ifdef VNOVEL_KIRIKIRI
+   static struct retro_audio_buffer_status_callback audio_status_cb = {
+         [](bool active, unsigned occupancy, bool underrun_likely)
+         {
+            static bool last_underrun = false;
+            static unsigned n         = 0;
+            if (active)
+            {
+               krkr_ring_occupancy = (int)occupancy;
+            }
+            krkr_underrun_likely = underrun_likely ? 1 : 0;
+            /* Log only on state change (and the first report), not every frame. */
+            if (n++ == 0 || underrun_likely != last_underrun)
+            {
+               fprintf(stderr,
+                       "audio_status: active=%d occupancy=%u%% "
+                       "underrun_likely=%d\n",
+                       active ? 1 : 0,
+                       occupancy,
+                       underrun_likely ? 1 : 0);
+               last_underrun = underrun_likely;
+            }
+         }};
+   environ_cb(RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK,
+              &audio_status_cb);
+#endif /* VNOVEL_KIRIKIRI */
 
-  // Shoulder buttons as mouse clicks, matching the KiriKiri shim and the
-  // RetroPad convention: L = left click (the primary act: confirm/advance),
-  // R = right click (cancel/back, and ONScripter's right-click menu). This was
-  // previously inverted (L emitted the right-click / rmenu).
-  SDL_libretro_leftclick_button  = RETRO_DEVICE_ID_JOYPAD_L;
-  SDL_libretro_rightclick_button = RETRO_DEVICE_ID_JOYPAD_R;
-  // L button no longer sends SDLK_o (one-page mode)
-  SDL_libretro_pad_mapping[RETRO_DEVICE_ID_JOYPAD_L] = ONS_KEY_NONE;
+   // Shoulder buttons as mouse clicks, matching the KiriKiri shim and the
+   // RetroPad convention: L = left click (the primary act: confirm/advance),
+   // R = right click (cancel/back, and ONScripter's right-click menu). This was
+   // previously inverted (L emitted the right-click / rmenu).
+   SDL_libretro_leftclick_button  = RETRO_DEVICE_ID_JOYPAD_L;
+   SDL_libretro_rightclick_button = RETRO_DEVICE_ID_JOYPAD_R;
+   // L button no longer sends SDLK_o (one-page mode)
+   SDL_libretro_pad_mapping[RETRO_DEVICE_ID_JOYPAD_L] = ONS_KEY_NONE;
 }
 
 void retro_set_video_refresh(retro_video_refresh_t cb)
 {
-  video_cb = cb;
+   video_cb = cb;
 }
 
 void retro_set_audio_sample(retro_audio_sample_t cb)
@@ -510,19 +1025,19 @@ void retro_set_audio_sample(retro_audio_sample_t cb)
 
 void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb)
 {
-  audio_batch_cb = cb;
+   audio_batch_cb = cb;
 }
 
 void retro_set_input_poll(retro_input_poll_t cb)
 {
-  input_poll_cb = cb;
+   input_poll_cb = cb;
 }
 
 void retro_set_input_state(retro_input_state_t cb)
 {
-  /* Capture the real frontend callback and route all engine input reads
+   /* Capture the real frontend callback and route all engine input reads
    * through the pad->pointer synthesizer (installed in retro_load_game). */
-  frontend_input_state_cb = cb;
+   frontend_input_state_cb = cb;
 }
 
 /* Deployment-identification stamp. A fixed-size NUL-terminated string that the
@@ -530,7 +1045,7 @@ void retro_set_input_state(retro_input_state_t cb)
  * deployed .so identifies exactly which build is running — no md5 comparison,
  * no guessing. Reported to the frontend and greppable from the binary. */
 #ifndef BUILD_VERSION
-#  define BUILD_VERSION "dev"
+#define BUILD_VERSION "dev"
 #endif
 /* A git abbreviation is not a fixed width (it grows when ambiguous) and
  * "-dirty" adds six more, so the literal could outgrow the buffer. The Makefile
@@ -542,84 +1057,93 @@ static const char VNOVEL_LIBRETRO_VERSION[16] = BUILD_VERSION;
 
 void retro_get_system_info(struct retro_system_info *info)
 {
-  info->need_fullpath = true;
-  info->valid_extensions = "txt|dat|___|ons";
-  info->library_version = VNOVEL_LIBRETRO_VERSION;
-  info->library_name = "vnovel";
-  info->block_extract = false;
+   info->need_fullpath = true;
+   /* Must match supported_extensions in vnovel_libretro.info. xp3 is here
+   * because KiriKiri games are detected from data.xp3 in the loaded file's
+   * own directory, and a frontend filters "Load Content" by this list — with
+   * xp3 missing, selecting data.xp3 as the entry point is refused even though
+   * the .info advertises it. */
+   info->valid_extensions = "txt|dat|___|ons|xp3";
+   info->library_version  = VNOVEL_LIBRETRO_VERSION;
+   info->library_name     = "vnovel";
+   info->block_extract    = false;
 }
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-  // Always report 640x480 — the engine thread hasn't initialized yet when
-  // this is called, so getWidth/getHeight return garbage. The actual
-  // framebuffer is passed via video_cb each frame with correct dimensions.
-  int width = 640;
-  int height = 480;
-  {
-    const char *tw = getenv("ONS_TEST_WIDTH");
-    const char *th = getenv("ONS_TEST_HEIGHT");
-    if (tw) width = atoi(tw);
-    if (th) height = atoi(th);
-  }
-  info->geometry.base_width = width;
-  info->geometry.base_height = height;
-  info->geometry.max_width = width;
-  info->geometry.max_height = height;
-  info->geometry.aspect_ratio = 4.0 / 3.0;
-  info->timing.fps = 60.0;
-  /* Guess only: the engine isn't created yet (retro_get_system_av_info runs
+   // Always report 640x480 — the engine thread hasn't initialized yet when
+   // this is called, so getWidth/getHeight return garbage. The actual
+   // framebuffer is passed via video_cb each frame with correct dimensions.
+   int width  = 640;
+   int height = 480;
+   {
+      const char *tw = getenv("ONS_TEST_WIDTH");
+      const char *th = getenv("ONS_TEST_HEIGHT");
+      if (tw)
+         width = atoi(tw);
+      if (th)
+         height = atoi(th);
+   }
+   info->geometry.base_width   = width;
+   info->geometry.base_height  = height;
+   info->geometry.max_width    = width;
+   info->geometry.max_height   = height;
+   info->geometry.aspect_ratio = 4.0 / 3.0;
+   info->timing.fps            = 60.0;
+   /* Guess only: the engine isn't created yet (retro_get_system_av_info runs
    * before retro_load_game). ONS/PONScripter default to 44100; the KiriKiri
    * path re-emits 48000 via SET_SYSTEM_AV_INFO once its surface is up, and the
    * ONS/PONS path re-emits the real spec->freq in retro_run. So this value is
    * only in effect for the first frame or two. */
-  info->timing.sample_rate = 44100.0;
-  fprintf(stderr, "ons_audio: get_system_av_info: initial sample_rate=44100 (engine not up yet)\n");
-  audio_logf("get_system_av_info: initial sample_rate=44100 (engine not up yet)\n");
+   info->timing.sample_rate = 44100.0;
+   fprintf(stderr,
+           "ons_audio: get_system_av_info: initial sample_rate=44100 (engine "
+           "not up yet)\n");
+   audio_logf(
+         "get_system_av_info: initial sample_rate=44100 (engine not up yet)\n");
 }
 
 static void frame_cb(retro_usec_t usec)
 {
-  delta = usec / 1000;
+   delta = usec / 1000;
 }
-
 
 void retro_init(void)
 {
-  { /* Install crash diagnostics so a core fault leaves a backtrace instead of
+   { /* Install crash diagnostics so a core fault leaves a backtrace instead of
      * only RetroArch's bare "Process exitcode: -11". Resolve the portable log
      * location first: unlike retro_init, retro_load_game has the save
      * directory, and it runs after this per load — but RETRO_ENVIRONMENT_GET_
      * SAVE_DIRECTORY is valid as soon as the environment is set, so ask here
      * and let retro_load_game refresh it if the directory changes. */
-    const char *save_dir = NULL;
-    if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir))
-      ons_set_crash_log_path(save_dir);
+      const char *save_dir = NULL;
+      if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir))
+         ons_set_crash_log_path(save_dir);
 #if !defined(_WIN32)
-    /* sigaction/SA_SIGINFO/SIGBUS are POSIX; Windows has no equivalent
+      /* sigaction/SA_SIGINFO/SIGBUS are POSIX; Windows has no equivalent
      * (SetUnhandledExceptionFilter is a different mechanism, and the address
      * it gives is already reported by the frontend). Skip the install there. */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sa_sigaction = ons_crash_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGBUS, &sa, NULL);
-    sigaction(SIGABRT, &sa, NULL);
+      struct sigaction sa;
+      memset(&sa, 0, sizeof sa);
+      sa.sa_sigaction = ons_crash_handler;
+      sa.sa_flags     = SA_SIGINFO;
+      sigaction(SIGSEGV, &sa, NULL);
+      sigaction(SIGBUS, &sa, NULL);
+      sigaction(SIGABRT, &sa, NULL);
 #else
-    signal(SIGABRT, ons_crash_handler);
-    signal(SIGSEGV, ons_crash_handler);
+      signal(SIGABRT, ons_crash_handler);
+      signal(SIGSEGV, ons_crash_handler);
 #endif
-  }
-  enum retro_pixel_format pixfmt = RETRO_PIXEL_FORMAT_XRGB8888;
-  struct retro_frame_time_callback frametime = {
-    .callback = frame_cb,
-    .reference = 1000000 / 60,
-  };
-  environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixfmt);
-  environ_cb(RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK, &frametime);
+   }
+   enum retro_pixel_format pixfmt             = RETRO_PIXEL_FORMAT_XRGB8888;
+   struct retro_frame_time_callback frametime = {
+         .callback  = frame_cb,
+         .reference = 1000000 / 60,
+   };
+   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixfmt);
+   environ_cb(RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK, &frametime);
 
-  /* The game fonts used by ONScripter have no U+2026, and the bundled
+   /* The game fonts used by ONScripter have no U+2026, and the bundled
    * stb_truetype glyph layer has no fontconfig fallback, so a substituted
    * ellipsis rendered as .notdef. Register the vendored fallback fonts
    * (resources/fonts/, embedded by the Makefile) for any codepoint the game
@@ -629,85 +1153,159 @@ void retro_init(void)
    * CJK / MS PGothic clone (excellent CJK, no Latin-1 accents), FiraSans is a
    * Latin face (no CJK). Mona is primary so Japanese and ellipsis resolve; the
    * Latin font is the secondary, used for accented Latin a game font lacks. */
-  {
-    extern int TTF_SetFallbackFontMem(const unsigned char *data, int size);
-    extern int TTF_AddFallbackFontMem(const unsigned char *data, int size);
-    TTF_SetFallbackFontMem(fallback_font_ttf, fallback_font_ttf_len);
-    TTF_AddFallbackFontMem(extra_fallback_font_ttf, extra_fallback_font_ttf_len);
+   {
+      extern int TTF_SetFallbackFontMem(const unsigned char *data, int size);
+      extern int TTF_AddFallbackFontMem(const unsigned char *data, int size);
+      TTF_SetFallbackFontMem(fallback_font_ttf, fallback_font_ttf_len);
+      TTF_AddFallbackFontMem(extra_fallback_font_ttf,
+                             extra_fallback_font_ttf_len);
 
-    /* Publish the same CJK font to the engine as its last-resort whole-font
+      /* Publish the same CJK font to the engine as its last-resort whole-font
      * fallback (see engine_bridge.h). The arrays are static, so the pointer is
      * valid for the process's life. */
-    ons_fallback_font_data = fallback_font_ttf;
-    ons_fallback_font_len = fallback_font_ttf_len;
-  }
+      vnovel_fallback_font_data = fallback_font_ttf;
+      vnovel_fallback_font_len  = fallback_font_ttf_len;
+   }
+
+   /* Install the text-plane sink (engine_bridge.h). Every engine publishes its
+    * text through the bridge, so this one line makes capture available to all
+    * three; an engine that finds no sink keeps drawing text into its frame as
+    * before (vnovel_text_plane_wanted() is the check it makes).
+    *
+    * Installing it does not by itself change what is displayed: the consumer
+    * that composites or replaces the plane is a separate, later step, so today
+    * the plane is captured and held. */
+   vnovel_text_plane_cb       = vnovel_text_plane_sink;
+
+   /* Phase 4: present the captured page instead of the frame. Off unless
+    * asked for, so a normal run is unchanged. */
+   {
+      const char *tp = getenv("KRKRSDL2_TEXT_PAGE");
+      text_page_mode = (tp && *tp && *tp != '0') ? 1 : 0;
+      if (text_page_mode)
+         fprintf(stderr, "text plane: page mode ON (presenting the captured "
+                         "text instead of the frame)\n");
+   }
+   vnovel_text_plane_userdata = NULL;
+
+   /* The native menu (deps/np2kai-menu). Created here so a frontend action can
+    * open it later; NP2kai's menu needs its font manager up before it can
+    * measure text, which is why this is not lazy.
+    *
+    * The face is the same mona.ttf the engine uses, from the engine data dir,
+    * so the menu matches the game's text rather than the system's. A missing
+    * font is not fatal: fontmng falls back, and the menu still functions. */
+   {
+      const char *dir = getenv("KRKRSDL2_DATA_PATH");
+      char font_path[PATH_MAX_LENGTH];
+      if (dir && *dir)
+         snprintf(font_path, sizeof(font_path), "%s/mona.ttf", dir);
+      else
+         snprintf(font_path, sizeof(font_path), "/usr/share/krkrsdl2/mona.ttf");
+      vnovel_menu_init(font_path);
+
+      /* Smoke test: VNOVEL_MENU_TEST=<id> opens that menu page immediately, so
+       * the port can be exercised without a frontend action wired to it yet.
+       * The ids are NP2kai's (menubase.h); this core has no menus of its own. */
+      if (vnovel_menu_is_open() == 0)
+      {
+         const char *mt = getenv("VNOVEL_MENU_TEST");
+         if (mt && *mt)
+         {
+            (void)mt;
+            if (vnovel_menu_open(640, 480))
+               fprintf(stderr, "menu: smoke test opened the menu bar\n");
+            else
+               fprintf(stderr, "menu: smoke test could not open the menu bar\n");
+         }
+      }
+   }
 }
 
+#ifdef VNOVEL_KIRIKIRI
 // KiriKiri engine C functions (from engine_kirikiri_cabi.cpp)
-extern "C" {
-  typedef void* EngineHandle;
-  EngineHandle krkr_create(void);
-  void krkr_setArchivePath(EngineHandle, const char*);
-  void krkr_setSavePath(EngineHandle, const char*);
-  int krkr_init(EngineHandle);
-  void **krkr_get_surface_ptr(void);
-  int *krkr_get_surface_updated_ptr(void);
-  volatile int *krkr_get_auto_mode_ptr(void);
-  volatile int *krkr_get_engine_stopped_ptr(void);
-  void krkr_get_mouse_pos(int *x, int *y);
-  void krkr_pump_events(void);
-  void krkr_set_input_callbacks(retro_input_state_t state_cb, retro_input_poll_t poll_cb);
-  void krkr_set_fastforward(int f);
-  void krkr_notify_poll(long long ms);
-  void krkr_set_audio_suspended(int suspended);
-  void krkr_set_resolution(int w, int h);
-  void krkr_request_stop(void);
-  int  krkr_finish_stop(void);
-  void krkr_start(void);
-  void krkr_push_key(int sym, int down);
-  int krkr_get_audio(int16_t *out_buf, int max_frames);
-  int krkr_audio_rate(void);
-  int krkr_audio_channels(void);
-  int krkr_audio_written(void);
-  void krkr_shutdown(void);
+extern "C"
+{
+   typedef void *EngineHandle;
+   EngineHandle krkr_create(void);
+   void krkr_setArchivePath(EngineHandle, const char *);
+   void krkr_setSavePath(EngineHandle, const char *);
+   void krkr_set_engine_compat(const char *era);
+   void krkr_set_game_id(const char *id);
+   void krkr_set_debug_flags(const char *spec);
+   void krkr_set_override_dir(const char *dir);
+   int krkr_init(EngineHandle);
+   volatile int *krkr_get_auto_mode_ptr(void);
+   volatile int *krkr_get_engine_stopped_ptr(void);
+   void krkr_get_mouse_pos(int *x, int *y);
+   void krkr_pump_events(void);
+   void krkr_set_input_callbacks(retro_input_state_t state_cb,
+                                 retro_input_poll_t poll_cb);
+   void krkr_set_fastforward(int f);
+   void krkr_notify_poll(long long ms);
+   void krkr_set_audio_suspended(int suspended);
+   void krkr_set_resolution(int w, int h);
+   void krkr_request_stop(void);
+   int krkr_finish_stop(void);
+   void krkr_start(void);
+   void krkr_push_key(int sym, int down);
+   int krkr_get_audio(int16_t *out_buf, int max_frames);
+   int krkr_audio_rate(void);
+   int krkr_audio_channels(void);
+   int krkr_audio_written(void);
+   void krkr_shutdown(void);
+   /* The presentation seam: install the core's callbacks, state the size the
+    * engine should render at, and take each finished frame. The host contract
+    * is the engine's visual/Present.h. */
+   void krkr_install_present_callbacks(void);
+   void krkr_set_present_size(int w, int h);
+   int krkr_take_frame(const unsigned char **pixels, int *w, int *h,
+                       int *pitch, unsigned long long *serial);
 }
+#endif /* VNOVEL_KIRIKIRI */
 
+#ifdef VNOVEL_KIRIKIRI
 /* --- KiriKiri audio buffer ------------------------------------------------
  * Holds the engine's mixed output between retro_run calls. The engine produces
  * in device quanta (1024 frames = 21.33 ms at 48 kHz) while retro_run runs at
  * the video rate, so production and consumption do not line up per call; this
  * buffer absorbs the phase difference. Each call drains it whole into the
  * frontend (see kiri_frame). */
-#define KRKR_ABUF_MAX (48000 / 60 * 8)   /* ~133 ms at 60 fps */
-#define KRKR_QUANTUM (1024)              /* engine device quantum (FAUDIO_1024_QUANTUM) */
+#define KRKR_ABUF_MAX (48000 / 60 * 8) /* ~133 ms at 60 fps */
+#define KRKR_QUANTUM (1024) /* engine device quantum (FAUDIO_1024_QUANTUM) */
 static int16_t krkr_abuf[KRKR_ABUF_MAX * 2];
-static int krkr_abuf_len = 0;            /* frames currently buffered */
-static int krkr_abuf_dropped = 0;        /* frames discarded on overflow */
-static int krkr_abuf_peak = 0;           /* high-water mark of krkr_abuf_len */
+static int krkr_abuf_len     = 0; /* frames currently buffered */
+static int krkr_abuf_dropped = 0; /* frames discarded on overflow */
+static int krkr_abuf_peak    = 0; /* high-water mark of krkr_abuf_len */
 
 /* Move everything the engine currently has into the buffer. When full, the
  * oldest half is dropped: audio is a stream, and a stalled consumer must not
  * make this grow without bound. */
 static void krkr_abuf_fill(void)
 {
-  const int space = KRKR_ABUF_MAX - krkr_abuf_len;
-  if (space <= 0) {
-    /* No room: discard the oldest half to make way (audio is a stream). */
-    int keep = KRKR_ABUF_MAX / 2;
-    memmove(krkr_abuf, krkr_abuf + (krkr_abuf_len - keep) * 2,
-            (size_t)keep * 2 * sizeof(int16_t));
-    krkr_abuf_dropped += krkr_abuf_len - keep;
-    krkr_abuf_len = keep;
-  }
-  int got = krkr_get_audio(krkr_abuf + krkr_abuf_len * 2, KRKR_ABUF_MAX - krkr_abuf_len);
-  if (got > 0) krkr_abuf_len += got;
-  if (krkr_abuf_len > krkr_abuf_peak) krkr_abuf_peak = krkr_abuf_len;
+   const int space = KRKR_ABUF_MAX - krkr_abuf_len;
+   if (space <= 0)
+   {
+      /* No room: discard the oldest half to make way (audio is a stream). */
+      int keep = KRKR_ABUF_MAX / 2;
+      memmove(krkr_abuf,
+              krkr_abuf + (krkr_abuf_len - keep) * 2,
+              (size_t)keep * 2 * sizeof(int16_t));
+      krkr_abuf_dropped += krkr_abuf_len - keep;
+      krkr_abuf_len = keep;
+   }
+   int got = krkr_get_audio(krkr_abuf + krkr_abuf_len * 2,
+                            KRKR_ABUF_MAX - krkr_abuf_len);
+   if (got > 0)
+      krkr_abuf_len += got;
+   if (krkr_abuf_len > krkr_abuf_peak)
+      krkr_abuf_peak = krkr_abuf_len;
 }
 
 /* Pacing state for the KiriKiri submit, shared by the drain and the suspend
  * path so a suspend can re-arm the clock. See krkr_abuf_drain. */
 static long long krkr_drain_last_ms = 0;
-static long long krkr_drain_owed = 0;    /* fractional frames owed */
+static long long krkr_drain_owed    = 0; /* fractional frames owed */
 
 /* Suspend the KiriKiri submit: the frontend's audio consumer is paused (audio
  * suspended across a fullscreen/window transition, or the frontend parked).
@@ -717,12 +1315,15 @@ static long long krkr_drain_owed = 0;    /* fractional frames owed */
  * Returns 0 frames. */
 static int krkr_abuf_drain_suspend(void)
 {
-  int g;
-  do { g = krkr_get_audio(krkr_abuf, KRKR_ABUF_MAX); } while (g == KRKR_ABUF_MAX);
-  krkr_abuf_len = 0;
-  krkr_drain_owed = 0;
-  krkr_drain_last_ms = 0;   /* next enabled drain re-seeds from its own now */
-  return 0;
+   int g;
+   do
+   {
+      g = krkr_get_audio(krkr_abuf, KRKR_ABUF_MAX);
+   } while (g == KRKR_ABUF_MAX);
+   krkr_abuf_len      = 0;
+   krkr_drain_owed    = 0;
+   krkr_drain_last_ms = 0; /* next enabled drain re-seeds from its own now */
+   return 0;
 }
 
 /* Submit audio to the frontend, steered by RetroArch's audio-buffer-status
@@ -750,15 +1351,16 @@ static int krkr_abuf_drain_suspend(void)
  * audio is discarded (the same thing an explicit suspend does). */
 static int krkr_abuf_drain(int rate)
 {
-  long long now = ons_libretro_game_clock_ms();
-  long long dt = krkr_drain_last_ms ? now - krkr_drain_last_ms : 0;
-  krkr_drain_last_ms = now;
-  if (dt < 0 || dt > 250) {              /* first call, or a real pause */
-    if (dt > 250)
-      fprintf(stderr, "krkr_audio: pause gap dt=%lldms -> discard\n", dt);
-    return krkr_abuf_drain_suspend();
-  }
-  /* A gap beyond one frame is the frontend not calling retro_run for a while —
+   long long now      = ons_libretro_game_clock_ms();
+   long long dt       = krkr_drain_last_ms ? now - krkr_drain_last_ms : 0;
+   krkr_drain_last_ms = now;
+   if (dt < 0 || dt > 250)
+   { /* first call, or a real pause */
+      if (dt > 250)
+         fprintf(stderr, "krkr_audio: pause gap dt=%lldms -> discard\n", dt);
+      return krkr_abuf_drain_suspend();
+   }
+   /* A gap beyond one frame is the frontend not calling retro_run for a while —
    * a display reinit (a fullscreen toggle) or a hitch. The debt for that span is
    * forgiven rather than accrued: accruing it makes this call hand the whole gap
    * over as one burst, which overfills the frontend's ring, and under audio_sync
@@ -767,45 +1369,56 @@ static int krkr_abuf_drain(int rate)
    * submits one frame like any other: no burst, and the audio the engine
    * produced meanwhile stays in the buffer and plays out instead of being
    * dropped. */
-  if (dt > 40) {
-    fprintf(stderr, "krkr_audio: gap dt=%lldms occ=%d%% -> forgive, play on\n",
-            dt, krkr_ring_occupancy);
-    /* Credit up to two frames: the frontend drained its ring during the gap, so
+   if (dt > 40)
+   {
+      fprintf(stderr,
+              "krkr_audio: gap dt=%lldms occ=%d%% -> forgive, play on\n",
+              dt,
+              krkr_ring_occupancy);
+      /* Credit up to two frames: the frontend drained its ring during the gap, so
      * it needs a little, but more than its ring holds would burst it. */
-    if (dt > 2000 / 60) dt = 2000 / 60;
-  }
-  krkr_abuf_fill();
-  /* Bound the buffer to ~50 ms (three video frames). That is the latency we
+      if (dt > 2000 / 60)
+         dt = 2000 / 60;
+   }
+   krkr_abuf_fill();
+   /* Bound the buffer to ~50 ms (three video frames). That is the latency we
    * accept: enough to absorb a transition's output and the quantum/frame phase
    * difference, small enough to stay real-time. A producer that runs away
    * cannot grow it beyond this, and the surplus is dropped here rather than
    * handed over as a backlog later — late audio has no value in a visual
    * novel. */
-  {
-    const int hold = rate / 60 * 3;      /* ~50 ms */
-    if (krkr_abuf_len > hold) {
-      int drop = krkr_abuf_len - hold;
-      memmove(krkr_abuf, krkr_abuf + drop * 2,
-              (size_t)hold * 2 * sizeof(int16_t));
-      krkr_abuf_dropped += drop;
-      krkr_abuf_len = hold;
-    }
-  }
-  krkr_drain_owed += dt * (long long)rate;
-  long long want = krkr_drain_owed / 1000;
-  if (want < 0) want = 0;
-  int send = (int)want;
-  if (send > krkr_abuf_len) send = krkr_abuf_len;   /* never pad */
-  if (send > 0 && audio_batch_cb) {
-    krkr_drain_owed -= (long long)send * 1000;
-    if (krkr_drain_owed < 0) krkr_drain_owed = 0;
-    audio_batch_cb(krkr_abuf, (size_t)send);
-    memmove(krkr_abuf, krkr_abuf + send * 2,
-            (size_t)(krkr_abuf_len - send) * 2 * sizeof(int16_t));
-    krkr_abuf_len -= send;
-    return send;
-  }
-  return 0;
+   {
+      const int hold = rate / 60 * 3; /* ~50 ms */
+      if (krkr_abuf_len > hold)
+      {
+         int drop = krkr_abuf_len - hold;
+         memmove(krkr_abuf,
+                 krkr_abuf + drop * 2,
+                 (size_t)hold * 2 * sizeof(int16_t));
+         krkr_abuf_dropped += drop;
+         krkr_abuf_len = hold;
+      }
+   }
+   krkr_drain_owed += dt * (long long)rate;
+   long long want = krkr_drain_owed / 1000;
+   if (want < 0)
+      want = 0;
+   int send = (int)want;
+   if (send > krkr_abuf_len)
+      send = krkr_abuf_len; /* never pad */
+   if (send > 0 && audio_batch_cb)
+   {
+      krkr_drain_owed -= (long long)send * 1000;
+      if (krkr_drain_owed < 0)
+         krkr_drain_owed = 0;
+      audio_batch_cb(krkr_abuf, (size_t)send);
+      memmove(krkr_abuf,
+              krkr_abuf + send * 2,
+              (size_t)(krkr_abuf_len - send) * 2 * sizeof(int16_t));
+      krkr_abuf_len -= send;
+      return send;
+   }
+   return 0;
 }
 
 /* RetroArch keyboard callback -> engine key queue (KiriKiri). Also feeds the
@@ -818,78 +1431,120 @@ static int krkr_abuf_drain(int rate)
  * Without this the options did nothing for KiriKiri games. */
 static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
 {
-  /* Translate a remapped function key to what KAG expects. Keys here are
+   /* Keys the core owns are consumed here and never forwarded. This is the
+    * single keyboard callback the frontend was given in this build (only one
+    * registration is possible per session), so core actions must be dispatched
+    * from it. */
+   if (vnovel_core_keyboard_handle(down, keycode))
+      return;
+
+   /* Input probe. Set KRKR_INPUT_DEBUG=1 to trace the whole path: this is the
+     RetroArch->core entry point, so its absence proves RetroArch never routed
+     a key here (input driver / focus), while its presence with no visible
+     effect points at the engine side. */
+   {
+      static int dbg = -1;
+      if (dbg < 0)
+         dbg = getenv("KRKR_INPUT_DEBUG") ? 1 : 0;
+      if (dbg)
+         fprintf(stderr, "[in] kb_cb down=%d code=%u\n", (int)down, keycode);
+   }
+   /* Translate a remapped function key to what KAG expects. Keys here are
    * ASCII/control codes, where RETROK_* and SDLK_* coincide. */
-  if (vtable == NULL) {
-    for (int r = 0; r < REMAP_COUNT; r++) {
-      if ((int)keycode == remap_keys[r] && remap_keys[r] != kk_engine_keys[r]) {
-        keycode = (unsigned)kk_engine_keys[r];
-        break;
+   if (vtable == NULL)
+   {
+      for (int r = 0; r < REMAP_COUNT; r++)
+      {
+         if ((int)keycode == remap_keys[r] &&
+             remap_keys[r] != kk_engine_keys[r])
+         {
+            keycode = (unsigned)kk_engine_keys[r];
+            break;
+         }
       }
-    }
-  }
-  /* RetroArch's keyboard callback may deliver only the release (up) without a
+   }
+   /* RetroArch's keyboard callback may deliver only the release (up) without a
    * matching press. KAG's scenario drivers advance in onKeyDown, so synthesize
    * the missing keydown immediately before an unmatched keyup. */
-  static unsigned char seen[512];
-  if (keycode < 512 && down)
-    seen[keycode] = 1;
-  if (!down && keycode < 512 && !seen[keycode])
-    krkr_push_key((int)keycode, 1);
-  if (keycode < 512)
-    seen[keycode] = 0;
-  krkr_push_key((int)keycode, down ? 1 : 0);
+   static unsigned char seen[512];
+   if (keycode < 512 && down)
+      seen[keycode] = 1;
+   if (!down && keycode < 512 && !seen[keycode])
+      krkr_push_key((int)keycode, 1);
+   if (keycode < 512)
+      seen[keycode] = 0;
+   krkr_push_key((int)keycode, down ? 1 : 0);
 }
+#endif /* VNOVEL_KIRIKIRI */
 
-bool retro_load_game(const struct retro_game_info *game){
-  if (!game)
-    return false;
+bool retro_load_game(const struct retro_game_info *game)
+{
+   if (!game)
+      return false;
 
-  /* Install the composed dispatcher for every input read by either engine
+   /* Install the composed dispatcher for every input read by either engine
    * (ONScripter drives it through the SDL1.2 overlay; KiriKiri through
    * krkr_set_input_callbacks). Installed here because the pointer synthesis it
    * owns needs the game's surface size to clamp the virtual pointer. */
-  SDL_libretro_input_state_cb = core_input_state_cb;
+   SDL_libretro_input_state_cb = core_input_state_cb;
 
-  char archive_path[PATH_MAX_LENGTH];
-  fill_pathname_basedir(archive_path, game->path, sizeof(archive_path));
-  /* From here on archive_path and game_save_dir are canonical ('/' separators,
+   char archive_path[PATH_MAX_LENGTH];
+   fill_pathname_basedir(archive_path, game->path, sizeof(archive_path));
+   /* From here on archive_path and game_save_dir are canonical ('/' separators,
    * no trailing slash) and every intermediate use assumes that one form. */
-  {
-    char canon[PATH_MAX_LENGTH];
-    canon_path(canon, sizeof(canon), archive_path);
-    snprintf(archive_path, sizeof(archive_path), "%s/", canon);
-  }
-  // Get save directory early (needed for KiriKiri path)
-  const char *save_dir = NULL;
-  environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir);
-  /* Follow the save directory the frontend actually gave us for this load. */
-  ons_set_crash_log_path(save_dir);
+   {
+      char canon[PATH_MAX_LENGTH];
+      canon_path(canon, sizeof(canon), archive_path);
+      snprintf(archive_path, sizeof(archive_path), "%s/", canon);
+   }
+   // Get save directory early (needed for KiriKiri path)
+   const char *save_dir = NULL;
+   environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir);
+   /* Follow the save directory the frontend actually gave us for this load. */
+   ons_set_crash_log_path(save_dir);
 
-  /* Per-game save isolation. RetroArch/ES give us a *per-system* directory
+   /* Per-game save isolation. RetroArch/ES give us a *per-system* directory
    * (savefile_directory = /recalbox/share/saves/vnovel), which is shared by
    * every game in that system. Without a per-game subdir, Tsukihime and Le
    * sanglot des cigales would overwrite each other's save1.dat/gloval.sav.
    * Derive a stable name from the game folder (the parent dir of the ROM)
    * and nest under it. */
-  char game_save_dir[PATH_MAX_LENGTH];
-  {
-    /* archive_path is canonical and ends in '/': drop that and take the last
+   char game_save_dir[PATH_MAX_LENGTH];
+   {
+      /* archive_path is canonical and ends in '/': drop that and take the last
      * component — the game folder name. */
-    char trimmed[PATH_MAX_LENGTH];
-    strncpy(trimmed, archive_path, sizeof(trimmed) - 1);
-    trimmed[sizeof(trimmed) - 1] = '\0';
-    size_t tl = strlen(trimmed);
-    while (tl > 0 && trimmed[tl - 1] == '/') trimmed[--tl] = '\0';
-    const char *base = strrchr(trimmed, '/');
-    base = base ? base + 1 : trimmed;
-    char root[PATH_MAX_LENGTH];
-    canon_path(root, sizeof(root), (save_dir && save_dir[0]) ? save_dir : archive_path);
-    fill_pathname_join(game_save_dir, root, base, sizeof(game_save_dir));
-    canon_path(game_save_dir, sizeof(game_save_dir), game_save_dir);
-  }
+      char trimmed[PATH_MAX_LENGTH];
+      strncpy(trimmed, archive_path, sizeof(trimmed) - 1);
+      trimmed[sizeof(trimmed) - 1] = '\0';
+      size_t tl                    = strlen(trimmed);
+      while (tl > 0 && trimmed[tl - 1] == '/')
+         trimmed[--tl] = '\0';
+      const char *base = strrchr(trimmed, '/');
+      base             = base ? base + 1 : trimmed;
+      char root[PATH_MAX_LENGTH];
+      /* Never fall back to the game directory. Two engines sharing one save
+       * directory corrupt each other's state: a half-written datasc.ksd is what
+       * makes loadSystemVariables fail with 'syntax error, unexpected const',
+       * and the native Fate.exe under Wine reads the very same file. The
+       * frontend normally supplies a save directory; when it does not (a bare
+       * retroarch invocation, a headless test), use a core-owned location under
+       * the user's home so engine state still lands somewhere private and
+       * per-game rather than beside the game data. */
+      if (save_dir && save_dir[0])
+         canon_path(root, sizeof(root), save_dir);
+      else
+      {
+         const char *home = getenv("HOME");
+         snprintf(root,
+                  sizeof(root),
+                  "%s/.local/share/vnovel/saves",
+                  (home && home[0]) ? home : "/tmp");
+      }
+      fill_pathname_join(game_save_dir, root, base, sizeof(game_save_dir));
+      canon_path(game_save_dir, sizeof(game_save_dir), game_save_dir);
+   }
 
-  /* Asset override directory: loose files here win over the game's own files
+   /* Asset override directory: loose files here win over the game's own files
    * and .nsa/.sar archives (see engine_bridge.h). The engine's archive search
    * tries loose files before archive contents and stops at the first hit, so
    * prepending this directory is enough.
@@ -901,152 +1556,247 @@ bool retro_load_game(const struct retro_game_info *game){
    * ROM's game directory and ends in '/', so this is that directory plus the
    * trailing component. Static storage: the engine holds the pointer for the
    * process's life. */
-  {
-    static char override_dir[PATH_MAX_LENGTH];
-    snprintf(override_dir, sizeof(override_dir), "%s.overrides/", archive_path);
-    ons_override_dir = override_dir;
-  }
+   {
+      static char override_dir[PATH_MAX_LENGTH];
+      snprintf(
+            override_dir, sizeof(override_dir), "%s.overrides/", archive_path);
+      vnovel_override_dir = override_dir;
+   }
 
-  // Internal rendering resolution. "native" uses the host display size;
-  // otherwise tell the engine the frontend expects a fixed resolution, so it
-  // sizes itself (and its window/layer) from that. Read once here so both
-  // engines see the same value: ONS via vtable->setResolution below, KiriKiri
-  // via krkr_set_resolution in its branch.
-  int forced_res_w = 0, forced_res_h = 0;
-  {
-    struct retro_variable resvar = {0};
-    resvar.key = "vnovel_internal_resolution";
-    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
-        strcmp(resvar.value, "native") != 0) {
-      unsigned a = 0, b = 0;
-      if (sscanf(resvar.value, "%ux%u", &a, &b) == 2) { forced_res_w = (int)a; forced_res_h = (int)b; }
-    }
-  }
+   // Internal rendering resolution. "native" uses the host display size;
+   // otherwise tell the engine the frontend expects a fixed resolution, so it
+   // sizes itself (and its window/layer) from that. Read once here so both
+   // engines see the same value: ONS via vtable->setResolution below, KiriKiri
+   // via krkr_set_resolution in its branch.
+   int forced_res_w = 0, forced_res_h = 0;
+   {
+      struct retro_variable resvar = {0};
+      resvar.key                   = "vnovel_internal_resolution";
+      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
+          strcmp(resvar.value, "native") != 0)
+      {
+         unsigned a = 0, b = 0;
+         if (sscanf(resvar.value, "%ux%u", &a, &b) == 2)
+         {
+            forced_res_w = (int)a;
+            forced_res_h = (int)b;
+         }
+      }
+   }
 
-  // Detect engine: KiriKiri for .xp3, PONScripter for pscript.dat, ONScripter-EN otherwise
-  char xp3_check[PATH_MAX_LENGTH];
-  fill_pathname_join(xp3_check, archive_path, "data.xp3", sizeof(xp3_check));
-  FILE *xp3_fp = fopen(xp3_check, "rb");
-  if (xp3_fp) {
-    fclose(xp3_fp);
-    engine = krkr_create();
-    log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (data.xp3)\n");
-    audio_logf("ENGINE=KiriKiri (data.xp3) save=%s\n", game_save_dir);
-    {
-      char na[PATH_MAX_LENGTH], ns[PATH_MAX_LENGTH];
-      krkr_setArchivePath(engine, realize_path(archive_path, na, sizeof(na)));
-      mkdir_p(game_save_dir);
-      krkr_setSavePath(engine, realize_path(game_save_dir, ns, sizeof(ns)));
-    }
-    strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
-    /* Tell the engine the frontend's expected resolution so KiriKiri sizes
+   // Detect engine: KiriKiri for .xp3, PONScripter for pscript.dat, ONScripter-EN otherwise
+#ifdef VNOVEL_KIRIKIRI
+   char xp3_check[PATH_MAX_LENGTH];
+   fill_pathname_join(xp3_check, archive_path, "data.xp3", sizeof(xp3_check));
+   FILE *xp3_fp = fopen(xp3_check, "rb");
+   if (xp3_fp)
+   {
+      fclose(xp3_fp);
+      engine = krkr_create();
+      log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (data.xp3)\n");
+      audio_logf("ENGINE=KiriKiri (data.xp3) save=%s\n", game_save_dir);
+      {
+         char na[PATH_MAX_LENGTH], ns[PATH_MAX_LENGTH];
+         krkr_setArchivePath(engine,
+                             realize_path(archive_path, na, sizeof(na)));
+         mkdir_p(game_save_dir);
+         krkr_setSavePath(engine, realize_path(game_save_dir, ns, sizeof(ns)));
+      }
+      strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
+      /* Engine era, from the core option. 'auto' (the default) passes nothing,
+       * so the engine resolves the era itself: the per-game table by this
+       * game's identity, then its own default. An explicit value here is the
+       * per-run override and outranks the table. Read here so it is in place
+       * before krkr_init resolves the engine's options. */
+      {
+         struct retro_variable compvar = {0};
+         compvar.key                   = "vnovel_kirikiri_compat";
+         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &compvar) && compvar.value)
+            krkr_set_engine_compat(compvar.value);
+      }
+      /* Diagnostic probes, on the same channel and for the same reason: the
+       * engine reads its debug word from the environment at start-up, and a
+       * frontend cannot set the environment. Read here so it is in place before
+       * krkr_init. The engine owns the name table; this passes the string
+       * through untouched. */
+      {
+         struct retro_variable dbgvar = {0};
+         dbgvar.key                   = "vnovel_kirikiri_debug";
+         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
+            krkr_set_debug_flags(dbgvar.value);
+      }
+      /* The host resource override directory, computed above as a softpatch
+       * sibling of the game (<gamedir>.overrides/). It was assigned to
+       * vnovel_override_dir and read by nothing until now: the KiriKiri path had
+       * no override channel, so a user patch to a script inside data.xp3 could
+       * not win. Same channel as the two above, for the same reason. */
+      krkr_set_override_dir(vnovel_override_dir);
+      /* The game's identity, so the engine can key its per-game compat table.
+       * Computed here because retro_load_game is where the content path is known
+       * and where the engine's compat option is read; exported on the same
+       * channel and for the same reason (the mask reads the environment during
+       * engine start-up, on the engine's own thread).
+       *
+       * The frontend's extended game information
+       * (RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, legal only here) was the first
+       * candidate, but its retro_game_info_ext carries no hash: only paths, a
+       * frontend-specific `name`, `meta`, a size and the in-archive flags. None
+       * of those identifies a release. So the id is the crc32 of data.xp3 — the
+       * file engine detection already opened — which is exactly what
+       * tools/hash-game.py fingerprints and vnovel.rdb is indexed on; the whole
+       * file is hashed, matching that tool. When it cannot be taken the engine
+       * has no table entry and falls through to the documented default era;
+       * that is logged rather than guessed at. */
+      {
+         char gid[16];
+         if (game_id_for_file(xp3_check, gid, sizeof(gid)))
+         {
+            krkr_set_game_id(gid);
+            log_cb(RETRO_LOG_INFO, "Game id: %s\n", gid);
+         }
+         else
+         {
+            krkr_set_game_id("");
+            log_cb(RETRO_LOG_INFO,
+                   "Game id: unavailable (data.xp3 unreadable); "
+                   "compat falls back to the default era\n");
+         }
+      }
+      /* Tell the engine the frontend's expected resolution so KiriKiri sizes
      * itself (System.screenWidth/screenHeight) from it. The request is stashed
      * by the cabi and applied when krkr_init resolves the engine's setter, so
      * the engine sees it before it builds its main window. 0,0 is a no-op: the
      * host display size applies. The engine's SDL surface is not forced; the
      * core scales the finished frame. */
-    if (forced_res_w > 0 && forced_res_h > 0) {
-      krkr_set_resolution(forced_res_w, forced_res_h);
-      log_cb(RETRO_LOG_INFO, "Internal resolution: forced %dx%d\n", forced_res_w, forced_res_h);
-    } else {
-      krkr_set_resolution(0, 0);
-      log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
-    }
-    krkr_init(engine);
-    strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
-    return true;
-  }
-  // extern C declarations are at file scope above retro_load_game
-  // Check for PONScripter
-  char pscript_check[PATH_MAX_LENGTH];
-  fill_pathname_join(pscript_check, archive_path, "pscript.dat", sizeof(pscript_check));
-  FILE *pscript_fp = fopen(pscript_check, "rb");
-  if (pscript_fp) {
-    fclose(pscript_fp);
-    vtable = &pons_engine_vtable; engine = vtable->create();
-    log_cb(RETRO_LOG_INFO, "Using PONScripter engine (pscript.dat)\n");
-    audio_logf("ENGINE=PONScripter (pscript.dat) save=%s\n", game_save_dir);
-  } else {
-    vtable = &ons_engine_vtable; engine = vtable->create();
-    log_cb(RETRO_LOG_INFO, "Using ONScripter-EN engine (nscript.dat)\n");
-    audio_logf("ENGINE=ONScripter-EN (nscript.dat) save=%s\n", game_save_dir);
-  }
-  {
-    char na[PATH_MAX_LENGTH];
-    vtable->setArchivePath(engine, realize_path(archive_path, na, sizeof(na)));
-  }
-  /* Remember the last archive that was run, so later comparisons (a restart
+      if (forced_res_w > 0 && forced_res_h > 0)
+      {
+         krkr_set_resolution(forced_res_w, forced_res_h);
+         log_cb(RETRO_LOG_INFO,
+                "Internal resolution: forced %dx%d\n",
+                forced_res_w,
+                forced_res_h);
+      }
+      else
+      {
+         krkr_set_resolution(0, 0);
+         log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
+      }
+      krkr_init(engine);
+      strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
+      return true;
+   }
+#endif /* VNOVEL_KIRIKIRI */
+   // extern C declarations are at file scope above retro_load_game
+   // Check for PONScripter
+   char pscript_check[PATH_MAX_LENGTH];
+   fill_pathname_join(
+         pscript_check, archive_path, "pscript.dat", sizeof(pscript_check));
+   FILE *pscript_fp = fopen(pscript_check, "rb");
+   if (pscript_fp)
+   {
+      fclose(pscript_fp);
+      vtable = &pons_engine_vtable;
+      engine = vtable->create();
+      log_cb(RETRO_LOG_INFO, "Using PONScripter engine (pscript.dat)\n");
+      audio_logf("ENGINE=PONScripter (pscript.dat) save=%s\n", game_save_dir);
+   }
+   else
+   {
+      vtable = &ons_engine_vtable;
+      engine = vtable->create();
+      log_cb(RETRO_LOG_INFO, "Using ONScripter-EN engine (nscript.dat)\n");
+      audio_logf("ENGINE=ONScripter-EN (nscript.dat) save=%s\n", game_save_dir);
+   }
+   {
+      char na[PATH_MAX_LENGTH];
+      vtable->setArchivePath(engine,
+                             realize_path(archive_path, na, sizeof(na)));
+   }
+   /* Remember the last archive that was run, so later comparisons (a restart
    * vs. a genuine content change) have something to compare against:
    * retro_reset() recreates the engine and re-applies last_archive_path.
    * (The KiriKiri branch above sets it too, but returns early.) */
-  strncpy(last_archive_path, archive_path, sizeof(last_archive_path) - 1);
-  last_archive_path[sizeof(last_archive_path) - 1] = '\0';
+   strncpy(last_archive_path, archive_path, sizeof(last_archive_path) - 1);
+   last_archive_path[sizeof(last_archive_path) - 1] = '\0';
 
-  // Per-game save directory (see above). Fall back to the game dir if
-  // RetroArch gave us no save directory at all.
-  {
-    const char *sp = (save_dir && save_dir[0]) ? game_save_dir : archive_path;
-    char ns[PATH_MAX_LENGTH];
-    mkdir_p(sp);
-    vtable->setSavePath(engine, realize_path(sp, ns, sizeof(ns)));
-    strncpy(last_save_path, sp, sizeof(last_save_path));
-    test_output_dir = strdup(sp);
-  }
+   // Per-game save directory (see above). Fall back to the game dir if
+   // RetroArch gave us no save directory at all.
+   {
+      const char *sp = (save_dir && save_dir[0]) ? game_save_dir : archive_path;
+      char ns[PATH_MAX_LENGTH];
+      mkdir_p(sp);
+      vtable->setSavePath(engine, realize_path(sp, ns, sizeof(ns)));
+      strncpy(last_save_path, sp, sizeof(last_save_path));
+   }
 
-  // Auto-detect encryption key from .exe in game directory.
-  // Only needed for encrypted scripts (nscript.___, mode 3).
-  // nscript.dat (mode 1) uses simple XOR and doesn't need a key table.
-  char enc_check[PATH_MAX_LENGTH];
-  fill_pathname_join(enc_check, archive_path, "nscript.___", sizeof(enc_check));
-  FILE *enc_fp = fopen(enc_check, "rb");
-  if (enc_fp) {
-    fclose(enc_fp); // nscript.___ exists — need key table
-    const char* exe_names[] = {
-      "nscr.exe", "Tsukihime.exe", "onscripter.exe",
-      "ひぐらしのなく頃に解.exe",  // Higurashi Kai
-      "game.exe",  // generic fallback (renamed from Japanese)
-      NULL
-    };
-    for (int i = 0; exe_names[i]; i++) {
-      char test_path[PATH_MAX_LENGTH];
-      fill_pathname_join(test_path, archive_path, exe_names[i], sizeof(test_path));
-      FILE* fp = fopen(test_path, "rb");
-      if (fp) {
-        fclose(fp);
-        vtable->setKeyEXE(engine, test_path);
-        log_cb(RETRO_LOG_INFO, "Using key from: %s\n", test_path);
-        break;
+   // Auto-detect encryption key from .exe in game directory.
+   // Only needed for encrypted scripts (nscript.___, mode 3).
+   // nscript.dat (mode 1) uses simple XOR and doesn't need a key table.
+   char enc_check[PATH_MAX_LENGTH];
+   fill_pathname_join(
+         enc_check, archive_path, "nscript.___", sizeof(enc_check));
+   FILE *enc_fp = fopen(enc_check, "rb");
+   if (enc_fp)
+   {
+      fclose(enc_fp); // nscript.___ exists — need key table
+      const char *exe_names[] = {
+            "nscr.exe",
+            "Tsukihime.exe",
+            "onscripter.exe",
+            "ひぐらしのなく頃に解.exe", // Higurashi Kai
+            "game.exe", // generic fallback (renamed from Japanese)
+            NULL};
+      for (int i = 0; exe_names[i]; i++)
+      {
+         char test_path[PATH_MAX_LENGTH];
+         fill_pathname_join(
+               test_path, archive_path, exe_names[i], sizeof(test_path));
+         FILE *fp = fopen(test_path, "rb");
+         if (fp)
+         {
+            fclose(fp);
+            vtable->setKeyEXE(engine, test_path);
+            log_cb(RETRO_LOG_INFO, "Using key from: %s\n", test_path);
+            break;
+         }
       }
-    }
-  }
+   }
 
-  SDL_libretro_event_sem = SDL_CreateSemaphore(0);
+   SDL_libretro_event_sem = SDL_CreateSemaphore(0);
 #ifdef LIBRETRO_FRAME_SYNC
-  fs_sem = SDL_CreateSemaphore(0);
-  SDL_libretro_wait_sem = NULL; // disabled during init
+   fs_sem                = SDL_CreateSemaphore(0);
+   SDL_libretro_wait_sem = NULL; // disabled during init
 #endif
 
-  // Read debug level option before starting engine
-  struct retro_variable dbgvar = {0};
-  dbgvar.key = "vnovel_debug_level";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
-    opt_debug_level = atoi(dbgvar.value);
-  vtable->setDebugLevel(engine, opt_debug_level);
-  log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
+   // Read debug level option before starting engine
+   struct retro_variable dbgvar = {0};
+   dbgvar.key                   = "vnovel_debug_level";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
+      opt_debug_level = atoi(dbgvar.value);
+   vtable->setDebugLevel(engine, opt_debug_level);
+   log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
 
-  // Internal rendering resolution for the ONS/PONS engines (parsed above).
-  if (vtable->setResolution) {
-    if (forced_res_w > 0 && forced_res_h > 0) {
-      vtable->setResolution(engine, forced_res_w, forced_res_h);
-      log_cb(RETRO_LOG_INFO, "Internal resolution: forced %dx%d\n", forced_res_w, forced_res_h);
-    } else {
-      log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
-    }
-  }
+   // Internal rendering resolution for the ONS/PONS engines (parsed above).
+   if (vtable->setResolution)
+   {
+      if (forced_res_w > 0 && forced_res_h > 0)
+      {
+         vtable->setResolution(engine, forced_res_w, forced_res_h);
+         log_cb(RETRO_LOG_INFO,
+                "Internal resolution: forced %dx%d\n",
+                forced_res_w,
+                forced_res_h);
+      }
+      else
+      {
+         log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
+      }
+   }
 
-  if (vtable->startThread) vtable->startThread(engine);
+   if (vtable->startThread)
+      vtable->startThread(engine);
 
-  return true;
+   return true;
 }
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
@@ -1063,17 +1813,24 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
  * SDL, so they cannot be done from here. */
 static void stop_engine_thread(void)
 {
-  if (!vtable || !engine) return;
-  if (!vtable->isRunning || !vtable->isRunning(engine)) {
-    if (vtable->joinThread) vtable->joinThread(engine);
-    return;
-  }
-  if (vtable->requestStop) vtable->requestStop(engine);
-  if (vtable->joinThread) vtable->joinThread(engine);
-  if (vtable->isRunning && vtable->isRunning(engine)) {
-    /* Last resort: the engine ignored SDL_QUIT (e.g. stuck in a script). */
-    if (vtable->killThread) vtable->killThread(engine);
-  }
+   if (!vtable || !engine)
+      return;
+   if (!vtable->isRunning || !vtable->isRunning(engine))
+   {
+      if (vtable->joinThread)
+         vtable->joinThread(engine);
+      return;
+   }
+   if (vtable->requestStop)
+      vtable->requestStop(engine);
+   if (vtable->joinThread)
+      vtable->joinThread(engine);
+   if (vtable->isRunning && vtable->isRunning(engine))
+   {
+      /* Last resort: the engine ignored SDL_QUIT (e.g. stuck in a script). */
+      if (vtable->killThread)
+         vtable->killThread(engine);
+   }
 }
 
 void retro_deinit(void)
@@ -1082,50 +1839,60 @@ void retro_deinit(void)
 
 void retro_reset(void)
 {
-  /* First: unpause. A reset must reach the engine even if the frontend paused
+   /* First: unpause. A reset must reach the engine even if the frontend paused
    * us; otherwise the engine thread sits in SDL_Delay's pause gate and never
    * returns to its event loop to acknowledge the reset (deadlock). in_reset
    * additionally suspends the gate for the duration, because the frontend stops
    * calling retro_run() during the reset so the heartbeat goes stale. */
-  SDL_libretro_paused = false;
-  SDL_libretro_in_reset = true;
-  SDL_libretro_frontend_hb = 0;   /* re-armed by the next retro_run */
-  ons_libretro_clock_reset();     /* drop any in-flight FF epoch */
+   SDL_libretro_paused      = false;
+   SDL_libretro_in_reset    = true;
+   SDL_libretro_frontend_hb = 0; /* re-armed by the next retro_run */
+   ons_libretro_clock_reset();   /* drop any in-flight FF epoch */
 
-  /* KiriKiri runs with vtable == NULL and its engine thread lives in the cabi.
+   /* KiriKiri runs with vtable == NULL and its engine thread lives in the cabi.
    * Reset is a two-part, engine-owned handshake: request that the engine return
    * to initial conditions, then start it again. Both parts are driven here, in
    * order, with a bounded wait for the engine to acknowledge the stop — the
    * core never tears engine state down itself and never pokes engine flags. */
-  if (!vtable) {
-    krkr_request_stop();
-    krkr_finish_stop();          /* joins + tears down once the engine unwinds */
-    kiri_input_wired = false;    /* new engine: callbacks must be re-installed */
-    krkr_start();                /* re-arms + re-creates the engine thread */
-    SDL_libretro_in_reset = false;
-    return;
-  }
-
-  stop_engine_thread();
-#ifdef LIBRETRO_FRAME_SYNC
-  SDL_libretro_wait_sem = NULL;
+#ifdef VNOVEL_KIRIKIRI
+   if (!vtable)
+   {
+      krkr_request_stop();
+      krkr_finish_stop();       /* joins + tears down once the engine unwinds */
+      kiri_input_wired = false; /* new engine: callbacks must be re-installed */
+      krkr_start();             /* re-arms + re-creates the engine thread */
+      SDL_libretro_in_reset = false;
+      return;
+   }
 #endif
-  if (engine && vtable) {
-    vtable->destroy(engine);
-    engine = nullptr;
-  }
-  if (vtable) {
-    engine = vtable->create();
-    if (engine) {
-      char na[PATH_MAX_LENGTH], ns[PATH_MAX_LENGTH];
-      vtable->setArchivePath(engine, realize_path(last_archive_path, na, sizeof(na)));
-      vtable->setSavePath(engine, realize_path(last_save_path, ns, sizeof(ns)));
-      vtable->setDebugLevel(engine, opt_debug_level);
-      if (vtable->setAudioPaused) vtable->setAudioPaused(engine, 0);
-      if (vtable->startThread) vtable->startThread(engine);
-    }
-  }
-  SDL_libretro_in_reset = false;
+
+   stop_engine_thread();
+#ifdef LIBRETRO_FRAME_SYNC
+   SDL_libretro_wait_sem = NULL;
+#endif
+   if (engine && vtable)
+   {
+      vtable->destroy(engine);
+      engine = nullptr;
+   }
+   if (vtable)
+   {
+      engine = vtable->create();
+      if (engine)
+      {
+         char na[PATH_MAX_LENGTH], ns[PATH_MAX_LENGTH];
+         vtable->setArchivePath(
+               engine, realize_path(last_archive_path, na, sizeof(na)));
+         vtable->setSavePath(engine,
+                             realize_path(last_save_path, ns, sizeof(ns)));
+         vtable->setDebugLevel(engine, opt_debug_level);
+         if (vtable->setAudioPaused)
+            vtable->setAudioPaused(engine, 0);
+         if (vtable->startThread)
+            vtable->startThread(engine);
+      }
+   }
+   SDL_libretro_in_reset = false;
 }
 
 extern "C" void SDL_ThreadedTimerCheck(void);
@@ -1136,22 +1903,29 @@ extern "C" void SDL_ThreadedTimerCheck(void);
  * there `opt_ff_scale` stays 1.0 and FF never dilates KiriKiri's timed work. */
 static void read_ff_speed_option(void)
 {
-  struct retro_variable var = {0};
-  var.key = "vnovel_fastforward_speed";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    int mult = 0;
-    if (strcmp(var.value, "2x") == 0)       mult = 2;
-    else if (strcmp(var.value, "4x") == 0)  mult = 4;
-    else if (strcmp(var.value, "8x") == 0)  mult = 8;
-    else if (strcmp(var.value, "16x") == 0) mult = 16;
-    else if (strcmp(var.value, "32x") == 0) mult = 32;
-    else if (strcmp(var.value, "max") == 0) mult = 64;
-    /* The multiplier is the FF RATE for the single game clock: the clock
+   struct retro_variable var = {0};
+   var.key                   = "vnovel_fastforward_speed";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      int mult = 0;
+      if (strcmp(var.value, "2x") == 0)
+         mult = 2;
+      else if (strcmp(var.value, "4x") == 0)
+         mult = 4;
+      else if (strcmp(var.value, "8x") == 0)
+         mult = 8;
+      else if (strcmp(var.value, "16x") == 0)
+         mult = 16;
+      else if (strcmp(var.value, "32x") == 0)
+         mult = 32;
+      else if (strcmp(var.value, "max") == 0)
+         mult = 64;
+      /* The multiplier is the FF RATE for the single game clock: the clock
      * dilates by `mult` while FF is on, so every timed engine event (ONS/PON
      * timers via SDL_GetTicks, KiriKiri timers via the installed clock)
      * accelerates by the same factor. */
-    opt_ff_scale = mult > 0 ? (double)mult : 1.0;
-  }
+      opt_ff_scale = mult > 0 ? (double)mult : 1.0;
+   }
 }
 
 /* Per-frame option re-read (Quick Menu hot-reload) plus the one-time
@@ -1159,227 +1933,331 @@ static void read_ff_speed_option(void)
 static void read_frame_options(void)
 {
 #ifdef LIBRETRO_FRAME_SYNC
-  static bool frame_sync_activated = false;
-  if (!frame_sync_activated) {
-    if (engine && vtable->drainUserEvents) vtable->drainUserEvents(engine);
-    frame_sync_activated = true;
-    { char env_path[PATH_MAX_LENGTH]; fill_pathname_join(env_path, last_save_path, "envdata", sizeof(env_path));
-      FILE *ef = fopen(env_path, "rb");
-      if (ef) { fseek(ef, 0, SEEK_END); long esz = ftell(ef); fseek(ef, 0, SEEK_SET);
-        unsigned char buf[256]; size_t nr = fread(buf, 1, esz < 256 ? esz : 256, ef);
-        for (size_t i = 0; i < nr; i += 16) {
-          char hex[128] = ""; int p = 0;
-          for (size_t j = i; j < i+16 && j < nr; j++) p += snprintf(hex+p, sizeof(hex)-p, "%02x ", buf[j]);
-          log_cb(RETRO_LOG_INFO, "  %04zx: %s\n", i, hex);
-        }
-        fclose(ef);
-      } else log_cb(RETRO_LOG_INFO, "envdata: not found (using defaults)\n");
-    }
-  }
-  // Re-read core options each frame (allows hot-reload from Quick Menu)
-  struct retro_variable var = {0};
+   static bool frame_sync_activated = false;
+   if (!frame_sync_activated)
+   {
+      if (engine && vtable->drainUserEvents)
+         vtable->drainUserEvents(engine);
+      frame_sync_activated = true;
+      {
+         char env_path[PATH_MAX_LENGTH];
+         fill_pathname_join(
+               env_path, last_save_path, "envdata", sizeof(env_path));
+         FILE *ef = fopen(env_path, "rb");
+         if (ef)
+         {
+            fseek(ef, 0, SEEK_END);
+            long esz = ftell(ef);
+            fseek(ef, 0, SEEK_SET);
+            unsigned char buf[256];
+            size_t nr = fread(buf, 1, esz < 256 ? esz : 256, ef);
+            for (size_t i = 0; i < nr; i += 16)
+            {
+               char hex[128] = "";
+               int p         = 0;
+               for (size_t j = i; j < i + 16 && j < nr; j++)
+                  p += snprintf(hex + p, sizeof(hex) - p, "%02x ", buf[j]);
+               log_cb(RETRO_LOG_INFO, "  %04zx: %s\n", i, hex);
+            }
+            fclose(ef);
+         }
+         else
+            log_cb(RETRO_LOG_INFO, "envdata: not found (using defaults)\n");
+      }
+   }
+   // Re-read core options each frame (allows hot-reload from Quick Menu)
+   struct retro_variable var = {0};
 
-  var.key = "vnovel_frame_sync";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    bool new_sync = (strcmp(var.value, "enabled") == 0);
-    if (new_sync != opt_frame_sync) {
-      opt_frame_sync = new_sync;
-      if (opt_frame_sync && !SDL_libretro_wait_sem)
-        SDL_libretro_wait_sem = NULL; /* disabled — causes deadlock */
-      else if (!opt_frame_sync)
-        SDL_libretro_wait_sem = NULL;
-    }
-  }
+   var.key = "vnovel_frame_sync";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      bool new_sync = (strcmp(var.value, "enabled") == 0);
+      if (new_sync != opt_frame_sync)
+      {
+         opt_frame_sync = new_sync;
+         if (opt_frame_sync && !SDL_libretro_wait_sem)
+            SDL_libretro_wait_sem = NULL; /* disabled — causes deadlock */
+         else if (!opt_frame_sync)
+            SDL_libretro_wait_sem = NULL;
+      }
+   }
 
-  var.key = "vnovel_mode_indicators";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    opt_indicators = (strcmp(var.value, "enabled") == 0);
+   var.key = "vnovel_mode_indicators";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      opt_indicators = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "vnovel_debug_level";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    int new_debug = atoi(var.value);
-    if (new_debug != opt_debug_level) {
-      opt_debug_level = new_debug;
-      if (engine) vtable->setDebugLevel(engine, opt_debug_level);
-    }
-  }
+   var.key = "vnovel_debug_level";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      int new_debug = atoi(var.value);
+      if (new_debug != opt_debug_level)
+      {
+         opt_debug_level = new_debug;
+         if (engine)
+            vtable->setDebugLevel(engine, opt_debug_level);
+      }
+   }
 
-  var.key = "vnovel_software_cursor";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    opt_software_cursor = (strcmp(var.value, "enabled") == 0);
+   var.key = "vnovel_software_cursor";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      opt_software_cursor = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "vnovel_text_speed";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    int new_speed = -1;
-    if (strcmp(var.value, "slow") == 0)        new_speed = 0;
-    else if (strcmp(var.value, "normal") == 0) new_speed = 1;
-    else if (strcmp(var.value, "fast") == 0)   new_speed = 2;
-    else if (strcmp(var.value, "instant") == 0) new_speed = 3;
-    if (new_speed != opt_text_speed) {
-      opt_text_speed = new_speed;
-      if (engine && opt_text_speed >= 0 && opt_text_speed <= 2)
-        vtable->setTextSpeed(engine, opt_text_speed);
-    }
-  }
+   var.key = "vnovel_text_speed";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      int new_speed = -1;
+      if (strcmp(var.value, "slow") == 0)
+         new_speed = 0;
+      else if (strcmp(var.value, "normal") == 0)
+         new_speed = 1;
+      else if (strcmp(var.value, "fast") == 0)
+         new_speed = 2;
+      else if (strcmp(var.value, "instant") == 0)
+         new_speed = 3;
+      if (new_speed != opt_text_speed)
+      {
+         opt_text_speed = new_speed;
+         if (engine && opt_text_speed >= 0 && opt_text_speed <= 2)
+            vtable->setTextSpeed(engine, opt_text_speed);
+      }
+   }
 
-  read_ff_speed_option();   /* shared with the KiriKiri branch (line ~917) */
+   read_ff_speed_option(); /* shared with the KiriKiri branch (line ~917) */
 
-  /* Text-rendering behaviour, consumed by the ONScripter engine via the
+   /* Text-rendering behaviour, consumed by the ONScripter engine via the
    * bridge (engine_bridge.h). Read each frame so Quick Menu changes apply. */
-  var.key = "vnovel_english_word_wrap";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    ons_english_word_wrap = (strcmp(var.value, "enabled") == 0);
+   var.key = "vnovel_english_word_wrap";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      vnovel_english_word_wrap = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "vnovel_fit_oversize_banners";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    ons_fit_oversize_banners = (strcmp(var.value, "enabled") == 0);
+   var.key = "vnovel_fit_oversize_banners";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      vnovel_fit_oversize_banners = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "vnovel_textbox_opacity";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-    int pct = atoi(var.value);
-    if (pct < 0)   pct = 0;
-    if (pct > 200) pct = 200;
-    ons_textbox_opacity = pct;
-  }
+   var.key = "vnovel_wrap_total_fit";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      vnovel_wrap_total_fit = (strcmp(var.value, "enabled") == 0);
 
-  var.key = "vnovel_mouse_sensitivity";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-    opt_mouse_sensitivity = atof(var.value);
+   var.key = "vnovel_textbox_opacity";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      int pct = atoi(var.value);
+      if (pct < 0)
+         pct = 0;
+      if (pct > 200)
+         pct = 200;
+      vnovel_textbox_opacity = pct;
+   }
+
+   var.key = "vnovel_mouse_sensitivity";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      opt_mouse_sensitivity = atof(var.value);
 #endif
-  /* Read key remap options */
-  #define PARSE_KEY(optname, idx) do { \
-    var.key = optname; \
-    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) { \
-      if (strcmp(var.value, "[") == 0)            remap_keys[idx] = SDLK_LEFTBRACKET; \
-      else if (strcmp(var.value, "]") == 0)       remap_keys[idx] = SDLK_RIGHTBRACKET; \
-      else if (strcmp(var.value, "h") == 0)       remap_keys[idx] = SDLK_h; \
-      else if (strcmp(var.value, "q") == 0)       remap_keys[idx] = SDLK_q; \
-      else if (strcmp(var.value, "b") == 0)       remap_keys[idx] = SDLK_b; \
-      else if (strcmp(var.value, "backspace") == 0) remap_keys[idx] = SDLK_BACKSPACE; \
-      else if (strcmp(var.value, "escape") == 0)  remap_keys[idx] = SDLK_ESCAPE; \
-      else if (strcmp(var.value, "x") == 0)       remap_keys[idx] = SDLK_x; \
-      else if (strcmp(var.value, "return") == 0)  remap_keys[idx] = SDLK_RETURN; \
-      else if (strcmp(var.value, "space") == 0)   remap_keys[idx] = SDLK_SPACE; \
-      else if (strcmp(var.value, "z") == 0)       remap_keys[idx] = SDLK_z; \
-      else if (strcmp(var.value, "l") == 0)       remap_keys[idx] = SDLK_l; \
-      else if (strcmp(var.value, "f") == 0)       remap_keys[idx] = SDLK_f; \
-      else remap_keys[idx] = default_remap_keys[idx]; \
-    } else { \
-      remap_keys[idx] = default_remap_keys[idx]; \
-    } \
-  } while(0)
+/* Read key remap options */
+#define PARSE_KEY(optname, idx)                                                \
+   do                                                                          \
+   {                                                                           \
+      var.key = optname;                                                       \
+      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)       \
+      {                                                                        \
+         if (strcmp(var.value, "[") == 0)                                      \
+            remap_keys[idx] = SDLK_LEFTBRACKET;                                \
+         else if (strcmp(var.value, "]") == 0)                                 \
+            remap_keys[idx] = SDLK_RIGHTBRACKET;                               \
+         else if (strcmp(var.value, "h") == 0)                                 \
+            remap_keys[idx] = SDLK_h;                                          \
+         else if (strcmp(var.value, "q") == 0)                                 \
+            remap_keys[idx] = SDLK_q;                                          \
+         else if (strcmp(var.value, "b") == 0)                                 \
+            remap_keys[idx] = SDLK_b;                                          \
+         else if (strcmp(var.value, "backspace") == 0)                         \
+            remap_keys[idx] = SDLK_BACKSPACE;                                  \
+         else if (strcmp(var.value, "escape") == 0)                            \
+            remap_keys[idx] = SDLK_ESCAPE;                                     \
+         else if (strcmp(var.value, "x") == 0)                                 \
+            remap_keys[idx] = SDLK_x;                                          \
+         else if (strcmp(var.value, "return") == 0)                            \
+            remap_keys[idx] = SDLK_RETURN;                                     \
+         else if (strcmp(var.value, "space") == 0)                             \
+            remap_keys[idx] = SDLK_SPACE;                                      \
+         else if (strcmp(var.value, "z") == 0)                                 \
+            remap_keys[idx] = SDLK_z;                                          \
+         else if (strcmp(var.value, "l") == 0)                                 \
+            remap_keys[idx] = SDLK_l;                                          \
+         else if (strcmp(var.value, "f") == 0)                                 \
+            remap_keys[idx] = SDLK_f;                                          \
+         else                                                                  \
+            remap_keys[idx] = default_remap_keys[idx];                         \
+      }                                                                        \
+      else                                                                     \
+      {                                                                        \
+         remap_keys[idx] = default_remap_keys[idx];                            \
+      }                                                                        \
+   } while (0)
 
-  PARSE_KEY("vnovel_key_lookback", REMAP_LOOKBACK);
-  PARSE_KEY("vnovel_key_menu", REMAP_MENU);
-  PARSE_KEY("vnovel_key_advance", REMAP_ADVANCE);
+   PARSE_KEY("vnovel_key_lookback", REMAP_LOOKBACK);
+   PARSE_KEY("vnovel_key_menu", REMAP_MENU);
+   PARSE_KEY("vnovel_key_advance", REMAP_ADVANCE);
 }
 
+#ifdef VNOVEL_KIRIKIRI
 /* KiriKiri frame. The engine owns its own thread and publishes a video surface;
  * this drives input, pacing, the single game clock, audio and the framebuffer
  * handoff. Runs only while KiriKiri is the active engine (vtable == NULL). */
 static void kiri_frame(void)
 {
-    /* The game terminated itself (KAG `[close]` -> engine TVPTerminateAsync).
+   /* Test auto-advance. ONS_TEST_AUTODVANCE=<frames> injects a SPACE keypress
+     every N frames so automated runs can walk a scenario without a human.
+     The ONScripter path gets this through its SDL overlay's event pump
+     (src/sdl-libretro/events.c); KiriKiri has no such pump on this path —
+     input arrives only via retro_input_state/retro_keyboard, which a headless
+     run never drives — so inject here, at the per-frame boundary, where the
+     engine's own SDL event queue is drained. SPACE is KAG's advance key
+     (onPrimaryClick). */
+   {
+      const char *env = getenv("ONS_TEST_AUTODVANCE");
+      int every       = env ? atoi(env) : 0;
+      if (every > 0)
+      {
+         static int counter = 0;
+         if (++counter >= every)
+         {
+            counter = 0;
+            krkr_push_key(SDLK_SPACE, 1);
+            krkr_push_key(SDLK_SPACE, 0);
+         }
+      }
+   }
+   /* The game terminated itself (KAG `[close]` -> engine TVPTerminateAsync).
      * Per the desired behaviour: pause the core permanently, blank the screen,
      * reset the state — and do NOT let the frontend quit. The engine already
      * blanked its surface and is idle; stop polling it and present black. */
-    { volatile int *stopped = krkr_get_engine_stopped_ptr();
-      if (stopped && *stopped) {
-        static uint32_t stopped_black[640 * 480];
-        memset(stopped_black, 0, sizeof(stopped_black));
-        video_cb(stopped_black, 640, 480, 640 * 4);
-        return;
+   {
+      volatile int *stopped = krkr_get_engine_stopped_ptr();
+      if (stopped && *stopped)
+      {
+         static uint32_t stopped_black[640 * 480];
+         memset(stopped_black, 0, sizeof(stopped_black));
+         video_cb(stopped_black, 640, 480, 640 * 4);
+         return;
       }
-    }
-    /* Frontend poll heartbeat. RetroArch has no core-visible pause callback
+   }
+   /* Frontend poll heartbeat. RetroArch has no core-visible pause callback
      * (it never calls retro_run while paused, and 1.22 does not use
      * retro_pause/retro_unpause), so pause is signalled implicitly: the engine
      * idles its loop once this stops being refreshed. Stamp it every frame. */
-    {
+   {
       struct timespec hb;
       clock_gettime(CLOCK_MONOTONIC, &hb);
       krkr_notify_poll((long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000);
-    }
-    /* libretro fast-forward: lift the engine's frame limiter and skip the
+   }
+   /* libretro fast-forward: lift the engine's frame limiter and skip the
      * core's own pacing below so it runs unthrottled. */
-    bool kiri_ff = false;
-    environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &kiri_ff);
-    krkr_set_fastforward(kiri_ff ? 1 : 0);
-    /* Drive the single game clock. The `!vtable` KiriKiri branch returns before
+   bool kiri_ff = false;
+   environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &kiri_ff);
+   krkr_set_fastforward(kiri_ff ? 1 : 0);
+   /* Drive the single game clock. The `!vtable` KiriKiri branch returns before
      * the install block further down, so the rate must be set here too — without
      * this the clock stays at 1.0 for KiriKiri and all timed work (typewriter,
      * transitions, script waits) ignores fast-forward even though frame-driven
      * work speeds up. Same cached compare as the other branch. */
-    {
-      read_ff_speed_option();               /* KiriKiri returns before the main option block */
+   {
+      read_ff_speed_option(); /* KiriKiri returns before the main option block */
       double want = kiri_ff ? opt_ff_scale : 1.0;
-      if (want != clock_scale_applied) {
-        clock_scale_applied = want;
-        ons_libretro_clock_set(want);
+      if (want != clock_scale_applied)
+      {
+         clock_scale_applied = want;
+         ons_libretro_clock_set(want);
       }
       static int kcdbg = -1;
-      if (kcdbg < 0) kcdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
-      if (kcdbg) {
-        static int kcdbg_count = 0;
-        if (++kcdbg_count >= 30) {
-          kcdbg_count = 0;
-          fprintf(stderr, "[clock] kiri ff=%d scale=%.3f t=%lldms\n",
-                  (int)kiri_ff, clock_scale_applied, ons_libretro_game_clock_ms());
-        }
+      if (kcdbg < 0)
+         kcdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
+      if (kcdbg)
+      {
+         static int kcdbg_count = 0;
+         if (++kcdbg_count >= 30)
+         {
+            kcdbg_count = 0;
+            fprintf(stderr,
+                    "[clock] kiri ff=%d scale=%.3f t=%lldms\n",
+                    (int)kiri_ff,
+                    clock_scale_applied,
+                    ons_libretro_game_clock_ms());
+         }
       }
-    }
-    /* Pace to 60 fps. The engine's fpslimit plugin is a no-op and its main
+   }
+   /* Pace to 60 fps. The engine's fpslimit plugin is a no-op and its main
      * loop has no pacing, so RetroArch would otherwise call retro_run as fast
      * as the video driver allows (600+ fps unlocked), copying and uploading a
      * full 800x600 frame every time. Cap it here; audio is fed from the
      * engine ring below and RetroArch's audio_sync follows. Fast-forward
      * bypasses this pacing. */
-    { static struct timespec last = {0,0};
+   {
+      static struct timespec last = {0, 0};
       struct timespec now;
       clock_gettime(CLOCK_MONOTONIC, &now);
-      if (!kiri_ff && last.tv_sec != 0) {
-        double dt = (now.tv_sec - last.tv_sec) + (now.tv_nsec - last.tv_nsec) / 1e9;
-        const double tgt = 1.0 / 60.0;
-        if (dt < tgt) {
-          double wait = tgt - dt;
-          struct timespec rem;
-          rem.tv_sec  = (time_t)wait;
-          rem.tv_nsec = (long)((wait - (double)rem.tv_sec) * 1e9);
-          nanosleep(&rem, NULL);
-        }
+      if (!kiri_ff && last.tv_sec != 0)
+      {
+         double dt =
+               (now.tv_sec - last.tv_sec) + (now.tv_nsec - last.tv_nsec) / 1e9;
+         const double tgt = 1.0 / 60.0;
+         if (dt < tgt)
+         {
+            double wait = tgt - dt;
+            struct timespec rem;
+            rem.tv_sec  = (time_t)wait;
+            rem.tv_nsec = (long)((wait - (double)rem.tv_sec) * 1e9);
+            nanosleep(&rem, NULL);
+         }
       }
       clock_gettime(CLOCK_MONOTONIC, &now);
       last = now;
-    }
-    if (!kiri_input_wired && SDL_libretro_input_state_cb && input_poll_cb) {
+   }
+   if (!kiri_input_wired && SDL_libretro_input_state_cb && input_poll_cb)
+   {
       krkr_set_input_callbacks(SDL_libretro_input_state_cb, input_poll_cb);
       kiri_input_wired = true;
-    }
-    void **surf_ptr = krkr_get_surface_ptr();
-    if (input_poll_cb) input_poll_cb();
-    krkr_pump_events();
-    static int kiri_dbg = 0;
-    if (kiri_dbg < 5) { fprintf(stderr, "KIRI retro_run: surf_ptr=%p *surf_ptr=%p\n", surf_ptr, surf_ptr ? *surf_ptr : NULL); kiri_dbg++; }
-    if (surf_ptr && *surf_ptr) {
-      char *s = (char*)*surf_ptr;
-      // SDL2 SDL_Surface layout on x86-64:
-      // flags(4) + pad(4) + format(8) + w(4) + h(4) + pitch(4) + pad(4) + pixels(8)
-      int w = *(int*)(s + 16);
-      int h = *(int*)(s + 20);
-      int pitch = *(int*)(s + 24);
-      void *pixels = *(void**)(s + 32);
+   }
+   if (input_poll_cb)
+      input_poll_cb();
+   krkr_pump_events();
+   if (1)
+   {
+      /* Ask the engine for its latest finished frame through the presentation
+       * seam. The engine hands over geometry and pitch explicitly, so there is
+       * no struct layout to assume and nothing to scrape out of a window.
+       *
+       * This replaced reading an SDL_Surface through hardcoded byte offsets
+       * (s+16 for width would have been the surface's format pointer on any
+       * layout change), which was only possible at all because the engine was
+       * made to render into a dummy-video-driver window that the core then
+       * reached into. */
+      const unsigned char *frame_pixels = NULL;
+      unsigned long long frame_serial = 0;
+      int w = 0, h = 0, pitch = 0;
+      int fr_ok = krkr_take_frame(&frame_pixels, &w, &h, &pitch, &frame_serial);
+      const void *pixels = fr_ok ? (const void *)frame_pixels : NULL;
+      (void)frame_serial;
       /* Trace every geometry change. Two things appear here: a genuine CRT
        * SuperRez mode (large but sane, e.g. 1920x240) versus a dangling-surface
        * read (garbage like 2097259x6225971), and a surface being replaced by
        * another one that took over rendering (a modal/dialog, say) — which is
        * exactly why the code below only ever *grows* the reported geometry. */
       {
-        static int tw = -1, th = -1, tp = -1;
-        if (w != tw || h != th || pitch != tp) {
-          audio_logf("KRKR geom surf=%p w=%d h=%d pitch=%d pixels=%p bytes=%lld\n",
-                     *surf_ptr, w, h, pitch, pixels, (long long)pitch * h);
-          tw = w; th = h; tp = pitch;
-        }
+         static int tw = -1, th = -1, tp = -1;
+         if (w != tw || h != th || pitch != tp)
+         {
+            audio_logf(
+                  "KRKR geom w=%d h=%d pitch=%d pixels=%p bytes=%lld\n",
+                  w,
+                  h,
+                  pitch,
+                  pixels,
+                  (long long)pitch * h);
+            tw = w;
+            th = h;
+            tp = pitch;
+         }
       }
       /* Sanity-bound the geometry before using it. SDL_libretro_surface is a
        * pointer the engine publishes from another thread; if it dangles (or
@@ -1392,17 +2270,28 @@ static void kiri_frame(void)
        * Note the caps are asymmetric on purpose: a square 8192x8192 surface
        * would be 256 MiB at 32bpp, which is not a frame anyone ships. Drop
        * the frame rather than trust it. */
-      if (w <= 0 || h <= 0 || w > 8192 || h > 2160 ||
-          pitch < w * 2 || pitch > w * 8) {
-        static int last_dbg = 0;
-        if (last_dbg < 8) {
-          audio_logf("KRKR REJECT geom surf=%p w=%d h=%d pitch=%d pixels=%p\n",
-                     *surf_ptr, w, h, pitch, pixels);
-          fprintf(stderr, "krkr: rejecting implausible surface w=%d h=%d pitch=%d pixels=%p\n",
-                  w, h, pitch, pixels);
-          last_dbg++;
-        }
-        return;
+      if (w <= 0 || h <= 0 || w > 8192 || h > 2160 || pitch < w * 2 ||
+          pitch > w * 8)
+      {
+         static int last_dbg = 0;
+         if (last_dbg < 8)
+         {
+            audio_logf(
+                  "KRKR REJECT geom w=%d h=%d pitch=%d pixels=%p\n",
+                  w,
+                  h,
+                  pitch,
+                  pixels);
+            fprintf(stderr,
+                    "krkr: rejecting implausible surface w=%d h=%d pitch=%d "
+                    "pixels=%p\n",
+                    w,
+                    h,
+                    pitch,
+                    pixels);
+            last_dbg++;
+         }
+         return;
       }
       /* retro_get_system_av_info() runs before the engine exists, so it can
        * only guess 640x480. Report the real (larger) geometry once it is known
@@ -1415,131 +2304,241 @@ static void kiri_frame(void)
        * coordinates. So only ever report a surface larger than everything seen
        * so far; anything smaller is a dialog and is ignored. */
       {
-        static int max_w = 0, max_h = 0;
-        if (w > 0 && h > 0 && (w > max_w || h > max_h)) {
-          struct retro_system_av_info av = {};
-          av.geometry.base_width = w;
-          av.geometry.base_height = h;
-          av.geometry.max_width = w;
-          av.geometry.max_height = h;
-          av.geometry.aspect_ratio = (float)w / (float)h;
-          av.timing.fps = 60.0;
-          av.timing.sample_rate = 48000.0;
-          environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
-          fprintf(stderr, "krkr_audio: SET_SYSTEM_AV_INFO %dx%d @ 48000 Hz\n", w, h);
-          max_w = w;
-          max_h = h;
-        }
+         static int max_w = 0, max_h = 0;
+         if (w > 0 && h > 0 && (w > max_w || h > max_h))
+         {
+            struct retro_system_av_info av = {};
+            av.geometry.base_width         = w;
+            av.geometry.base_height        = h;
+            av.geometry.max_width          = w;
+            av.geometry.max_height         = h;
+            av.geometry.aspect_ratio       = (float)w / (float)h;
+            av.timing.fps                  = 60.0;
+            av.timing.sample_rate          = 48000.0;
+            environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+            fprintf(stderr,
+                    "krkr_audio: SET_SYSTEM_AV_INFO %dx%d @ 48000 Hz\n",
+                    w,
+                    h);
+            max_w = w;
+            max_h = h;
+         }
       }
-      if (pixels) {
-        /* Auto/skip mode badge: mirror of the game's own state (kag.tflags
+      if (pixels)
+      {
+         /* Tell the menu what size to open at (see vnovel_menu_poll_input). */
+         vnovel_publish_frame_size(w, h);
+         /* Auto/skip mode badge: mirror of the game's own state (kag.tflags
          * .autoMode -> krkrsdl2_auto_mode: 0 off, 1 skip, 2 auto), matching the
          * ons/pons indicators so the same core option applies. */
-        volatile int *am_ptr = krkr_get_auto_mode_ptr();
-        int am = am_ptr ? *am_ptr : 0;
-        bool draw_auto = opt_indicators && am == 2;
-        bool draw_skip = opt_indicators && am == 1;
-        bool draw_ff = opt_indicators && kiri_ff;
-        /* Software cursor: the engine renders no pointer (dummy video
-         * driver), so overlay one on a shadow copy of the framebuffer. */
-        if (opt_software_cursor || draw_auto || draw_skip || draw_ff) {
-          static Uint32 *kshadow = NULL;
-          static int kshadow_sz = 0;
-          int fb = pitch * h;
-          if (fb > kshadow_sz) { kshadow = (Uint32*)realloc(kshadow, fb); kshadow_sz = fb; }
-          if (kshadow) {
-            memcpy(kshadow, pixels, fb);
-            int kpitch = pitch / 4;
-            if (opt_software_cursor) {
-              int cx = 0, cy = 0;
-              krkr_get_mouse_pos(&cx, &cy);
-              /* cx/cy are negative until real pointer input arrives; nothing
+         volatile int *am_ptr = krkr_get_auto_mode_ptr();
+         int am               = am_ptr ? *am_ptr : 0;
+         bool draw_auto       = opt_indicators && am == 2;
+         bool draw_skip       = opt_indicators && am == 1;
+         bool draw_ff         = opt_indicators && kiri_ff;
+         /* Diagnostic stripe overlay (KRKR2_PRESENT_STRIPES="height:alpha").
+          * Draws cycling low-alpha tint bands over the *finished* frame, at the
+          * last boundary the core controls, so nothing the engine does can paint
+          * over them. Reading the result per raster line separates two cases
+          * that look identical otherwise: a line whose tint is modulated by the
+          * scene underneath means the content really is in the buffer, while a
+          * line that is a flat tint means the buffer held nothing to modulate -
+          * the content was never composited into it. */
+         static int stripe_h = 0, stripe_a = 0;
+         static bool stripe_init = false;
+         if (!stripe_init)
+         {
+            stripe_init = true;
+            const char *sv = getenv("KRKR2_PRESENT_STRIPES");
+            if (sv && sv[0]) sscanf(sv, "%d:%d", &stripe_h, &stripe_a);
+            if (stripe_h <= 0) stripe_h = 0;
+         }
+         bool draw_stripes = stripe_h > 0;
+         /* Software cursor: the engine renders no pointer (dummy video
+         * driver), so overlay one on a shadow copy of the framebuffer.
+         * The menu composites onto that same copy, so it belongs in this
+         * condition too - otherwise it would open but never draw. */
+         if (opt_software_cursor || draw_auto || draw_skip || draw_ff ||
+             draw_stripes || vnovel_menu_should_draw())
+         {
+            static Uint32 *kshadow = NULL;
+            static int kshadow_sz  = 0;
+            int fb                 = pitch * h;
+            if (fb > kshadow_sz)
+            {
+               kshadow    = (Uint32 *)realloc(kshadow, fb);
+               kshadow_sz = fb;
+            }
+            if (kshadow)
+            {
+               memcpy(kshadow, pixels, fb);
+               int kpitch = pitch / 4;
+               if (draw_stripes)
+               {
+                  static const int bands[6][3] = {
+                     {255, 0, 0}, {0, 255, 0}, {0, 0, 255},
+                     {255, 255, 0}, {255, 0, 255}, {0, 255, 255},
+                  };
+                  for (int y = 0; y < h; y++)
+                  {
+                     const int *b = bands[(y / stripe_h) % 6];
+                     Uint32 *row  = kshadow + (size_t)y * kpitch;
+                     for (int x = 0; x < w; x++)
+                     {
+                        Uint32 v  = row[x];
+                        int r     = (v >> 16) & 0xff;
+                        int g     = (v >> 8) & 0xff;
+                        int bb    = v & 0xff;
+                        r  = (r * (255 - stripe_a) + b[0] * stripe_a) / 255;
+                        g  = (g * (255 - stripe_a) + b[1] * stripe_a) / 255;
+                        bb = (bb * (255 - stripe_a) + b[2] * stripe_a) / 255;
+                        row[x] = 0xff000000u | (r << 16) | (g << 8) | bb;
+                     }
+                  }
+               }
+               if (opt_software_cursor)
+               {
+                  int cx = 0, cy = 0;
+                  krkr_get_mouse_pos(&cx, &cy);
+/* cx/cy are negative until real pointer input arrives; nothing
                * is drawn then (a clipped arrow would otherwise appear at the
                * top-left corner). */
-              /* Pre-rendered 12x18 cursor sprite: the art below is interpreted
+/* Pre-rendered 12x18 cursor sprite: the art below is interpreted
                * once, into opaque pixels (0 = transparent), then each frame is
                * a straight blit instead of a character test per pixel. '#' =
                * black body, '.' = white outline, ' ' = clear. The stem is
                * offset from the tip, classic Windows-arrow shape. */
-              #define ONS_CURSOR_ART \
-                "##          ", \
-                "#.#         ", \
-                "#..#        ", \
-                "#...#       ", \
-                "#....#      ", \
-                "#.....#     ", \
-                "#......#    ", \
-                "#.......#   ", \
-                "#........#  ", \
-                "#.........# ", \
-                "#..........#", \
-                "#.....######", \
-                " #..#.#     ", \
-                " #.#..#     ", \
-                " ##...#     ", \
-                " #....#     ", \
-                "  #..#      ", \
-                "   ##       "
-              static Uint32 cursor_sprite[18 * 12];
-              static bool   cursor_ready = false;
-              if (!cursor_ready) {
-                static const char *const cursor_art[18] = { ONS_CURSOR_ART };
-                for (int dy = 0; dy < 18; dy++)
-                  for (int dx = 0; dx < 12; dx++) {
-                    char ch = cursor_art[dy][dx];
-                    cursor_sprite[dy * 12 + dx] = (ch == '#') ? 0xFF000000u
-                                                : (ch == '.') ? 0xFFFFFFFFu : 0u;
+#define ONS_CURSOR_ART                                                         \
+   "##          ", "#.#         ", "#..#        ", "#...#       ",             \
+         "#....#      ", "#.....#     ", "#......#    ", "#.......#   ",       \
+         "#........#  ", "#.........# ", "#..........#", "#.....######",       \
+         " #..#.#     ", " #.#..#     ", " ##...#     ", " #....#     ",       \
+         "  #..#      ", "   ##       "
+                  static Uint32 cursor_sprite[18 * 12];
+                  static bool cursor_ready = false;
+                  if (!cursor_ready)
+                  {
+                     static const char *const cursor_art[18] = {ONS_CURSOR_ART};
+                     for (int dy = 0; dy < 18; dy++)
+                        for (int dx = 0; dx < 12; dx++)
+                        {
+                           char ch = cursor_art[dy][dx];
+                           cursor_sprite[dy * 12 + dx] =
+                                 (ch == '#')   ? 0xFF000000u
+                                 : (ch == '.') ? 0xFFFFFFFFu
+                                               : 0u;
+                        }
+                     cursor_ready = true;
                   }
-                cursor_ready = true;
-              }
-              for (int dy = 0; dy < 18 && cx >= 0 && cy >= 0; dy++) {
-                for (int dx = 0; dx < 12; dx++) {
-                  Uint32 v = cursor_sprite[dy * 12 + dx];
-                  if (!v) continue;
-                  int sx = cx + dx, sy = cy + dy;
-                  if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
-                  kshadow[sy * kpitch + sx] = v;
-                }
-              }
-            } /* opt_software_cursor */
-            /* Mode indicators (top-right), matching the ons/pons colors. */
-            {
-              int bx = w - 12, by = 4;
-              if (draw_auto) {
-                for (int dy = 0; dy < 8; dy++)
-                  for (int dx = 0; dx < 8; dx++)
-                    if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
-                      kshadow[(by+dy) * kpitch + (bx+dx)] = 0xCC22AA22;
-                bx -= 12;
-              }
-              if (draw_skip) {
-                for (int dy = 0; dy < 8; dy++)
-                  for (int dx = 0; dx < 8; dx++)
-                    if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
-                      kshadow[(by+dy) * kpitch + (bx+dx)] = 0xCCAAAA22;
-                bx -= 12;
-              }
-              if (draw_ff) {
-                for (int dy = 0; dy < 8; dy++)
-                  for (int dx = 0; dx < 8; dx++)
-                    if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
-                      kshadow[(by+dy) * kpitch + (bx+dx)] = 0xCC2266FF;
-              }
+                  for (int dy = 0; dy < 18 && cx >= 0 && cy >= 0; dy++)
+                  {
+                     for (int dx = 0; dx < 12; dx++)
+                     {
+                        Uint32 v = cursor_sprite[dy * 12 + dx];
+                        if (!v)
+                           continue;
+                        int sx = cx + dx, sy = cy + dy;
+                        if (sx < 0 || sx >= w || sy < 0 || sy >= h)
+                           continue;
+                        kshadow[sy * kpitch + sx] = v;
+                     }
+                  }
+               } /* opt_software_cursor */
+               /* Mode indicators (top-right), matching the ons/pons colors. */
+               {
+                  int bx = w - 12, by = 4;
+                  if (draw_auto)
+                  {
+                     for (int dy = 0; dy < 8; dy++)
+                        for (int dx = 0; dx < 8; dx++)
+                           if (by + dy >= 0 && by + dy < h && bx + dx >= 0 &&
+                               bx + dx < w)
+                              kshadow[(by + dy) * kpitch + (bx + dx)] =
+                                    0xCC22AA22;
+                     bx -= 12;
+                  }
+                  if (draw_skip)
+                  {
+                     for (int dy = 0; dy < 8; dy++)
+                        for (int dx = 0; dx < 8; dx++)
+                           if (by + dy >= 0 && by + dy < h && bx + dx >= 0 &&
+                               bx + dx < w)
+                              kshadow[(by + dy) * kpitch + (bx + dx)] =
+                                    0xCCAAAA22;
+                     bx -= 12;
+                  }
+                  if (draw_ff)
+                  {
+                     for (int dy = 0; dy < 8; dy++)
+                        for (int dx = 0; dx < 8; dx++)
+                           if (by + dy >= 0 && by + dy < h && bx + dx >= 0 &&
+                               bx + dx < w)
+                              kshadow[(by + dy) * kpitch + (bx + dx)] =
+                                    0xCC2266FF;
+                  }
+               }
+               /* The native menu, composited last so it sits above the game
+                * and the core's own overlays. Into kshadow, never into
+                * `pixels`: the engine's framebuffer and its dirty-rect
+                * tracking must be left alone. */
+               composite_menu(kshadow, kpitch, w, h);
+
+               /* Page mode: show the captured text instead of the frame. This
+                * is the consumer the text-plane seam exists for - the page is
+                * what a reader or a page-based port would present. */
+               if (text_page_mode)
+               {
+                  const unsigned char *tp = NULL;
+                  int tw = 0, th = 0, tpitch = 0;
+                  if (text_page_get(&tp, &tw, &th, &tpitch) && tp && tw > 0 &&
+                      th > 0 && tpitch != 0)
+                  {
+                     const int astride = tpitch < 0 ? -tpitch : tpitch;
+                     const int rows = th < h ? th : h;
+                     const int cols = (tw * 4 < w * 4) ? tw : (w * 4) / 4;
+                     for (int y = 0; y < rows; y++)
+                     {
+                        /* The plane's pitch is signed (bottom-up); index with
+                         * it as given rather than normalising. */
+                        const unsigned char *src =
+                              tp + (size_t)y * (size_t)tpitch;
+                        memcpy(kshadow + (size_t)y * kpitch, src,
+                               (size_t)cols * 4);
+                     }
+                     video_cb(kshadow, w, h, pitch);
+                  }
+                  else
+                  {
+                     /* Nothing captured yet: present the frame rather than a
+                      * stale or torn page. */
+                     video_cb(kshadow, w, h, pitch);
+                  }
+               }
+               else
+               {
+                  video_cb(kshadow, w, h, pitch);
+               }
             }
-            video_cb(kshadow, w, h, pitch);
-          } else {
+            else
+            {
+               video_cb(pixels, w, h, pitch);
+            }
+         }
+         else
+         {
             video_cb(pixels, w, h, pitch);
-          }
-        } else {
-          video_cb(pixels, w, h, pitch);
-        }
-      } else {
-        video_cb(NULL, 0, 0, 0);
+         }
       }
-    } else {
+      else
+      {
+         video_cb(NULL, 0, 0, 0);
+      }
+   }
+   else
+   {
       video_cb(NULL, 0, 0, 0);
-    }
-    /* Audio (KiriKiri): submit what the engine has produced, once per call
+   }
+   /* Audio (KiriKiri): submit what the engine has produced, once per call
      * (see krkr_abuf_drain).
      *
      * A fullscreen/window transition is a pause of the audio consumer: RetroArch
@@ -1549,27 +2548,34 @@ static void kiri_frame(void)
      * that it then throttles against (the drifting slowdown a switch caused).
      * So treat it like the pause path: discard the stale audio and clear the
      * debt, and resume cleanly when audio is enabled again. */
-    {
+   {
       int av = 1;
-      bool audio_on = !(environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av))
-                      || (av & 1);
+      bool audio_on =
+            !(environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av)) ||
+            (av & 1);
       /* Tell the engine on the edge, so it stops advancing its mixer while the
        * frontend is not consuming (and resumes cleanly after). Logged, because
        * a window/fullscreen transition is the case this exists for and the log
        * is how we confirm the core saw it. */
       static bool audio_on_prev = true;
-      if (audio_on != audio_on_prev) {
-        fprintf(stderr, "krkr_audio: audio_av=%d (edge) -> engine suspended=%d\n",
-                audio_on ? 1 : 0, audio_on ? 0 : 1);
-        krkr_set_audio_suspended(audio_on ? 0 : 1);
-        audio_on_prev = audio_on;
+      if (audio_on != audio_on_prev)
+      {
+         fprintf(stderr,
+                 "krkr_audio: audio_av=%d (edge) -> engine suspended=%d\n",
+                 audio_on ? 1 : 0,
+                 audio_on ? 0 : 1);
+         krkr_set_audio_suspended(audio_on ? 0 : 1);
+         audio_on_prev = audio_on;
       }
       int got;
-      if (!audio_on) {
-        got = krkr_abuf_drain_suspend();
-      } else {
-        const int rate = krkr_audio_rate() ? krkr_audio_rate() : 48000;
-        got = krkr_abuf_drain(rate);
+      if (!audio_on)
+      {
+         got = krkr_abuf_drain_suspend();
+      }
+      else
+      {
+         const int rate = krkr_audio_rate() ? krkr_audio_rate() : 48000;
+         got            = krkr_abuf_drain(rate);
       }
       /* Audio diagnosis: what the engine's ring says its rate is, what the
        * frontend was told, and how many frames we actually hand it per second.
@@ -1577,62 +2583,97 @@ static void kiri_frame(void)
        * drifts from the ring rate), that is the slowdown/underrun signature.
        * One line per second, to the same log as everything else. */
       {
-        static long long t0 = 0;
-        static int frames_out = 0;
-        long long now = ons_libretro_game_clock_ms();
-        frames_out += got;
-        if (t0 == 0) {
-          t0 = now;
-          fprintf(stderr, "krkr_audio: ring_rate=%d advertised=%d ch=%d\n",
-                  krkr_audio_rate(), krkr_audio_rate(), krkr_audio_channels());
-        } else if (now - t0 >= 1000) {
-          double secs = (double)(now - t0) / 1000.0;
-          static int last_written = 0;
-          int written = krkr_audio_written();
-          int produced = last_written ? written - last_written : 0;
-          last_written = written;
-          fprintf(stderr, "krkr_audio: out=%.0f fps produced=%d/s ring_occ=%d%% buf_pk=%d drop=%d ch=%d\n",
-                  frames_out / secs, produced, krkr_ring_occupancy,
-                  krkr_abuf_peak, krkr_abuf_dropped, krkr_audio_channels());
-          t0 = now;
-          frames_out = 0;
-        }
+         static long long t0   = 0;
+         static int frames_out = 0;
+         long long now         = ons_libretro_game_clock_ms();
+         frames_out += got;
+         if (t0 == 0)
+         {
+            t0 = now;
+            fprintf(stderr,
+                    "krkr_audio: ring_rate=%d advertised=%d ch=%d\n",
+                    krkr_audio_rate(),
+                    krkr_audio_rate(),
+                    krkr_audio_channels());
+         }
+         else if (now - t0 >= 1000)
+         {
+            double secs             = (double)(now - t0) / 1000.0;
+            static int last_written = 0;
+            int written             = krkr_audio_written();
+            int produced            = last_written ? written - last_written : 0;
+            last_written            = written;
+            /* One-second heartbeat, useful while working on audio and pure
+             * noise otherwise (it interleaves with the engine log, which is
+             * the one that carries meaning). Compiled out unless asked for:
+             * -DVNOVEL_AUDIO_LOG. */
+#ifdef VNOVEL_AUDIO_LOG
+            fprintf(stderr,
+                    "krkr_audio: out=%.0f fps produced=%d/s ring_occ=%d%% "
+                    "buf_pk=%d drop=%d ch=%d\n",
+                    frames_out / secs,
+                    produced,
+                    krkr_ring_occupancy,
+                    krkr_abuf_peak,
+                    krkr_abuf_dropped,
+                    krkr_audio_channels());
+#else
+            (void)frames_out; (void)produced;
+#endif
+            t0         = now;
+            frames_out = 0;
+         }
       }
-    }
+   }
 }
-
+#endif /* VNOVEL_KIRIKIRI */
 
 /* Pull one batch from the engine's mixer and hand it to the frontend.
  *
  * `rate` is passed in because retro_run already fetched it for the AV geometry;
  * calling the accessor again per frame would be wasted work. */
-static void ons_submit_audio(int rate, int16_t *stream,
-                             size_t max_frames, size_t frames)
+static void
+ons_submit_audio(int rate, int16_t *stream, size_t max_frames, size_t frames)
 {
-  if (!engine || !vtable->getAudio || frames > max_frames) return;
-  /* Paused or closed audio yields nothing; getAudio reports that as 0. */
-  if (vtable->isAudioPaused && vtable->isAudioPaused(engine)) {
-    static bool logged = false;
-    if (!logged) { logged = true; audio_logf("STATUS paused freq=%d\n", rate); }
-    return;
-  }
-  int got = vtable->getAudio(engine, stream, (int)frames);
-  if (got <= 0) return;
-  /* Heartbeat every ~120 frames: does the mixer actually produce samples
+   if (!engine || !vtable->getAudio || frames > max_frames)
+      return;
+   /* Paused or closed audio yields nothing; getAudio reports that as 0. */
+   if (vtable->isAudioPaused && vtable->isAudioPaused(engine))
+   {
+      static bool logged = false;
+      if (!logged)
+      {
+         logged = true;
+         audio_logf("STATUS paused freq=%d\n", rate);
+      }
+      return;
+   }
+   int got = vtable->getAudio(engine, stream, (int)frames);
+   if (got <= 0)
+      return;
+   /* Heartbeat every ~120 frames: does the mixer actually produce samples
    * (non-silence), or is it handing back zeros? */
-  static int hb = 0;
-  if (++hb >= 120) {
-    hb = 0;
-    int peak = 0;
-    for (size_t i = 0; i < (size_t)got * 2; i++) {
-      int v = stream[i]; if (v < 0) v = -v; if (v > peak) peak = v;
-    }
-    audio_logf("HB freq=%d frames=%d peak=%d running=%d\n",
-               rate, got, peak, (vtable->isRunning ? vtable->isRunning(engine) : 0));
-  }
-  audio_batch_cb(stream, (size_t)got);
+   static int hb = 0;
+   if (++hb >= 120)
+   {
+      hb       = 0;
+      int peak = 0;
+      for (size_t i = 0; i < (size_t)got * 2; i++)
+      {
+         int v = stream[i];
+         if (v < 0)
+            v = -v;
+         if (v > peak)
+            peak = v;
+      }
+      audio_logf("HB freq=%d frames=%d peak=%d running=%d\n",
+                 rate,
+                 got,
+                 peak,
+                 (vtable->isRunning ? vtable->isRunning(engine) : 0));
+   }
+   audio_batch_cb(stream, (size_t)got);
 }
-
 
 /* Choose between a direct framebuffer hand-off and a shadow copy that
  * carries the mode badges and software cursor. The engine framebuffer is
@@ -1643,59 +2684,101 @@ static void ons_submit_audio(int rate, int16_t *stream,
  * frontend loads globally. Same four fields. */
 static void ons_present_frame(const EngineSurface *screen)
 {
-  bool draw_auto = opt_indicators && engine && vtable->isAutoMode(engine);
-  bool draw_skip = opt_indicators && engine && vtable->isSkipMode(engine);
-// Use a shadow buffer for overlays (indicators + cursor) so the engine's
-// framebuffer is never modified. Always use shadow when indicators or
-// cursor are enabled; otherwise pass the framebuffer directly.
-bool need_shadow = opt_software_cursor || draw_auto || draw_skip;
-if (need_shadow && screen && screen->pixels) {
-  static Uint32 *shadow = NULL;
-  static int shadow_size = 0;
-  int fb_size = screen->width * screen->height * 4;
-  if (fb_size > shadow_size) {
-    shadow = (Uint32 *)realloc(shadow, fb_size);
-    shadow_size = fb_size;
-  }
-  memcpy(shadow, screen->pixels, fb_size);
-  int w = screen->width, h = screen->height;
-  int pitch = screen->pitch / 4;
-  /* Draw mode indicators (top-right corner) */
-  int bx = w - 12, by = 4;
-  if (draw_auto) {
-    for (int dy = 0; dy < 8; dy++)
-      for (int dx = 0; dx < 8; dx++)
-        if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
-          shadow[(by+dy) * pitch + (bx+dx)] = 0xCC22AA22;
-    bx -= 12;
-  }
-  if (draw_skip) {
-    for (int dy = 0; dy < 8; dy++)
-      for (int dx = 0; dx < 8; dx++)
-        if (by+dy >= 0 && by+dy < h && bx+dx >= 0 && bx+dx < w)
-          shadow[(by+dy) * pitch + (bx+dx)] = 0xCCAAAA22;
-  }
-  /* Draw software cursor on shadow (not on engine framebuffer) */
-  if (opt_software_cursor) {
-    int cx, cy;
-    SDL_libretro_get_mouse_pos(&cx, &cy);
-    /* Off-screen (negative) until real pointer input: draw nothing then. */
-    for (int dy = 0; dy < 12 && cx >= 0 && cy >= 0; dy++) {
-      for (int dx = 0; dx < 12; dx++) {
-        int sx = cx + dx, sy = cy + dy;
-        if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
-          if (dx == 0 || dy == dx)
-            shadow[sy * pitch + sx] = 0xFFFFFFFF;
-        }
+   if (screen)
+      vnovel_publish_frame_size(screen->width, screen->height);
+   bool draw_auto = opt_indicators && engine && vtable->isAutoMode(engine);
+   bool draw_skip = opt_indicators && engine && vtable->isSkipMode(engine);
+   // Use a shadow buffer for overlays (indicators + cursor) so the engine's
+   // framebuffer is never modified. Always use shadow when indicators or
+   // cursor are enabled; otherwise pass the framebuffer directly.
+   /* The menu needs the shadow too. It composites onto that copy, never onto
+    * the engine's framebuffer, so the engine's own redraw is untouched - but if
+    * the shadow branch is skipped the menu would be silently invisible, which
+    * is why it belongs in this condition and not only in the draw below. */
+   bool need_shadow = opt_software_cursor || draw_auto || draw_skip ||
+                      vnovel_menu_should_draw();
+   if (need_shadow && screen && screen->pixels)
+   {
+      static Uint32 *shadow  = NULL;
+      static int shadow_size = 0;
+      /* Size by the row *stride*, not by width*4. The engine's surface is
+       * allowed to pad each row (SDL surfaces are commonly aligned), and this
+       * buffer is both indexed with the stride below and handed to video_cb()
+       * with that same stride. Sizing it width*height*4 while addressing it as
+       * pitch*height means that as soon as pitch > width*4 the rows walk off the
+       * end of the allocation and read into the following row's bytes - a
+       * stride repeat, which shows as a diagonal shear/ghost rather than
+       * black - and the frontend, told the rows are `pitch` apart, reads the
+       * same undersized buffer the same wrong way. */
+      int fb_size            = screen->pitch * screen->height;
+      if (fb_size <= 0)
+      {
+         video_cb(NULL, 0, 0, 0);
+         return;
       }
-    }
-  }
-  video_cb(shadow, screen->width, screen->height, screen->pitch);
-} else if (screen && screen->pixels) {
-  video_cb(screen->pixels, screen->width, screen->height, screen->pitch);
-} else {
-  video_cb(NULL, 0, 0, 0);
-}
+      if (fb_size > shadow_size)
+      {
+         shadow      = (Uint32 *)realloc(shadow, fb_size);
+         shadow_size = fb_size;
+      }
+      if (!shadow)
+      {
+         video_cb(NULL, 0, 0, 0);
+         return;
+      }
+      memcpy(shadow, screen->pixels, fb_size);
+      int w = screen->width, h = screen->height;
+      int pitch = screen->pitch / 4;
+      /* Draw mode indicators (top-right corner) */
+      int bx = w - 12, by = 4;
+      if (draw_auto)
+      {
+         for (int dy = 0; dy < 8; dy++)
+            for (int dx = 0; dx < 8; dx++)
+               if (by + dy >= 0 && by + dy < h && bx + dx >= 0 && bx + dx < w)
+                  shadow[(by + dy) * pitch + (bx + dx)] = 0xCC22AA22;
+         bx -= 12;
+      }
+      if (draw_skip)
+      {
+         for (int dy = 0; dy < 8; dy++)
+            for (int dx = 0; dx < 8; dx++)
+               if (by + dy >= 0 && by + dy < h && bx + dx >= 0 && bx + dx < w)
+                  shadow[(by + dy) * pitch + (bx + dx)] = 0xCCAAAA22;
+      }
+      /* Draw software cursor on shadow (not on engine framebuffer) */
+      if (opt_software_cursor)
+      {
+         int cx, cy;
+         SDL_libretro_get_mouse_pos(&cx, &cy);
+         /* Off-screen (negative) until real pointer input: draw nothing then. */
+         for (int dy = 0; dy < 12 && cx >= 0 && cy >= 0; dy++)
+         {
+            for (int dx = 0; dx < 12; dx++)
+            {
+               int sx = cx + dx, sy = cy + dy;
+               if (sx >= 0 && sx < w && sy >= 0 && sy < h)
+               {
+                  if (dx == 0 || dy == dx)
+                     shadow[sy * pitch + sx] = 0xFFFFFFFF;
+               }
+            }
+         }
+      }
+      /* The native menu draws over everything, on the same shadow buffer the
+       * indicators and cursor use, so the engine's framebuffer is never
+       * modified. */
+      composite_menu(shadow, pitch, w, h);
+      video_cb(shadow, screen->width, screen->height, screen->pitch);
+   }
+   else if (screen && screen->pixels)
+   {
+      video_cb(screen->pixels, screen->width, screen->height, screen->pitch);
+   }
+   else
+   {
+      video_cb(NULL, 0, 0, 0);
+   }
 }
 
 /* Drive the single game clock. Only touch it when the effective rate
@@ -1704,23 +2787,30 @@ if (need_shadow && screen && screen->pixels) {
  * Nx only while FF is on; 1.0 otherwise. */
 static void ons_drive_clock(bool ff)
 {
-  double want = ff ? opt_ff_scale : 1.0;
-  if (want != clock_scale_applied) {
-    clock_scale_applied = want;
-    ons_libretro_clock_set(want);
-  }
-  /* ONS_CLOCK_DEBUG: ~2 Hz trace of the live clock so a human can watch the
+   double want = ff ? opt_ff_scale : 1.0;
+   if (want != clock_scale_applied)
+   {
+      clock_scale_applied = want;
+      ons_libretro_clock_set(want);
+   }
+   /* ONS_CLOCK_DEBUG: ~2 Hz trace of the live clock so a human can watch the
    * bias grow at (scale-1)x while FF is on and freeze when it is off. */
-  static int cdbg = -1;
-  if (cdbg < 0) cdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
-  if (cdbg) {
-    static int cdbg_count = 0;
-    if (++cdbg_count >= 30) {
-      cdbg_count = 0;
-      fprintf(stderr, "[clock] ff=%d scale=%.3f t=%lldms\n",
-              (int)ff, clock_scale_applied, ons_libretro_game_clock_ms());
-    }
-  }
+   static int cdbg = -1;
+   if (cdbg < 0)
+      cdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
+   if (cdbg)
+   {
+      static int cdbg_count = 0;
+      if (++cdbg_count >= 30)
+      {
+         cdbg_count = 0;
+         fprintf(stderr,
+                 "[clock] ff=%d scale=%.3f t=%lldms\n",
+                 (int)ff,
+                 clock_scale_applied,
+                 ons_libretro_game_clock_ms());
+      }
+   }
 }
 
 /* Frontend heartbeat for the ONS/PONS engine thread. RetroArch stops calling
@@ -1730,10 +2820,10 @@ static void ons_drive_clock(bool ff)
  * freezes text/animation exactly like a pause. */
 static void stamp_frontend_heartbeat(void)
 {
-  struct timespec hb;
-  clock_gettime(CLOCK_MONOTONIC, &hb);
-  SDL_libretro_frontend_hb =
-      (unsigned long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000;
+   struct timespec hb;
+   clock_gettime(CLOCK_MONOTONIC, &hb);
+   SDL_libretro_frontend_hb =
+         (unsigned long long)hb.tv_sec * 1000 + hb.tv_nsec / 1000000;
 }
 
 /* Pointer options drive the input callback for *both* engines, and the KiriKiri
@@ -1741,60 +2831,88 @@ static void stamp_frontend_heartbeat(void)
  * sees them. */
 static void read_pointer_options(void)
 {
-  struct retro_variable pvar = {0};
-  pvar.key = "vnovel_pointer_enable";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
-    opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
-  pvar.key = "vnovel_pointer_source";
-  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
-    opt_pointer_source = (strcmp(pvar.value, "left") == 0) ? POINTER_SOURCE_LEFT
-                                                           : POINTER_SOURCE_RIGHT;
+   struct retro_variable pvar = {0};
+   pvar.key                   = "vnovel_pointer_enable";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
+      opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
+   pvar.key = "vnovel_pointer_source";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
+      opt_pointer_source = (strcmp(pvar.value, "left") == 0)
+                                 ? POINTER_SOURCE_LEFT
+                                 : POINTER_SOURCE_RIGHT;
 }
 
 void retro_run(void)
 {
-  stamp_frontend_heartbeat();
-  read_pointer_options();
+   stamp_frontend_heartbeat();
+   read_pointer_options();
 
-  /* KiriKiri runs its own engine thread and owns its frame loop; ONS/PONS do
+   /* F12 is handled by the keyboard callback (vnovel_core_keyboard_handle), not
+    * polled here: the polled key state is a level sampled once per frame, so a
+    * tap whose press and release both land between two frames is never seen. */
+
+   /* Decide once, at frame start, whether the menu owns this frame's input (see
+    * menu_owns_input), then feed it before the engines run. */
+   menu_owns_input = vnovel_menu_should_draw();
+   vnovel_menu_poll_input();
+   vnovel_menu_poll_keys();
+
+   /* The menu advances one frame whether or not it is drawn: it must process
+    * input and its own timers while open, and doing it unconditionally keeps
+    * "open but hidden" from freezing. */
+   vnovel_menu_proc();
+
+   /* KiriKiri runs its own engine thread and owns its frame loop; ONS/PONS do
    * not, so the two paths are entirely separate. */
-  if (!vtable) {
-    kiri_frame();
-    return;
-  }
-  if (!vtable->isRunning || !vtable->isRunning(engine)) {
-    static Uint32 black[640*480];
-    memset(black, 0, sizeof(black));
-    video_cb(black, 640, 480, 640*4);
-    return;
-  }
-  read_frame_options();
-  // Detect fast-forward mode
-  bool ff = false;
-  environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &ff);
-  SDL_libretro_fastforward = ff;
-  ons_drive_clock(ff);
-  if (!engine || !vtable) return;
-  int av_enable = 1;
-  if (environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av_enable) && !(av_enable & 1)) {
-    SDL_libretro_paused = true;
-    return;
-  }
-  // Unpause: clear flag and drain accumulated timer events
-  if (SDL_libretro_paused) {
-    SDL_libretro_paused = false;
-    /* Drop timer events the engine queued while paused instead of replaying
+#ifdef VNOVEL_KIRIKIRI
+   if (!vtable)
+   {
+      kiri_frame();
+      return;
+   }
+#endif
+   if (!vtable->isRunning || !vtable->isRunning(engine))
+   {
+      static Uint32 black[640 * 480];
+      memset(black, 0, sizeof(black));
+      video_cb(black, 640, 480, 640 * 4);
+      return;
+   }
+   read_frame_options();
+   // Detect fast-forward mode
+   bool ff = false;
+   environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &ff);
+   SDL_libretro_fastforward = ff;
+   ons_drive_clock(ff);
+   if (!engine || !vtable)
+      return;
+   int av_enable = 1;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av_enable) &&
+       !(av_enable & 1))
+   {
+      SDL_libretro_paused = true;
+      return;
+   }
+   // Unpause: clear flag and drain accumulated timer events
+   if (SDL_libretro_paused)
+   {
+      SDL_libretro_paused = false;
+      /* Drop timer events the engine queued while paused instead of replaying
      * them at once, which would make the script jump forward. */
-    if (engine && vtable->drainUserEvents) vtable->drainUserEvents(engine);
-  }
+      if (engine && vtable->drainUserEvents)
+         vtable->drainUserEvents(engine);
+   }
 
-  /* The engine owns its SDL now, so ask it for the framebuffer and the audio
+   /* The engine owns its SDL now, so ask it for the framebuffer and the audio
    * rate rather than reaching into SDL from here. Both are NULL/0 until the
    * engine's video mode and audio are up. */
-  const EngineSurface *screen = (engine && vtable->getSurface) ? vtable->getSurface(engine) : NULL;
-  int rate = (engine && vtable->getSampleRate) ? vtable->getSampleRate(engine) : 0;
-  if (rate <= 0) rate = 44100;
-  /* retro_get_system_av_info() runs before load_game, when the engine does not
+   const EngineSurface *screen =
+         (engine && vtable->getSurface) ? vtable->getSurface(engine) : NULL;
+   int rate =
+         (engine && vtable->getSampleRate) ? vtable->getSampleRate(engine) : 0;
+   if (rate <= 0)
+      rate = 44100;
+   /* retro_get_system_av_info() runs before load_game, when the engine does not
    * exist yet, so it can only guess. Once the engine's surface is up, report
    * its real internal resolution (ONScripter/Ponscripter derive it from the
    * script: commonly 640x480 or 800x600) so RetroArch sizes the viewport
@@ -1807,194 +2925,206 @@ void retro_run(void)
    * RetroArch's audio buffer and caused periodic BGM underruns. Re-emit
    * whenever the rate appears too, since the engine may open audio after the
    * first frame without the geometry changing. */
-  if (screen && screen->width > 0 && screen->height > 0) {
-    static int last_w = 0, last_h = 0, last_rate = 0;
-    if (screen->width != last_w || screen->height != last_h || rate != last_rate) {
-      struct retro_system_av_info av;
-      av.geometry.base_width = screen->width;
-      av.geometry.base_height = screen->height;
-      av.geometry.max_width = screen->width;
-      av.geometry.max_height = screen->height;
-      av.geometry.aspect_ratio = (float)screen->width / (float)screen->height;
-      av.timing.fps = 60.0;
-      av.timing.sample_rate = (double)rate;
-      environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
-      fprintf(stderr, "ons_audio: SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d Hz)\n",
-              screen->width, screen->height, rate, last_rate);
-      audio_logf("SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d) frames/frame=%zu\n",
-                 screen->width, screen->height, rate, last_rate, ((size_t)rate / 60 / 32 + 1) * 32);
-      last_w = screen->width;
-      last_h = screen->height;
-      last_rate = rate;
-    }
-  }
-  static const size_t max_frames = 2048;
-  static int16_t stream[max_frames * 2];
-  size_t frames = (size_t)rate / 60;
-  frames = (frames / 32 + 1) * 32;
-  input_poll_cb();
-  SDL_libretro_input_ready = true;
-  vtable->pumpEvents ? vtable->pumpEvents(engine) : (void)0;
-  /* Geometry is left to the core's reported values: retro_get_system_av_info()
+   if (screen && screen->width > 0 && screen->height > 0)
+   {
+      static int last_w = 0, last_h = 0, last_rate = 0;
+      if (screen->width != last_w || screen->height != last_h ||
+          rate != last_rate)
+      {
+         struct retro_system_av_info av;
+         av.geometry.base_width  = screen->width;
+         av.geometry.base_height = screen->height;
+         av.geometry.max_width   = screen->width;
+         av.geometry.max_height  = screen->height;
+         av.geometry.aspect_ratio =
+               (float)screen->width / (float)screen->height;
+         av.timing.fps         = 60.0;
+         av.timing.sample_rate = (double)rate;
+         environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+         fprintf(stderr,
+                 "ons_audio: SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d Hz)\n",
+                 screen->width,
+                 screen->height,
+                 rate,
+                 last_rate);
+         audio_logf(
+               "SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d) frames/frame=%zu\n",
+               screen->width,
+               screen->height,
+               rate,
+               last_rate,
+               ((size_t)rate / 60 / 32 + 1) * 32);
+         last_w    = screen->width;
+         last_h    = screen->height;
+         last_rate = rate;
+      }
+   }
+   static const size_t max_frames = 2048;
+   static int16_t stream[max_frames * 2];
+   size_t frames = (size_t)rate / 60;
+   frames        = (frames / 32 + 1) * 32;
+   input_poll_cb();
+   SDL_libretro_input_ready = true;
+   vtable->pumpEvents ? vtable->pumpEvents(engine) : (void)0;
+   /* Geometry is left to the core's reported values: retro_get_system_av_info()
    * sizes the window and video_cb() dimensions drive the viewport each frame.
    * (A hardcoded 640x480 SET_GEOMETRY here would also fight the KiriKiri path,
    * which reports 800x600, and overrode the user's scaling/aspect settings.) */
-#ifdef LIBRETRO_FRAME_SYNC
-  if (pending_snapshot[0]) {
-    const EngineSurface *snap_screen = vtable->getSurface ? vtable->getSurface(engine) : NULL;
-    if (snap_screen && snap_screen->pixels) {
-      char bmp_path[PATH_MAX_LENGTH];
-      log_cb(RETRO_LOG_INFO, "Snapshot saved: %s\n", bmp_path);
-    }
-    pending_snapshot[0] = '\0';
-  }
-  if (pending_dumpstate[0]) {
-    char dump_path[PATH_MAX_LENGTH];
-    snprintf(dump_path, sizeof(dump_path), "%s/%s.txt", test_output_dir, pending_dumpstate);
-    FILE *f = fopen(dump_path, "w");
-    if (f) {
-      engine_dump_state(engine, f);
-      fclose(f);
-      log_cb(RETRO_LOG_INFO, "State dump saved: %s\n", dump_path);
-    }
-    pending_dumpstate[0] = '\0';
-  }
-  /* wait_sem disabled — engine paces via event_sem only */
-#endif
 
-  // Show toast when engine state actually changes
-  static bool prev_auto = false, prev_skip = false;
-  bool cur_auto = engine && vtable->isAutoMode(engine);
-  bool cur_skip = engine && vtable->isSkipMode(engine);
-  if (cur_auto != prev_auto)  show_message(cur_auto ? "Auto: on" : "Auto: off");
-  if (cur_skip != prev_skip) show_message(cur_skip ? "Skip: on" : "Skip: off");
-  prev_auto  = cur_auto;
-  prev_skip = cur_skip;
+   // Show toast when engine state actually changes
+   static bool prev_auto = false, prev_skip = false;
+   bool cur_auto = engine && vtable->isAutoMode(engine);
+   bool cur_skip = engine && vtable->isSkipMode(engine);
+   if (cur_auto != prev_auto)
+      show_message(cur_auto ? "Auto: on" : "Auto: off");
+   if (cur_skip != prev_skip)
+      show_message(cur_skip ? "Skip: on" : "Skip: off");
+   prev_auto = cur_auto;
+   prev_skip = cur_skip;
 
-  // Draw mode indicators (auto/skip badges) on the shadow buffer
-  // along with the cursor, so the engine framebuffer is never modified.
-  ons_present_frame(screen);
-  ons_submit_audio(rate, stream, max_frames, frames);
+   // Draw mode indicators (auto/skip badges) on the shadow buffer
+   // along with the cursor, so the engine framebuffer is never modified.
+   ons_present_frame(screen);
+   ons_submit_audio(rate, stream, max_frames, frames);
 }
 size_t retro_serialize_size(void)
 {
-  return 0;
+   return 0;
 }
 
 bool retro_serialize(void *data, size_t size)
 {
-  return false;
+   return false;
 }
 
 bool retro_unserialize(const void *data, size_t size)
 {
-  return false;
+   return false;
 }
 
-void retro_cheat_reset(void) {}
-void retro_cheat_set(unsigned index, bool enabled, const char *code) {}
-
-bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info)
+void retro_cheat_reset(void)
 {
-  return false;
+}
+void retro_cheat_set(unsigned index, bool enabled, const char *code)
+{
+}
+
+bool retro_load_game_special(unsigned game_type,
+                             const struct retro_game_info *info,
+                             size_t num_info)
+{
+   return false;
 }
 
 void retro_unload_game(void)
 {
-  /* Force the engine reachable before tearing it down. If the frontend is
+   /* Force the engine reachable before tearing it down. If the frontend is
    * paused (or simply stopped calling retro_run), the engine thread is parked
    * in SDL_Delay's pause gate and would never observe the shutdown request, so
    * close-content would hang. Same rule as reset: unpause first. */
-  SDL_libretro_paused = false;
-  SDL_libretro_in_reset = true;   /* suspend the pause gate until we're gone */
-  SDL_libretro_frontend_hb = 0;
-  /* Close content ends this run: drop the FF epoch/bias and rebase the clock so
+   SDL_libretro_paused   = false;
+   SDL_libretro_in_reset = true; /* suspend the pause gate until we're gone */
+   SDL_libretro_frontend_hb = 0;
+   /* Close content ends this run: drop the FF epoch/bias and rebase the clock so
    * the next load starts on a fresh timeline (retro_load_game is not guaranteed
    * to follow a reset, and a frozen bias would otherwise leak into the new
    * game). Mirrors retro_reset(). */
-  ons_libretro_clock_reset();
-  clock_scale_applied = -1.0;     /* force retro_run to re-install the rate */
+   ons_libretro_clock_reset();
+   clock_scale_applied = -1.0; /* force retro_run to re-install the rate */
 
-  if (!vtable) {
-    // KiriKiri path: shut down the krkrsdl2 engine thread cleanly.
-    krkr_shutdown();
-    SDL_libretro_in_reset = false;
-    return;
-  }
-  stop_engine_thread();
-  SDL_DestroySemaphore(SDL_libretro_event_sem);
-  SDL_libretro_event_sem = nullptr;
-#ifdef LIBRETRO_FRAME_SYNC
-  SDL_libretro_wait_sem = NULL; // unblock engine before destroying
-  SDL_DestroySemaphore(fs_sem);
+#ifdef VNOVEL_KIRIKIRI
+   if (!vtable)
+   {
+      // KiriKiri path: shut down the krkrsdl2 engine thread cleanly.
+      krkr_shutdown();
+      SDL_libretro_in_reset = false;
+      return;
+   }
 #endif
-  vtable->destroy(engine);
-  engine = nullptr;
-  SDL_Quit();
-  SDL_libretro_in_reset = false;
+   stop_engine_thread();
+   SDL_DestroySemaphore(SDL_libretro_event_sem);
+   SDL_libretro_event_sem = nullptr;
+#ifdef LIBRETRO_FRAME_SYNC
+   SDL_libretro_wait_sem = NULL; // unblock engine before destroying
+   SDL_DestroySemaphore(fs_sem);
+#endif
+   vtable->destroy(engine);
+   engine = nullptr;
+   SDL_Quit();
+   SDL_libretro_in_reset = false;
 }
 
 unsigned retro_get_region(void)
 {
-  return RETRO_REGION_NTSC;
+   return RETRO_REGION_NTSC;
 }
 
 void *retro_get_memory_data(unsigned id)
 {
-  return 0;
+   return 0;
 }
 
 size_t retro_get_memory_size(unsigned id)
 {
-  return 0;
+   return 0;
 }
-
 
 #ifdef ANDROID
-extern "C" {
+extern "C"
+{
 #undef fseek
-int fseek_ons(FILE *stream, long offset, int whence) {
-  return fseek(stream, offset, whence);
-}
+   int fseek_ons(FILE *stream, long offset, int whence)
+   {
+      return fseek(stream, offset, whence);
+   }
 
 #undef ftell
-long ftell_ons(FILE *stream) {
-  return ftell(stream);
-}
+   long ftell_ons(FILE *stream)
+   {
+      return ftell(stream);
+   }
 
 #undef fgetc
-int fgetc_ons(FILE *stream) {
-  return fgetc(stream);
-}
+   int fgetc_ons(FILE *stream)
+   {
+      return fgetc(stream);
+   }
 
 #undef fgets
-char *fgets_ons(char *s, int size, FILE *stream) {
-  return fgets(s, size, stream);
-}
+   char *fgets_ons(char *s, int size, FILE *stream)
+   {
+      return fgets(s, size, stream);
+   }
 
 #undef fread
-size_t fread_ons(void *ptr, size_t size, size_t nmemb, FILE *stream) {
-  return fread(ptr, size, nmemb, stream);
-}
+   size_t fread_ons(void *ptr, size_t size, size_t nmemb, FILE *stream)
+   {
+      return fread(ptr, size, nmemb, stream);
+   }
 
 #undef fopen
-FILE *fopen_ons(const char *str, const char *mode) {
-  return fopen(str, mode);
-}
+   FILE *fopen_ons(const char *str, const char *mode)
+   {
+      return fopen(str, mode);
+   }
 
 #undef mkdir
-extern int mkdir(const char *pathname, mode_t mode);
-int mkdir_ons(const char *pathname, mode_t mode) {
-  return mkdir(pathname, mode);
-}
+   extern int mkdir(const char *pathname, mode_t mode);
+   int mkdir_ons(const char *pathname, mode_t mode)
+   {
+      return mkdir(pathname, mode);
+   }
 
-void playVideoAndroid(const char *filename) {}
-int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
-  va_list va;
-  va_start(va, fmt);
-  log_cb(RETRO_LOG_INFO, fmt, va);
-  va_end(va);
-  return 0;
-}
+   void playVideoAndroid(const char *filename)
+   {
+   }
+   int __android_log_print(int prio, const char *tag, const char *fmt, ...)
+   {
+      va_list va;
+      va_start(va, fmt);
+      log_cb(RETRO_LOG_INFO, fmt, va);
+      va_end(va);
+      return 0;
+   }
 }
 #endif

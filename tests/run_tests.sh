@@ -9,7 +9,7 @@
 #   ./run_tests.sh --golden     # create/update golden references
 #   NO_XVFB=1 ./run_tests.sh    # run with visible window (debugging)
 
-CORE="${CORE:-$(realpath ../vnovel_libretro.so)}"
+CORE="${CORE:-$(realpath "$(dirname "$0")/../vnovel_libretro.so")}"
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 RA="${RA:-retroarch}"
 MAX_FRAMES="${MAX_FRAMES:-300}"

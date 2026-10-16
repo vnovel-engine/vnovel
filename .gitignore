@@ -34,3 +34,9 @@ tests/xor_encode
 # Code review tool
 /REVIEW.md
 /.review-history/
+
+# release bundles (ci/package.sh)
+/dist/
+
+# Wrap unit harness: the binary is a build product, the sources are tracked.
+tests/wrap/wrap_harness
