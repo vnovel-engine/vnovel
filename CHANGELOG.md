@@ -3,6 +3,35 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## Unreleased
+
+### Fixed
+
+- **The text plane crashed on a large bitmap.** The engine's bitmaps are
+  bottom-up and the pointer it publishes is the *last* row, so copying
+  `pitch × height` bytes forward from it read past the end of the allocation.
+  Small planes survived by luck; Fate/stay night's prologue segfaulted inside
+  `memcpy`. The copy now walks the signed stride a row at a time.
+- **The menu bar covered the top of the picture.** It was drawn whenever a game
+  asked for a menu, and Fata Morgana does ask — but in KiriKiri that request is
+  about a *window* menu bar, which this target has nothing to attach to. The
+  reference engine answers it by creating a menu window and never mapping it.
+  The bar is now drawn only when the hotkey asks for it, on a key you choose.
+
+### Changed
+
+- **The menu bar's hotkey is a core option** (`Menu Hotkey`), and is **unbound
+  by default** — a title that never asks for a menu bar no longer has a key
+  bring one up. Replaces the hardcoded F12.
+- **The menu is the core's own, and no longer tied to `menu.visible`.** A game's
+  window-menu request and this overlay are unrelated; wiring one to the other
+  meant the overlay could only be reached if a game happened to ask for a bar.
+  `MenuItem.visible` keeps its item-level meaning, which is what the scripts
+  actually use.
+- A **Session** page reports the running session: the loaded archive and its
+  identity, the engine, the era option as set, the build string, where saves
+  land, and the override directory with whether it is even present.
+
 ## 0.3.0 — 2026-10-16
 
 Runs pre-2.23-era KiriKiri titles (Fate/stay night first) and adds the

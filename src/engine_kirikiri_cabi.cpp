@@ -721,30 +721,12 @@ extern "C"
       return true;
    }
 
-   /* The script asked for the menu bar to be shown or hidden (the native
-    * MenuItem's `visible` property; system/Config.tjs ships `menu.visible =
-    * true`). The engine has no window frame, so it forwards the request here
-    * and the core owns what the menu is - its own menu, composited at the
-    * present boundary.
-    *
-    * Runs on the ENGINE THREAD, from script. vnovel_menu_set_visible only sets
-    * a flag the present path reads, so it is deliberately tiny and lock-free;
-    * doing more here would run game code inside the script VM's call. */
-   extern void vnovel_menu_set_visible(int on);
-
-   extern "C" void krkr_menu_visible_cb(bool visible, void *hostdata)
-   {
-      (void)hostdata;
-      vnovel_menu_set_visible(visible ? 1 : 0);
-   }
-
    extern "C" void krkr_install_present_callbacks(void)
    {
       TVPSetPresentCallback(krkr_present_cb, NULL);
       TVPSetQuerySurfaceSizeCallback(krkr_query_size_cb, NULL);
       TVPSetWaitForPresentCallback(krkr_wait_present_cb, NULL);
       TVPSetTextPlaneCallback(krkr_text_plane_cb, NULL);
-      TVPSetMenuVisibleCallback(krkr_menu_visible_cb, NULL);
    }
 
    /* Accessors for kiri_frame(). The serial is spelled identically to the

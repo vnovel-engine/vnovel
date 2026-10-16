@@ -437,6 +437,18 @@ core_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id)
  * the menu must behave identically in either engine. */
 static void composite_menu(Uint32 *dst, int dst_pitch, int dst_w, int dst_h)
 {
+   /* The gate belongs HERE, not only at the call sites.
+    *
+    * The page stays cached while the menu is open, and the menu is opened on
+    * the game's `menu.visible` request - which, as of the bar being
+    * hotkey-only, no longer means the bar should be composited. Without this
+    * test the cached 640x480 NP2kai page was stamped over the top-left of the
+    * frame on every frame after the game asked for a menu, which is what put a
+    * silver bar reading "Hi" across Fata Morgana's artwork while the reference
+    * engine (whose own menu window is unmapped) showed none. */
+   if (!vnovel_menu_should_draw())
+      return;
+
    int mw = 0, mh = 0, mpitch = 0, apitch = 0;
    const unsigned char *alpha = NULL;
    const unsigned char *mpix =
@@ -597,6 +609,11 @@ static bool opt_indicators      = true;
 static int opt_debug_level      = 0;
 static bool opt_software_cursor = true;
 static int opt_text_speed       = -1;
+/* The key that toggles the core's menu bar, as a libretro keycode; 0 = unbound
+ * (the default). Set from the `vnovel_menu_hotkey` option before the first
+ * frame, and read by the keyboard callback, so the binding cannot drift from
+ * what the option says. */
+static unsigned menu_hotkey = 0;
 /* Fast-forward rate for the single game clock (1.0 = off, N = "Nx"). */
 static double opt_ff_scale = 1.0;
 /* Rate currently installed in the clock; cached so retro_run only calls
@@ -702,13 +719,24 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
          return;
    }
 
-   /* The stride's sign is direction, not size; the byte count is the
-    * magnitude. */
-   /* The stride's sign is direction, not size; the byte count is the
-    * magnitude. */
-   const size_t stride = (size_t)(plane->pitch < 0 ? -plane->pitch
-                                                    : plane->pitch);
-   const size_t needed = stride * (size_t)plane->height;
+   /* The stride's sign is direction, not size. */
+   const int      stride   = plane->pitch; /* signed: bottom-up rows */
+   const size_t   rowbytes = (size_t)plane->width * 4;
+   const size_t   needed   = rowbytes * (size_t)plane->height;
+
+   /* Copy ROW BY ROW using the stride, never as one block.
+    *
+    * The engine's bitmaps are bottom-up, and the pointer it hands over is
+    * `GetScanLineForWrite(0)`, which is `(Height-1)*Pitch + Bits` - that is,
+    * near the *end* of the allocation, with the following rows at lower
+    * addresses. A single `memcpy(dst, pixels, |pitch| * height)` therefore
+    * reads forward off the end of the buffer: for the 808x48 plane that is
+    * 155 KB starting at a pointer 152 KB into a 152 KB allocation. Small planes
+    * survived because the pages past the end happened to be mapped; Fate's
+    * prologue draws into a larger bitmap and it faulted in libc's memcpy
+    * (confirmed from the core dump: sink <- krkr_text_plane_cb <-
+    * TVPPresentTextPlane <- InternalDrawText). Walking the stride is what the
+    * plane's own contract requires, and the destination is packed. */
    if (needed > text_plane_capacity)
    {
       unsigned char *np = (unsigned char *)realloc(text_plane_pixels, needed);
@@ -717,10 +745,15 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
       text_plane_pixels   = np;
       text_plane_capacity = needed;
    }
-   memcpy(text_plane_pixels, plane->pixels, needed);
+   {
+      const unsigned char *src = (const unsigned char *)plane->pixels;
+      for (int y = 0; y < plane->height; y++)
+         memcpy(text_plane_pixels + (size_t)y * rowbytes,
+                src + (ptrdiff_t)y * stride, rowbytes);
+   }
    text_plane_w         = plane->width;
    text_plane_h         = plane->height;
-   text_plane_pitch     = plane->pitch;
+   text_plane_pitch     = (int)rowbytes; /* the copy is packed */
    text_plane_changed_x = plane->changed_x;
    text_plane_changed_y = plane->changed_y;
    text_plane_changed_w = plane->changed_w;
@@ -871,7 +904,12 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t);
  * set once per session. */
 static bool vnovel_core_keyboard_handle(bool down, unsigned keycode)
 {
-   if (keycode == RETROK_F12)
+   /* The menu hotkey, from the core option. 0 means unbound, which is the
+    * default: the bar is an addition to the frame rather than something a game
+    * draws, so a title that never asks for one must not have a stray key open
+    * one. Compared against what the option resolved to rather than against a
+    * hardcoded name, so "which key opens the menu" has one answer. */
+   if (menu_hotkey && keycode == menu_hotkey)
    {
       if (down)
          vnovel_menu_toggle();
@@ -1603,6 +1641,22 @@ bool retro_load_game(const struct retro_game_info *game)
          krkr_setSavePath(engine, realize_path(game_save_dir, ns, sizeof(ns)));
       }
       strncpy(last_save_path, game_save_dir, sizeof(last_save_path));
+      /* Where saves land, for the menu. This is the recurring "where did my save
+       * go" question, and the answer is a path the user can act on.
+       *
+       * Resolved to an absolute path first: when the frontend hands over a
+       * relative ROM path (a bare `retroarch data.xp3`, as the harness does) the
+       * save directory is built from its dirname and comes out as `.../vnovel/.`
+       * - correct but useless to read. realpath is what makes the row say where
+       * the files actually are. */
+      {
+         char line[160], abs[PATH_MAX_LENGTH];
+         const char *shown = game_save_dir;
+         if (realpath(game_save_dir, abs))
+            shown = abs;
+         snprintf(line, sizeof(line), "Saves: %s", shown);
+         vnovel_menu_set_info(VNOVEL_MENU_INFO_SAVES, line);
+      }
       /* Engine era, from the core option. 'auto' (the default) passes nothing,
        * so the engine resolves the era itself: the per-game table by this
        * game's identity, then its own default. An explicit value here is the
@@ -1631,6 +1685,63 @@ bool retro_load_game(const struct retro_game_info *game)
        * no override channel, so a user patch to a script inside data.xp3 could
        * not win. Same channel as the two above, for the same reason. */
       krkr_set_override_dir(vnovel_override_dir);
+      /* The override directory, for the menu: whether the channel is wired at
+       * all is the first thing to check when a user patch does nothing, and the
+       * path is what a user needs in order to put a file there.
+       *
+       * Made absolute for display, for the same reason as the save path above:
+       * with a relative ROM path this comes out as `./.overrides/`, which names
+       * nothing a user can open. The engine keeps the relative form it was
+       * given - it is resolved against the game directory there - so this is a
+       * second string for the menu, not a change to what the engine uses. */
+      {
+         char line[160], abs[PATH_MAX_LENGTH];
+         const char *shown = vnovel_override_dir;
+         const char *note = "";
+         if (shown && shown[0])
+         {
+            if (realpath(shown, abs))
+               shown = abs;
+            else
+            {
+               /* realpath needs the path to exist, and the interesting case is
+                * exactly when it does not: no override directory means no
+                * patches are being read, which is the answer to "why did my
+                * patch do nothing". Prefix the working directory so the row
+                * still names a location the user can create. */
+               if (shown[0] == '.' && shown[1] == '/')
+               {
+                  char cwd[PATH_MAX_LENGTH];
+                  if (getcwd(cwd, sizeof(cwd)))
+                  {
+                     snprintf(abs, sizeof(abs), "%s/%s", cwd, shown + 2);
+                     shown = abs;
+                  }
+               }
+               note = " (not present)";
+            }
+         }
+         if (!shown || !shown[0])
+            snprintf(line, sizeof(line), "Overrides: (none)");
+         else
+            snprintf(line, sizeof(line), "Overrides: %s%s", shown, note);
+         vnovel_menu_set_info(VNOVEL_MENU_INFO_OVERRIDES, line);
+      }
+      /* The era option, as the user set it. This is the *request*; the engine
+       * resolves it (table, per-game override, or this) and logs the result, and
+       * it is the request that belongs on the menu because it is what the user
+       * can change and then re-open the bar to confirm. */
+      {
+         char line[160];
+         struct retro_variable cv = {0};
+         cv.key = "vnovel_kirikiri_compat";
+         const char *want = "auto";
+         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &cv) && cv.value)
+            want = cv.value;
+         snprintf(line, sizeof(line), "Era: %s (see the log for the result)",
+                  want);
+         vnovel_menu_set_info(VNOVEL_MENU_INFO_COMPAT, line);
+      }
       /* The game's identity, so the engine can key its per-game compat table.
        * Computed here because retro_load_game is where the content path is known
        * and where the engine's compat option is read; exported on the same
@@ -1649,10 +1760,24 @@ bool retro_load_game(const struct retro_game_info *game)
        * that is logged rather than guessed at. */
       {
          char gid[16];
+         char line[160];
          if (game_id_for_file(xp3_check, gid, sizeof(gid)))
          {
             krkr_set_game_id(gid);
             log_cb(RETRO_LOG_INFO, "Game id: %s\n", gid);
+            /* What the menu shows. The frontend's own name is not used: the
+             * comment above records why it was rejected as an identity, and it
+             * would be misleading here for the same reason - it is whatever the
+             * frontend scraped, not something this core verified. The archive's
+             * basename is real and the user recognises it; the id beside it is
+             * the same one tools/hash-game.py prints, so a report can be checked
+             * against the database. */
+            {
+               const char *base = strrchr(xp3_check, '/');
+               base = base ? base + 1 : xp3_check;
+               snprintf(line, sizeof(line), "Game: %s (%s)", base, gid);
+            }
+            vnovel_menu_set_info(VNOVEL_MENU_INFO_GAME, line);
          }
          else
          {
@@ -1660,7 +1785,16 @@ bool retro_load_game(const struct retro_game_info *game)
             log_cb(RETRO_LOG_INFO,
                    "Game id: unavailable (data.xp3 unreadable); "
                    "compat falls back to the default era\n");
+            vnovel_menu_set_info(VNOVEL_MENU_INFO_GAME,
+                                 "Game: (unidentified)");
          }
+         /* The engine, as this build knows it. Kept short because the row is a
+          * single line in a bar. */
+         snprintf(line, sizeof(line), "Engine: KiriKiri (krkrsdl2)");
+         vnovel_menu_set_info(VNOVEL_MENU_INFO_ENGINE, line);
+         /* This core's build, which is the first thing to quote in a report. */
+         snprintf(line, sizeof(line), "Core: %s", VNOVEL_LIBRETRO_VERSION);
+         vnovel_menu_set_info(VNOVEL_MENU_INFO_VERSION, line);
       }
       /* Tell the engine the frontend's expected resolution so KiriKiri sizes
      * itself (System.screenWidth/screenHeight) from it. The request is stashed
@@ -2493,13 +2627,15 @@ static void kiri_frame(void)
                   if (text_page_get(&tp, &tw, &th, &tpitch) && tp && tw > 0 &&
                       th > 0 && tpitch != 0)
                   {
-                     const int astride = tpitch < 0 ? -tpitch : tpitch;
+                     /* The sink stores the page packed, one row after another,
+                      * so the pitch it reports is a plain row size - the
+                      * engine's signed stride was resolved row by row on the
+                      * way in. Signed arithmetic here would walk backwards into
+                      * the first row. */
                      const int rows = th < h ? th : h;
                      const int cols = (tw * 4 < w * 4) ? tw : (w * 4) / 4;
                      for (int y = 0; y < rows; y++)
                      {
-                        /* The plane's pitch is signed (bottom-up); index with
-                         * it as given rather than normalising. */
                         const unsigned char *src =
                               tp + (size_t)y * (size_t)tpitch;
                         memcpy(kshadow + (size_t)y * kpitch, src,
@@ -2842,14 +2978,39 @@ static void read_pointer_options(void)
                                  : POINTER_SOURCE_RIGHT;
 }
 
+/* The menu hotkey. Read on the same per-frame path as the pointer options so a
+ * change takes effect without a restart, and so the binding is a property of
+ * the option rather than of a key name compiled into the handler.
+ *
+ * The default is `none` - unbound - deliberately. The menu bar is the core's
+ * own overlay, not something the game draws, and a game that never asks for one
+ * must not have a key that puts one on screen; a user who wants it binds it. */
+static void read_menu_hotkey(void)
+{
+   struct retro_variable mvar = {0};
+   mvar.key                   = "vnovel_menu_hotkey";
+   if (!(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &mvar) && mvar.value))
+      return;
+
+   unsigned k = 0;
+   if      (!strcmp(mvar.value, "F12"))       k = RETROK_F12;
+   else if (!strcmp(mvar.value, "F11"))       k = RETROK_F11;
+   else if (!strcmp(mvar.value, "F10"))       k = RETROK_F10;
+   else if (!strcmp(mvar.value, "Tab"))       k = RETROK_TAB;
+   else if (!strcmp(mvar.value, "Backquote")) k = RETROK_BACKQUOTE;
+   menu_hotkey = k; /* "none" or anything unrecognised leaves it unbound */
+}
+
 void retro_run(void)
 {
    stamp_frontend_heartbeat();
    read_pointer_options();
+   read_menu_hotkey();
 
-   /* F12 is handled by the keyboard callback (vnovel_core_keyboard_handle), not
-    * polled here: the polled key state is a level sampled once per frame, so a
-    * tap whose press and release both land between two frames is never seen. */
+   /* The menu hotkey is handled by the keyboard callback
+    * (vnovel_core_keyboard_handle), not polled here: the polled key state is a
+    * level sampled once per frame, so a tap whose press and release both land
+    * between two frames is never seen. Only the option is read here. */
 
    /* Decide once, at frame start, whether the menu owns this frame's input (see
     * menu_owns_input), then feed it before the engines run. */

@@ -42,23 +42,76 @@ extern "C" {
 
 /* The core's own menu bar.
  *
- * A placeholder page set: the real content is the game's menu tree, which the
- * native MenuItem classes will feed in item by item. Until then this exists so
- * the bar has something to draw and the F12 path can be exercised end to end.
+ * These pages answer questions that otherwise cost a log file or a gdb session:
+ * what the core believes it loaded, which engine era it resolved and from which
+ * source, and where saves and overrides are landing. Every value is filled in
+ * by the core before the menu is built, so the bar describes the running
+ * session rather than a fixed string.
  *
  * Shape follows NP2kai's own tables (sdl/sysmenu.str): rows are
  * {caption, child, id, flag}, a parent row has a non-NULL `child`, and the last
  * row carries MENU_DELETED because appends() walks the table until it sees that
- * flag - getting it wrong walks off the end of the array. */
-/* Ids this core handles itself. Zero is not used: an id of 0 is what a row with
- * no action carries, and menubase treats it as such. */
-enum { MENU_ID_CLOSE = 1 };
+ * flag - getting it wrong walks off the end of the array.
+ *
+ * The rows are static and only their captions are replaced, which is what the
+ * vendored API supports and what keeps opening the bar allocation-free. So the
+ * session values live in fixed buffers here rather than as pointers into the
+ * core's state: a caption is copied by the menu at create time, and the core's
+ * own strings can be replaced (a new game, a device reset) while the bar is up.
+ *
+ * This is not the game's menu and there is no path from one to the other:
+ * NP2kai's menu is built from this array at open time and its runtime-appendable
+ * surface is a positioned dialog, so a TJS item tree cannot grow it. */
+enum {
+	/* Handled by this file. Zero is not used: a row with no action carries 0,
+	 * and menubase treats it as such. */
+	MENU_ID_CLOSE = 1,
+	/* Reserved for items whose action is dispatched from elsewhere, so a page
+	 * added later cannot collide with the ones above. */
+	MENU_ID_FIRST_DYNAMIC = 0x0100
+};
+
+/* Which live value a row displays, as a small index into menu_info. The table
+ * below and menu_info[] are ordered to match, so a row's id doubles as the
+ * index - one place to look, and adding a value means adding it to both. */
+enum {
+	MENU_INFO_GAME = 0,
+	MENU_INFO_ENGINE,
+	MENU_INFO_COMPAT,
+	MENU_INFO_VERSION,
+	MENU_INFO_SAVES,
+	MENU_INFO_OVERRIDES,
+	MENU_INFO_COUNT
+};
+
+static char menu_info[MENU_INFO_COUNT][160] = {
+	"Game: (none loaded)",
+	"Engine: (unknown)",
+	"Era: (not resolved)",
+	"Core: ",
+	"Saves: (unknown)",
+	"Overrides: (none)"
+};
+
+/* The Session page: what this run is. Ids are MENU_INFO_FIRST + index so the
+ * dispatcher can find the row's value without a second table. */
+enum { MENU_INFO_FIRST = MENU_ID_FIRST_DYNAMIC };
 
 static const MSYSITEM menu_items_file[] = {
 		{OEMTEXT("Close menu"),	NULL,	MENU_ID_CLOSE,	MENU_DELETED}};
 
+static const MSYSITEM menu_items_session[] = {
+		{menu_info[MENU_INFO_GAME],		NULL,	MENU_INFO_FIRST + MENU_INFO_GAME,	MENU_GRAY},
+		{menu_info[MENU_INFO_ENGINE],	NULL,	MENU_INFO_FIRST + MENU_INFO_ENGINE,	MENU_GRAY},
+		{menu_info[MENU_INFO_COMPAT],	NULL,	MENU_INFO_FIRST + MENU_INFO_COMPAT,	MENU_GRAY},
+		{menu_info[MENU_INFO_VERSION],	NULL,	MENU_INFO_FIRST + MENU_INFO_VERSION,	MENU_GRAY},
+		{menu_info[MENU_INFO_SAVES],	NULL,	MENU_INFO_FIRST + MENU_INFO_SAVES,	MENU_GRAY},
+		{menu_info[MENU_INFO_OVERRIDES],	NULL,	MENU_INFO_FIRST + MENU_INFO_OVERRIDES,	MENU_GRAY},
+		{NULL, NULL, 0, MENU_DELETED}};
+
 static const MSYSITEM menu_items[] = {
-		{OEMTEXT("File"),		menu_items_file,	0,	MENU_DELETED}};
+		{OEMTEXT("File"),		menu_items_file,	0,	MENU_DELETED},
+		{OEMTEXT("Session"),	menu_items_session,	0,	MENU_DELETED}};
 
 /* The vendored headers declare their own extern "C" (see fontmng.h, menubase.h),
  * so nothing here may wrap them again - nesting the linkage makes the
@@ -110,59 +163,26 @@ int vnovel_menu_is_open(void)
 
 /* Whether the frame path should draw the menu this frame.
  *
- * Two independent triggers, either sufficient:
+ * One trigger, and it is the user's: the hotkey. The core's menu is its own
+ * overlay, drawn at the present boundary, and a game's `menu.visible` has
+ * nothing to do with it - see the note in the platform MenuItem's SetVisible.
+ * Tying the two together meant the host's menu could only be reached when a
+ * game happened to ask for a window menu bar, which is not the same thing at
+ * all: a title that never mentions `visible` still has a working menu here, and
+ * one that asks for a bar does not put ours on screen.
  *
- *   - the script asked for it (the Menu `visible` property - which is what
- *     Fate's own system/Config.tjs toggles; the game ships
- *     `;menu.visible = true;` commented out, so this is the line that makes the
- *     menu appear);
- *   - the user pressed the debug hotkey.
- *
- * One function rather than two conditions read in two places, so "should the
- * menu be on screen" has a single answer.
- *
- * Note the frame path's shadow-buffer decision also consults this: the menu
+ * The frame path's shadow-buffer decision also consults this: the menu
  * composites onto the core's copy of the frame, so if the shadow branch were
  * skipped the menu would be invisible, not merely absent. */
-static int menu_visible_script = 0;
 static int menu_visible_hotkey = 0;
 
 int vnovel_menu_should_draw(void)
 {
-	return menu_open && (menu_visible_script || menu_visible_hotkey);
+	return menu_open && menu_visible_hotkey;
 }
 
-/* Set by the native Menu's `visible` property.
- *
- * Setting it true must also OPEN the menu, not merely flag one that nothing has
- * opened: should_draw() requires menu_open, so a script asking for the menu to
- * be visible with no menu open would set a bit nothing reads and appear to do
- * nothing. Setting it false hides whatever is up, without destroying it - the
- * script may show it again without the tree being rebuilt. */
-void vnovel_menu_set_visible(int on)
-{
-	menu_visible_script = on ? 1 : 0;
-
-	if (on && !menu_open)
-	{
-		if (!vnovel_menu_open(menu_pref_w, menu_pref_h))
-		{
-			fprintf(stderr, "menu: script asked for visible, but the menu "
-			                "could not be opened\n");
-			return;
-		}
-	}
-	else if (!on)
-	{
-		menu_visible_hotkey = 0;
-	}
-
-	fprintf(stderr, "menu: script %s (open=%d)\n", on ? "shown" : "hidden",
-	        menu_open);
-}
-
-/* The hotkey. A user action, so it wins over the script's choice while it is
- * on; pressing it again returns to whatever the script asked for. */
+/* The hotkey. The only way the menu appears, and a user action, so it is not
+ * overridden by anything a script does. */
 void vnovel_menu_toggle(void)
 {
 	if (!menu_open)
@@ -180,9 +200,8 @@ void vnovel_menu_toggle(void)
 		return;
 	}
 	menu_visible_hotkey = !menu_visible_hotkey;
-	fprintf(stderr, "menu: hotkey %s (script wants %s)\n",
-	        menu_visible_hotkey ? "shown" : "hidden",
-	        menu_visible_script ? "shown" : "hidden");
+	fprintf(stderr, "menu: hotkey %s\n",
+	        menu_visible_hotkey ? "shown" : "hidden");
 }
 
 /* Create the menu's font handles and icon tables. Called once at start-up;
@@ -237,7 +256,11 @@ void vnovel_menu_shutdown(void)
 	menu_created = 0;
 }
 
-/* Called when the user activates an item. */
+/* Called when the user activates an item.
+ *
+ * A MENU_GRAY row is inert - the menu will not invoke its command - so the
+ * Session rows never arrive here; they are reported, not acted on. What can
+ * arrive is Close, and anything a future page adds above MENU_ID_FIRST_DYNAMIC. */
 static void menu_cmd(MENUID id)
 {
 	if (id == MENU_ID_CLOSE)
@@ -245,8 +268,39 @@ static void menu_cmd(MENUID id)
 		vnovel_menu_close();
 		return;
 	}
-	/* No other page has behaviour yet: the game's own tree is what will dispatch
-	 * here once the native MenuItem classes feed it in. */
+	fprintf(stderr, "menu: item %u activated (no action)\n", (unsigned)id);
+}
+
+/* One live session value, by index into menu_info. Returns the slot so a caller
+ * can build the string in place, which is what vnovel_menu_set_info does. */
+static char *menu_info_slot(int which)
+{
+	if (which < 0 || which >= MENU_INFO_COUNT)
+		return NULL;
+	return menu_info[which];
+}
+
+extern "C" void vnovel_menu_set_info(int which, const char *text)
+{
+	char *slot = menu_info_slot(which);
+	if (!slot || !text)
+		return;
+	/* Truncated rather than refused: a long path is still useful shortened, and
+	 * the row is a fixed buffer because the menu keeps its own copy. */
+	snprintf(slot, sizeof(menu_info[0]), "%s", text);
+}
+
+/* Push the current values into a built menu. Called on every open, so a value
+ * that changed since the last time the bar was up - a new game, a different
+ * save path - is what the user sees.
+ *
+ * Rows are located by id, which is why the table's ids and menu_info's indices
+ * are the same numbers: the loop below is the whole of the mapping. */
+static void menu_refresh_pages(void)
+{
+	for (int i = 0; i < MENU_INFO_COUNT; i++)
+		menusys_msg(SMSG_SETTEXT, (MENUID)(MENU_INFO_FIRST + i),
+		            (INTPTR)menu_info[i]);
 }
 
 /* Open the menu bar.
@@ -284,6 +338,13 @@ int vnovel_menu_open(int w, int h)
 		fprintf(stderr, "menu: menusys_open failed\n");
 		return 0;
 	}
+
+	/* After the menu exists and before it draws: the rows were created from
+	 * menu_info's initial text, and this is what makes the bar show the current
+	 * session rather than the strings it was built with. Cheap - a handful of
+	 * small strcpy into the menu's own storage - and it is why a value captured
+	 * at load time is still correct after a device reset. */
+	menu_refresh_pages();
 
 	menu_open = 1;
 	/* The first draw must render, so drop any cache from a previous open; the
@@ -389,7 +450,12 @@ const unsigned char *vnovel_menu_draw(int *w, int *h, int *pitch,
                                     const unsigned char **alpha,
                                     int *alpha_pitch)
 {
-	if (!menu_open)
+	/* The same gate as composite_menu, repeated at the source so no caller can
+	 * reach a page that nothing asked to be shown. The menu is opened on the
+	 * game's `menu.visible` request - that is what builds its item tree - but
+	 * the bar is drawn only on the hotkey, so "open" and "on screen" are two
+	 * different things here and this is the one that decides the second. */
+	if (!menu_open || !vnovel_menu_should_draw())
 		return NULL;
 
 	if (menuvram && menuvram->ptr && menuvram->width > 0 &&

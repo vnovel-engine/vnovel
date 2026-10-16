@@ -285,6 +285,25 @@ extern "C"
                 {NULL, NULL},
           },
           "none"},
+         {"vnovel_menu_hotkey",
+          "Menu Hotkey",
+          "Which key toggles the core's own menu bar. 'none' (the default) "
+          "leaves it unbound, because the bar is an addition to the frame rather "
+          "than something a game draws: a title that never asks for one gets no "
+          "bar and no key does anything. Bind one when you want it. This acts "
+          "independently of a game that shows a menu of its own, and it always "
+          "works, so it is the way to reach the menu when a title's own request "
+          "is unavailable.",
+          {
+                {"none", NULL},
+                {"F12", NULL},
+                {"F11", NULL},
+                {"F10", NULL},
+                {"Tab", NULL},
+                {"Backquote", NULL},
+                {NULL, NULL},
+          },
+          "none"},
          {NULL, NULL, NULL, {{0}}, NULL},
    };
 

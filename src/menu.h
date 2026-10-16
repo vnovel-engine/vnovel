@@ -40,19 +40,36 @@ void vnovel_menu_close(void);
  * it can run its own timers while open. */
 void vnovel_menu_proc(void);
 
-/* F12. Opens the menu bar if nothing is open, otherwise shows/hides it. */
+/* Toggle the menu. Opens it if nothing is open, otherwise shows/hides it. This
+ * is the only way the menu is shown, and the key it is bound to comes from the
+ * `vnovel_menu_hotkey` core option (unbound by default). */
 void vnovel_menu_toggle(void);
 
-/* What the script asked for (the native Menu's `visible` property). */
-void vnovel_menu_set_visible(int on);
-
 /* Whether the frame path should composite the menu this frame: it is open and
- * either the script or the hotkey wants it shown. */
+ * the hotkey has it shown. A game's own `menu.visible` is deliberately not part
+ * of this - see the note in vnovel_menu_should_draw's definition. */
 int vnovel_menu_should_draw(void);
 
 /* The geometry the menu opens at, published from the live frame so the menu
  * matches the running game rather than a hardcoded size. */
 void vnovel_menu_set_pref_geometry(int w, int h);
+
+/* One live session value for the Session page, applied when the bar next opens.
+ *
+ * `which` is a VNOVEL_MENU_INFO_* index; the text is copied into the menu's own
+ * buffer, so the caller's string need not outlive the call and may be freed.
+ * Values set before the menu is created are kept. */
+enum {
+	VNOVEL_MENU_INFO_GAME = 0,      /* what was loaded, by name       */
+	VNOVEL_MENU_INFO_ENGINE,        /* which engine, and its version  */
+	VNOVEL_MENU_INFO_COMPAT,        /* the era resolved, and its source */
+	VNOVEL_MENU_INFO_VERSION,       /* this core's build              */
+	VNOVEL_MENU_INFO_SAVES,         /* where saves land               */
+	VNOVEL_MENU_INFO_OVERRIDES,     /* the override directory, if any */
+	VNOVEL_MENU_INFO_COUNT
+};
+
+void vnovel_menu_set_info(int which, const char *text);
 
 /* Pointer input, one frame. `btn` is NP2kai's convention: 0 = move only,
  * 1 = left down, 2 = left up (up outside the menu closes it). `x`/`y` are in
