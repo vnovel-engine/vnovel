@@ -88,6 +88,53 @@ They are applied to **both** engines: the translation happens wherever keyboard
 events enter the core, so a remapped key reaches the right engine action
 regardless of which engine is running.
 
+### The core's own menu (`Menu Hotkey`)
+
+The `vnovel_menu_hotkey` option binds a key to toggle a menu the **core** draws
+over the frame — not the game's menu. It is **unbound by default** (`none`).
+
+That default is deliberate: this is an addition to the picture, not something
+the game asked for, so nothing puts it on screen until you bind a key. It is
+independent of the game's own menus, which keep their usual keys and gestures
+(right-click on KiriKiri, for instance).
+
+Available bindings: `F12`, `F11`, `F10`, `Tab`, `Backquote`. While the bar is
+open it takes the keyboard (arrows move, Enter activates, Escape closes) and the
+game receives no input, the same way the game receives none while the engine's
+own modal dialogs are up.
+
+The bar's **Session** page reports what the core actually resolved for this run:
+the loaded archive and its identity, the engine, the era option as set, the
+build string, where saves land, and the override directory with whether it is
+even present.
+
+## Development aids
+
+### Text Debug View (`Text Debug View`)
+
+> For working on the text-plane capture, not for playing. Leave it `off`.
+
+`vnovel_text_debug_view = pip` overlays a translucent picture-in-picture in the
+**bottom-right** of the frame showing the text the core has captured,
+accumulated into a page: the dialogue alone, over a flat dark backing, with no
+artwork behind it. The frame it came from is already on screen behind the
+overlay, so there is no second copy of it — the panel exists to show what was
+*peeled out*, and nothing else.
+
+It is a pure view: it changes nothing about capture or drawing, and composites
+onto the core's own shadow buffer, never the engine's framebuffer. It works on
+all three engines.
+
+Its point is that capture defects are otherwise invisible. On KiriKiri the
+glyph being drawn used to be published one call *before* it was blended into the
+surface, and a garbled panel was how that was found.
+
+**It is also the first consumer of page accumulation.** KiriKiri publishes its
+text one *line* at a time (each publication is a line-height box), so "the
+captured text" has to be assembled. Turning this option on is what asks the
+engines for the placement context that makes that possible; with it off, nothing
+is accumulated and the engines skip the work (see the handover, §2.5).
+
 ## Known limitations (by design)
 
 - **Engine-native modals are pointer-only.** Confirmation and form dialogs

@@ -238,11 +238,7 @@ long long ons_libretro_game_clock_ms(void)
 void ons_libretro_clock_set(double scale)
 {
   clock_scale = (scale > 1.0) ? scale : 1.0;
-  if (getenv("ONS_CLOCK_DEBUG"))
-    fprintf(stderr, "[clock] set scale=%.3f (bias=%lld epoch=%lld)\n",
-            clock_scale, clock_bias_ms, clock_epoch_ms);
 }
-
 /* Restart the clock (e.g. on core reset). A reset begins a new run: the wall
  * clock rebases to ~0 and any fast-forward bias is dropped, so the restarted
  * engine reads a fresh timeline instead of the previous run's elapsed time.

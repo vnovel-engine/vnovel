@@ -150,6 +150,34 @@ extern "C"
        * that does not scroll can place it where the game intended. */
       int origin_x, origin_y;
 
+      /* Where the SURFACE (pixels/width/height) sits in the window, in window
+       * pixels: read-only context, engine-set, never host-set. Valid only while
+       * the splice flag below is on; 0/0 otherwise.
+       *
+       * This is what makes a page reconstructible on every engine: a shell that
+       * accumulates text blits each publication's changed rect out of the
+       * surface to (plane_x + changed_x, plane_y + changed_y). Engines that
+       * publish a whole page set 0/0; KiriKiri publishes one line box at a time
+       * and sets the box's window position, so the fragments line up. */
+      int plane_x, plane_y;
+
+      /* The size of the WINDOW this surface lives in, in pixels. 0 until the
+       * engine has composited a frame.
+       *
+       * Sent with every publication so a shell can size its page without
+       * waiting for a frame of its own: an engine publishes text during
+       * start-up, before the shell has presented anything, and a shell that
+       * learned the size on its own thread dropped all of those fragments (the
+       * start of the page went missing). Reported here it is always available
+       * alongside the fragment it describes. */
+      int window_w, window_h;
+
+      /* Nonzero when the engine was asked for the placement context above (see
+       * the splice toggle on the engine side). A shell sets this once at
+       * startup when it intends to accumulate. Zero means the engine is not
+       * maintaining any of it and plane_x/plane_y are meaningless. */
+      int splice;
+
       /* Nonzero when the engine began a new page: everything previously drawn
        * on the plane is gone, so a scrolling shell returns to the top. */
       int restart;
@@ -176,6 +204,163 @@ extern "C"
     * so a caller that publishes unconditionally is still correct - but check
     * `vnovel_text_plane_wanted()` first if producing the pixels costs work. */
    VNOVEL_EXPORT void vnovel_publish_text_plane(const VNovelTextPlane *plane);
+
+   /* Ask the shell to write its copy of the plane to <save dir><name>.bmp, the
+    * plane's equivalent of the engines' `snapshotsave` (which dumps the frame,
+    * not the core's plane). An engine command handler calls this; it is a no-op
+    * when no shell is listening, nothing has been captured, or `name` is empty.
+    * `name` is consumed during the call, so the caller need not keep it alive. */
+   typedef void (*vnovel_text_plane_dump_fn)(const char *name, void *userdata);
+   VNOVEL_EXPORT extern vnovel_text_plane_dump_fn vnovel_text_plane_dump_cb;
+   VNOVEL_EXPORT extern void *vnovel_text_plane_dump_userdata;
+
+   VNOVEL_EXPORT void vnovel_request_text_plane_dump(const char *name);
+
+   /* Ask the engines to maintain the text plane's PLACEMENT context (plane_x/
+    * plane_y in VNovelTextPlane) as well as its pixels. A shell calls this once
+    * at startup if it intends to accumulate the published fragments into a
+    * page; without it the engines skip the per-publication work and report 0/0.
+    *
+    * A no-op on an engine with nothing to do (ONScripter/PONScripter publish a
+    * whole page, so their placement is 0/0 by definition). */
+   typedef void (*vnovel_text_plane_splice_fn)(int enabled);
+   VNOVEL_EXPORT extern vnovel_text_plane_splice_fn
+         vnovel_text_plane_splice_cb;
+
+   VNOVEL_EXPORT void vnovel_request_text_plane_splice(int enabled);
+
+   /* --- Text runs: the STRUCTURED half of the text separation -------------
+    *
+    * VNovelTextPlane above is pixels - a picture of the text, which a shell can
+    * relocate but not restyle or reflow. This is the text the engine was asked
+    * to draw, before it became pixels: the characters, the position, and the
+    * style of one draw call.
+    *
+    * They are separate streams because they are different things, produced at
+    * different points: the plane is per-bitmap (whatever surface glyphs landed
+    * on), a run is per CALL. Only at the call does the engine still know which
+    * characters produced which ink; nothing downstream can recover it. A shell
+    * may want either without the other.
+    *
+    * KiriKiri/KAG shows why it is worth having: KAG draws one character per
+    * call into a per-line bitmap, so runs ARE the script's text with layout
+    * resolved, while the plane is a line box a shell must accumulate and cannot
+    * read as text at all.
+    *
+    * What a run is NOT: not a line, not a page, not an utterance. Those are
+    * groupings a shell builds from order and position; the engine has no such
+    * notion to report. Nor is there a "this run is the shadow of that one" -
+    * a call carries its own shadow parameters and both are rendered from them.
+    *
+    * A shell that wants only a proportion of the work pays only for that: with
+    * no callback installed an engine skips producing runs (it does not even
+    * resolve the window position), and the pixels-only plane path is unchanged.
+    */
+   typedef struct VNovelTextRun
+   {
+      /* The characters this call carried, as UTF-16 code units. NOT
+       * NUL-terminated in general, and NOT valid after the callback returns
+       * (the engine may reuse the string): copy what you keep, and use
+       * text_length rather than scanning for a terminator.
+       *
+       * Usually one character on KiriKiri/KAG, but not always - a ruby run or a
+       * pre-composed string arrives whole - so do not assume length 1. */
+      const unsigned short *text;
+      int text_length;
+
+      /* Where the call was told to draw, in LAYER-LOCAL pixels. Kept as given
+       * rather than normalised: its meaning is the engine's own text metric (a
+       * KAG glyph's y is the glyph's top, not a baseline), and inventing a
+       * convention here would be a guess a shell cannot check.
+       *
+       * There is deliberately NO window-resolved position. This stream exists
+       * so a shell can RE-LAY-OUT the text (reflow, totalfit, Knuth-Plass), and
+       * a shell that does that derives its own placement; the engine's, already
+       * resolved through the layer tree, is at best a hint. Reporting it would
+       * also force a parent-chain walk per glyph - the only part of this path
+       * that costs anything. A shell that wants "where did the engine put it"
+       * has the plane, which is that answer already rendered. */
+      int x, y;
+
+      /* Style, as given to the call. Color is 0xRRGGBB - the engine's alpha
+       * rides in opacity, not here. shadow_level 0 means no shadow and the
+       * shadow fields are then meaningless. */
+      unsigned int color;
+      int opacity;
+      int antialias;
+      int shadow_level;
+      unsigned int shadow_color;
+      int shadow_offset_x, shadow_offset_y;
+
+      /* Which producer this run came from. The two are different things and a
+       * consumer must not confuse them:
+       *
+       *   VNOVEL_RUN_DRAW  — the engine DREW these characters. Position and
+       *                      style below are meaningful, and the run arrives
+       *                      when the engine renders it, so it is paced by the
+       *                      game's own typewriter speed.
+       *   VNOVEL_RUN_PARSE — a look-ahead parser READ these characters without
+       *                      drawing them. They arrive as fast as the scenario
+       *                      can be parsed, which is the whole point: the text
+       *                      of a page is known before the engine has drawn any
+       *                      of it. Position and style are meaningless (the
+       *                      parser has no layer) and are 0.
+       *
+       * A consumer that wants "the page's text, now" filters for PARSE; one that
+       * wants "what the engine is actually showing" filters for DRAW. Neither
+       * is a superset of the other — during a page the same text arrives on
+       * both — so a consumer must pick one rather than merging them. */
+      int kind;
+
+      /* Increments once per run. Wraps; compare by subtraction. */
+      unsigned long long serial;
+   } VNovelTextRun;
+
+   /* Which producer a VNovelTextRun came from. See the `kind` field. */
+#define VNOVEL_RUN_DRAW  0
+#define VNOVEL_RUN_PARSE 1
+
+   typedef void (*vnovel_text_run_fn)(const VNovelTextRun *run, void *userdata);
+
+   /* Installed by the shell before any engine starts. NULL (the default) means
+    * no shell is listening and an engine should skip producing runs entirely. */
+   VNOVEL_EXPORT extern vnovel_text_run_fn vnovel_text_run_cb;
+   VNOVEL_EXPORT extern void *vnovel_text_run_userdata;
+
+   /* True when a shell is listening for runs, so a caller can skip the work
+    * (including resolving window coordinates) rather than filling a struct
+    * nobody reads. */
+   VNOVEL_EXPORT int vnovel_text_run_wanted(void);
+
+   /* Publish one run. A no-op when no shell installed a callback, so a caller
+    * that publishes unconditionally is still correct. */
+   VNOVEL_EXPORT void vnovel_publish_text_run(const VNovelTextRun *run);
+
+   /* Ask the engines to compose their frame from ARTWORK ONLY, leaving out any
+    * layer that has received text. A shell shows the text from its own surface
+    * instead (the text plane), so the two arrive separately and can be placed
+    * or scaled independently - which is what makes a split/large-canvas view
+    * possible without masking or subtraction.
+    *
+    * A no-op on an engine that already separates the two (ONScripter/PONScripter
+    * composite text in a refresh pass, not a layer), so this is only meaningful
+    * where the frame and the text genuinely share one composite. */
+   typedef void (*vnovel_split_view_fn)(int enabled);
+   VNOVEL_EXPORT extern vnovel_split_view_fn vnovel_split_view_cb;
+
+   VNOVEL_EXPORT void vnovel_request_split_view(int enabled);
+
+   /* Apply any request made before this engine registered its callbacks.
+    *
+    * The core must request these BEFORE it starts an engine (an engine draws
+    * its opening burst during start-up, and a request made afterwards arrives
+    * too late - measured: 6 publications with splice=0 before the first
+    * retro_run, all of them, so the feature looks broken rather than late). But
+    * the engine only publishes its callbacks DURING that start. So an engine
+    * calls this immediately after it fills in vnovel_text_plane_splice_cb /
+    * vnovel_split_view_cb, and any request already made takes effect against
+    * it. A request made later is forwarded immediately as before. */
+   VNOVEL_EXPORT void vnovel_apply_pending_requests(void);
 
 #ifdef __cplusplus
 }

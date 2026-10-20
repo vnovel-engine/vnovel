@@ -40,3 +40,6 @@ tests/xor_encode
 
 # Wrap unit harness: the binary is a build product, the sources are tracked.
 tests/wrap/wrap_harness
+
+# Text-plane bridge contract test: same rule, binary is a build product.
+tests/textplane/textplane_test

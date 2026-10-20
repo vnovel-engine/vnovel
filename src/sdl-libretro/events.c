@@ -7,16 +7,13 @@
 int SDL_libretro_rightclick_button = RIGHTCLICK_NONE;
 int SDL_libretro_leftclick_button  = RIGHTCLICK_NONE;
 
-/* ---- Runtime-tunable input knobs ----
- * These used to be function-local statics initialised from the environment on
- * first use. They live at module scope instead so the frontend (or a test) can
- * flip them at runtime through the setters below, and so the environment is
+/* ---- Runtime-tunable input knob ----
+ * This used to be a function-local static initialised from the environment on
+ * first use. It lives at module scope instead so the frontend (or a test) can
+ * flip it at runtime through the setter below, and so the environment is
  * consulted once, not on every poll. -1 = "not yet resolved". */
-static int vnovel_input_debug    = -1;
 static int vnovel_ctrl_tap_frames = -1;  /* configured tap length, frames */
 static int ons_ctrl_tap_left   = 0;   /* live countdown for the current tap */
-
-void SDL_libretro_set_input_debug(int on) { vnovel_input_debug = on ? 1 : 0; }
 
 /* Set the Y→ctrl tap length directly. Also re-arms the countdown so a change
  * takes effect on the next press rather than mid-tap. */
@@ -33,42 +30,6 @@ void SDL_libretro_set_ctrl_tap_frames(int frames)
 #define MOUSE_BTN_LEFT  1
 #define MOUSE_BTN_RIGHT 2
 
-/* RetroPad button labels, for debug output only. */
-static const char *const pad_name[16] = {
-  "B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT",
-  "A", "X", "L", "R", "L2", "R2", "L3", "R3"
-};
-
-/* Input diagnostics live in one place so call sites stay clean and the
- * environment is read at most once. Enable with ONS_INPUT_DEBUG=1 or
- * SDL_libretro_set_input_debug(1). */
-static int input_debug_enabled(void)
-{
-  if (vnovel_input_debug < 0) {
-    const char *e = getenv("ONS_INPUT_DEBUG");
-    vnovel_input_debug = e && *e && *e != '0';
-  }
-  return vnovel_input_debug;
-}
-
-static void input_debug_kbd(int in_sym, int engine_sym, int down)
-{
-  if (!input_debug_enabled()) return;
-  fprintf(stderr, "IPROBE kbd sym=%d -> engine SDLK=%d %s\n",
-          in_sym, engine_sym, down ? "DOWN" : "UP");
-}
-
-/* `tap_left` >= 0 prints the remaining tap length; pass -1 for plain edges. */
-static void input_debug_pad(const char *what, int idx, int engine_sym, int tap_left)
-{
-  if (!input_debug_enabled()) return;
-  if (tap_left >= 0)
-    fprintf(stderr, "IPROBE pad %s (id=%d) -> SDLK=%d %s (%d frames)\n",
-            pad_name[idx], idx, engine_sym, what, tap_left);
-  else
-    fprintf(stderr, "IPROBE pad %s (id=%d) -> SDLK=%d %s\n",
-            pad_name[idx], idx, engine_sym, what);
-}
 
 /* Resolve the Y→ctrl tap length once: ONS_CTRL_TAP_FRAMES overrides the core
  * option vnovel_ctrl_tap_frames (default 20, 0 = legacy held ctrl). */
@@ -112,10 +73,8 @@ static void maybe_inject_autoclick(void)
 {
   int n = get_test_autoadvance();
   if (n <= 0) return;
-  fprintf(stderr, "AA: counter=%d/%d\n", test_autoadvance_counter, n);
   if (++test_autoadvance_counter >= n) {
     test_autoadvance_counter = 0;
-    fprintf(stderr, "AA: INJECTING SPACE\n");
     static SDL_keysym sp_sym = { SDLK_SPACE, SDLK_SPACE, 0 };
     SDL_PrivateKeyboard(SDL_PRESSED, &sp_sym);
     SDL_PrivateKeyboard(SDL_RELEASED, &sp_sym);
@@ -191,7 +150,6 @@ static bool handle_ctrl_tap(int i, int16_t state, int key, int tap_len,
     /* Rising edge: (re)start the tap. */
     buttons[i] = 1;
     ons_ctrl_tap_left = tap_len;
-    input_debug_pad("TAP DOWN", i, key, ons_ctrl_tap_left);
     sym->scancode = key; sym->sym = key;
     SDL_PrivateKeyboard(SDL_PRESSED, sym);
   } else if (ons_ctrl_tap_left > 0) {
@@ -199,7 +157,6 @@ static bool handle_ctrl_tap(int i, int16_t state, int key, int tap_len,
      * branch is reached whenever the tap has not expired yet — including while
      * Y stays held — and is skipped once the countdown hits zero. */
     if (--ons_ctrl_tap_left == 0) {
-      input_debug_pad("TAP UP", i, key, -1);
       sym->scancode = key; sym->sym = key;
       SDL_PrivateKeyboard(SDL_RELEASED, sym);
     }
@@ -226,7 +183,6 @@ static void PumpKeyboardEvents(void)
           break;
         }
       }
-      input_debug_kbd(i, sdl_key, state);
       /* Don't forward the fullscreen key to the engine — it changes
        * the SDL video mode resolution, conflicting with RetroArch's
        * own fullscreen. RetroArch handles fullscreen natively. */
@@ -246,7 +202,6 @@ static void PumpKeyboardEvents(void)
       continue;
     if (buttons[i] != state) {
       buttons[i] = state;
-      input_debug_pad(state ? "DOWN" : "UP", i, k, -1);
       sym.scancode = k;
       sym.sym = k;
       SDL_PrivateKeyboard(state ? SDL_PRESSED : SDL_RELEASED, &sym);

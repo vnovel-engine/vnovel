@@ -47,7 +47,7 @@ static void pons_setDebugLevel(EngineHandle h, int l)
 }
 static void pons_setTextSpeed(EngineHandle h, int s)
 {
-   PonscripterLabel *pons = (PonscripterLabel *)h;
+   (void)h;
    SDL_keysym sym;
    sym.sym      = SDLK_1 + s;
    sym.scancode = sym.sym;
@@ -91,13 +91,6 @@ static void engine_do_run(EngineHandle h)
    PonscripterLabel *pons = (PonscripterLabel *)h;
    if (pons->init(NULL))
       return;
-   {
-      extern int SDL_timer_started, SDL_timer_running;
-      fprintf(stderr,
-              "Timer state: started=%d running=%d\n",
-              SDL_timer_started,
-              SDL_timer_running);
-   }
    SDL_ShowCursor(SDL_DISABLE);
    pons->eventLoop();
 }

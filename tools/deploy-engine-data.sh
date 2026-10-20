@@ -54,14 +54,22 @@ TARGET=${1:-/mnt/recalbox/bios/vnovel}
 [ -d "$(dirname "$TARGET")" ] || { echo "no such parent: $(dirname "$TARGET")" >&2; exit 1; }
 mkdir -p "$TARGET/system_polyfill"
 
-cp "$SRC/overrides.txt" "$SRC/startup.tjs" "$SRC/mona.ttf" "$TARGET/"
+cp "$SRC/overrides.txt" "$SRC/mona.ttf" "$TARGET/"
 cp "$SRC"/system_polyfill/*.tjs "$TARGET/system_polyfill/"
+
+# Remove a startup.tjs this script used to install. It was a 39-byte placeholder
+# (`Debug.message("Hello world!")`) and it is actively harmful: the data
+# directory is added as an engine auto-path (ScriptMgnIntf.cpp:675), so a
+# startup.tjs here SHADOWS the game's own by base name and the game never
+# boots — the engine runs the placeholder, prints "Hello world!" and stops.
+# An upgrade must therefore delete it, not merely stop copying it.
+rm -f "$TARGET/startup.tjs"
 
 # Verify byte-for-byte: a partial copy is worse than none, because the core
 # starts and then fails somewhere unrelated.
 echo "verifying:"
 fail=0
-for f in overrides.txt startup.tjs mona.ttf \
+for f in overrides.txt mona.ttf \
          system_polyfill/KAGParser.tjs system_polyfill/LayerCompat.tjs \
          system_polyfill/MenuItem.tjs system_polyfill/PluginStubs.tjs \
          system_polyfill/Util.tjs; do

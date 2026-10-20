@@ -1,13 +1,17 @@
 #!/bin/bash
-# One experiment arm for the KiriKiri2/KRKR2 core.
+# One run of the KiriKiri core, for manual experiments.
 #
 # ALWAYS stops any running retroarch before starting, and reports whether
 # exactly one is left running afterwards, so a stale instance can never be
 # mistaken for the run under test. The log lands at /tmp/<tag>.log.
 #
 # Usage: krun.sh <tag> <secs> [env-or-args...]
-#   krun.sh fresh1 30 KRKR2_ENGINE_COMPAT=2.19 KRKR2_SCRIPT_OVERRIDE=/tmp/ovr
-#   krun.sh probe  40 KRKR2_ALPHA_PROBE=1 KRKR2_LAYER_DUMP=/tmp/ldump
+#   krun.sh fate 40 KRKRSDL2_DATA_PATH=$PWD/deps/krkrsdl2/data VNOVEL_TEXT_RUN_LOG=/tmp/fate.log
+#   krun.sh cfg  25 VNOVEL_PRESENT_STRIPES=4:32        # frame diagnostics
+#
+# The old examples here named KRKR2_* variables. Those belonged to the KiriKiri 2
+# experiment (deps/kirikiri2), which was removed from the tree and archived
+# beside this repo; no code in this tree reads any of them.
 #
 # Requires DISPLAY=:97 to exist (Xvfb 800x600x24) and the game data at
 # /home/matcha/Fate-Eng-Install/data.xp3. Afterwards ALWAYS run kstop.sh and

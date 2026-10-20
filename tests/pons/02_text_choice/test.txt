@@ -1,0 +1,123 @@
+*define
+mode_ext
+game
+*start
+; ===========================================================================
+; PONScripter: text/choice layout probe.
+;
+; ENGINE IDENTIFIER: every line of text is prefixed "PON", and every page is a
+; shade of BLUE. Nothing here should ever be ambiguous about which engine
+; produced it.
+;
+; Colour map (all blue):
+;   case 1  #000044    case 2  #0000CC    case 3  #000033    case 4  #000055
+;   page 2A #000077    page 2B #0000AA    after2  #0000EE    after4  #000066
+;
+; The four situations:
+;   1. text, then a choice leading to one of two pages
+;   2. text, a choice, then more text
+;   3. a page that is only a choice
+;   4. a choice, then text
+;
+; PONScripter specifics, learned the hard way — recorded so the next reader of
+; this file does not rediscover them:
+;   - there is NO `english` command (that is ONScripter-EN only); including it
+;     aborts the script at that line;
+;   - the text-line marker is NOT '>' but whatever the active encoding says:
+;     '^' under UTF-8, '`' under CP932 (see deps/ponscripter/src/encoding.h,
+;     UTF8Encoding('^') / CP932Encoding('`'));
+;   - there is NO goto/jump, so `select` is the only branching verb.
+; ===========================================================================
+
+; ---- case 1: text, then a choice leading to one of two pages -------------
+bg #000044,0
+repaint
+texton
+^PON CASE-1 line A: message text on a blue page
+br
+^PON CASE-1 line B: then a choice follows
+; A line whose text is a RUNTIME VARIABLE value. The look-ahead cannot know it
+; (the borrowed parser has no variable table), so it must not publish a wrong
+; expansion -- this line is what caught `%899@` becoming `0<pause>`.
+mov %0,42
+%0
+textshow
+repaint
+snapshotsave "pon_tc_1_text_then_choice"
+
+select "PON CASE-1 choice: LEFT to page 2A",*page_2a,"PON CASE-1 choice: RIGHT to page 2B",*page_2b
+
+*page_2a
+bg #000077,0
+repaint
+texton
+^PON PAGE-2A: the left branch of case 1
+textshow
+repaint
+snapshotsave "pon_tc_2a_left_page"
+select "PON CASE-1 result: continue to case 2",*case2
+
+*page_2b
+bg #0000AA,0
+repaint
+texton
+^PON PAGE-2B: the right branch of case 1
+textshow
+repaint
+snapshotsave "pon_tc_2b_right_page"
+select "PON CASE-1 result: continue to case 2",*case2
+
+; ---- case 2: text, a choice, then more text ------------------------------
+*case2
+bg #0000CC,0
+repaint
+texton
+^PON CASE-2 line A: message text before a choice
+textshow
+repaint
+snapshotsave "pon_tc_3_case2_before_choice"
+
+select "PON CASE-2 choice: go on, then read more text",*case2_after
+
+*case2_after
+bg #0000EE,0
+repaint
+texton
+^PON CASE-2 after: the choice ended the previous page
+br
+^PON CASE-2 after B: so this text starts a new one
+textshow
+repaint
+snapshotsave "pon_tc_4_case2_after_choice"
+select "PON CASE-2 result: continue to case 3",*case3
+
+; ---- case 3: a page that is only a choice --------------------------------
+*case3
+bg #000033,0
+repaint
+select "PON CASE-3 choice A: this page has no message text",*case3_a,"PON CASE-3 choice B: nothing but choices here",*case3_b
+
+*case3_a
+mov %0,1
+select "PON CASE-3 result: from choice A, continue to case 4",*case4
+*case3_b
+mov %0,2
+select "PON CASE-3 result: from choice B, continue to case 4",*case4
+
+; ---- case 4: a choice, then text -----------------------------------------
+*case4
+bg #000055,0
+repaint
+select "PON CASE-4 choice: pick this, then read text",*case4_after
+
+*case4_after
+bg #000066,0
+repaint
+texton
+^PON CASE-4 after: text reached by taking a choice
+textshow
+repaint
+snapshotsave "pon_tc_5_case4_choice_then_text"
+
+*end
+end

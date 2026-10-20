@@ -97,6 +97,13 @@ int main(void)
 	plane.changed_h = 1;
 	plane.origin_x  = 7;
 	plane.origin_y  = 9;
+	/* The placement context: where the SURFACE sits in the window, distinct
+	 * from the origin within it, plus the flag saying whether the engine
+	 * maintained it. Values chosen to differ from origin_x/y so a mix-up in
+	 * the field order would show. */
+	plane.plane_x   = 11;
+	plane.plane_y   = 13;
+	plane.splice    = 1;
 	plane.restart   = 1;
 	plane.serial    = 42;
 
@@ -112,6 +119,9 @@ int main(void)
 	      "changed rect arrives unchanged");
 	check(last.origin_x == 7 && last.origin_y == 9,
 	      "origin arrives unchanged");
+	check(last.plane_x == 11 && last.plane_y == 13,
+	      "placement context arrives unchanged (distinct from origin)");
+	check(last.splice == 1, "splice flag arrives unchanged");
 	check(last.restart == 1, "restart flag arrives unchanged");
 	check(last.serial == 42, "serial arrives unchanged");
 	check(last_pixels.size() == (size_t)PITCH * H,

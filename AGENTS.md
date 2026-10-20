@@ -6,10 +6,15 @@ When investigating engine behaviour, build with debug symbols and drive the
 running process with gdb. Probes are a fallback, not the first tool.
 
 ```
-make debug                        # == -g -O0 -fno-inline with probes ALPHA SURFACE
-make debug KRKR_DEBUG_PROBES=     # same, no probes
-make debug KRKR_DEBUG_PROBES=HITTEST
+make debug              # -g -O0 -fno-inline, engine probes OFF (OPTION_DEBUG_PROBES)
+make debug PROBES=1     # additionally compiles the core's ad-hoc input probes
 ```
+
+The engine's own probes are `OPTION_DEBUG_PROBES` (pinned OFF in the Makefile's
+CMake flags; `KRKR_CMAKE_EXTRA` can turn them back on). An older convention here
+used `KRKR_DEBUG_PROBES=ALPHA SURFACE` / `=HITTEST`; those names belonged to the
+KiriKiri 2 experiment (`deps/kirikiri2`), which was removed from the tree and
+archived beside this repo, and no build reads them now.
 
 `-fno-inline` is part of it deliberately: without it, small accessors and
 one-line methods (`SetFace`, `GetPoint`, `rect.get_width()`, …) are inlined and

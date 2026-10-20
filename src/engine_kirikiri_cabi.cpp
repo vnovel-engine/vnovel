@@ -50,6 +50,12 @@ static inline int unsetenv(const char *name)
  * no engine types in it (stdbool/stdint only), which is exactly why the core can
  * include it directly while declaring every other engine symbol by hand. */
 #include "Present.h"
+/* The text-plane splice switch, engine side (visual/PresentIntf.h). Declared by
+ * hand rather than including that header: it is the engine-internal half of the
+ * seam and pulls in engine types this file deliberately avoids. C++ linkage, as
+ * defined in Present.cpp. */
+extern void TVPSetTextPlaneSplice(bool enabled);
+extern void TVPSetSplitViewArtworkOnly(bool enabled);
 /* The core's single game clock (sdl-libretro/video.c); installed into the
  * engine via krkr_set_clock. C linkage — defined in C, consumed from C++. */
 extern "C" long long ons_libretro_game_clock_ms(void);
@@ -103,11 +109,50 @@ extern "C"
       int pitch;
       int changed_x, changed_y, changed_w, changed_h;
       int origin_x, origin_y;
+      /* Placement context (engine_bridge.h): where this surface sits in the
+       * window, plus whether the shell asked for it. Only KiriKiri fills these
+       * meaningfully - its publications are line-box fragments. */
+      int plane_x, plane_y;
+      /* Window size, sent with each publication so the shell can size its page
+       * before it has presented a frame (see engine_bridge.h). */
+      int window_w, window_h;
+      int splice;
       int restart;
       unsigned long long serial;
    } VNovelTextPlane;
 
    extern void vnovel_publish_text_plane(const VNovelTextPlane *plane);
+
+   /* The engine-neutral text RUN stream (engine_bridge.h). Same hand-declared
+    * shape and the same reason as VNovelTextPlane above; the layout must match
+    * VNovelTextRun exactly. */
+   typedef struct VNovelTextRun
+   {
+      const unsigned short *text;
+      int text_length;
+      int x, y;
+      unsigned int color;
+      int opacity;
+      int antialias;
+      int shadow_level;
+      unsigned int shadow_color;
+      int shadow_offset_x, shadow_offset_y;
+      /* Producer kind (engine_bridge.h): this path DRAWS, so it is
+       * VNOVEL_RUN_DRAW. The look-ahead shim sets VNOVEL_RUN_PARSE. */
+      int kind;
+      unsigned long long serial;
+   } VNovelTextRun;
+
+   extern void vnovel_publish_text_run(const VNovelTextRun *run);
+
+   /* The shell's splice request, routed through the bridge (engine_bridge.h). */
+   typedef void (*vnovel_text_plane_splice_fn)(int enabled);
+   extern vnovel_text_plane_splice_fn vnovel_text_plane_splice_cb;
+   /* The artwork-only request (engine_bridge.h). Same hand-declared shape. */
+   typedef void (*vnovel_split_view_fn)(int enabled);
+   extern vnovel_split_view_fn vnovel_split_view_cb;
+   /* Apply requests made before these callbacks existed (engine_bridge.h). */
+   extern void vnovel_apply_pending_requests(void);
    extern float *SDL_libretro_audio_buf;
    extern volatile int SDL_libretro_audio_write;
    extern volatile int SDL_libretro_audio_read;
@@ -136,6 +181,11 @@ static inline bool krkr_engine_present(void)
 static pthread_t krkr_thread;
 static volatile bool krkr_running               = false;
 static char krkr_game_path[PATH_MAX_LENGTH]     = "";
+/* Optional ARCHIVE FILE, when the game is a single executable carrying an
+ * embedded XP3. Kept apart from krkr_game_path because that one is chdir'd to
+ * and MUST be a directory; this one is handed to the engine as a storage
+ * argument instead. See krkr_set_archive_file. */
+static char krkr_archive_file[PATH_MAX_LENGTH]  = "";
 static char krkr_personal_path[PATH_MAX_LENGTH] = "";
 
 /* Engine era for the KiriKiri path, set from the frontend's core option before
@@ -246,7 +296,7 @@ static void *krkr_main(void *data)
     * to read each other's system variables — see the note below).
     *
     * Slots: name/args, the three optional appends, and the terminating NULL. */
-   char *argv[10] = {(char *)"krkrsdl2",
+   char *argv[12] = {(char *)"krkrsdl2",
                      (char *)"-debugwin",
                      /* Read by DebugIntf.cpp: TVPStartLogToFile() drains the
                       * important-log queue into krkr.console.log. See above -
@@ -274,6 +324,15 @@ static void *krkr_main(void *data)
     * KRKRSDL2_COMPAT, which is what the compatibility mask reads (see
     * krkr_set_engine_compat). An argument here would be a second mechanism for
     * the same thing, and the two would disagree the moment one changed. */
+   /* An embedded-XP3 title: name the FILE. The engine appends the archive
+    * delimiter itself and opens it as storage; its XP3 reader then finds the
+    * mark at a paragraph boundary and reads in place (see
+    * TVPGetXP3ArchiveOffset). Last, so it wins over the directory scan. */
+   if (krkr_archive_file[0])
+   {
+      argv[argc++] = krkr_archive_file;
+      argv[argc] = NULL;
+   }
    krkrsdl2_convert_set_args(argc, argv);
    /* Save location: the engine resolves System.personalPath (used by the game
      * for its "Fate_Savedata" folder) from this env var, which the frontend
@@ -318,9 +377,6 @@ static void *krkr_main(void *data)
    setenv("SDL_VIDEODRIVER", "dummy", 1);
    setenv("SDL_AUDIODRIVER", "dummy", 1);
    setenv("KRKRSDL2_LIBRETRO", "1", 1);
-   fprintf(stderr,
-           "krkr_main: init_platform=%p\n",
-           (void *)&krkrsdl2_init_platform);
    if (krkrsdl2_init_platform())
    {
       fprintf(stderr, "krkr_main: init_platform failed\n");
@@ -346,7 +402,6 @@ extern "C"
    {
       if (krkr_running)
          return 0;
-      fprintf(stderr, "krkr_init: starting\n");
 #ifdef _WIN32
       /* Module base under ASLR: a PE is not loaded at its link-time base, so
        * this is what turns a crash address from the OS or a debugger into a
@@ -365,7 +420,6 @@ extern "C"
        * up. Mark it present; every reference below binds to the linked symbol
        * directly. */
       krkr_static_loaded = true;
-      fprintf(stderr, "krkr_init: using linked-in KiriKiri engine\n");
 
       /* Export the frontend's system ("BIOS") directory so the engine looks
        * for overrides.txt there first (KRKRSDL2_OVERRIDE_PATH). Single-file
@@ -442,11 +496,6 @@ extern "C"
          krkr_install_present_callbacks();
       }
 
-      fprintf(stderr,
-              "krkr_init: pre_init=%p run_main=%p cleanup=%p\n",
-              (void *)&krkrsdl2_pre_init_platform,
-              (void *)&krkrsdl2_run_main_loop,
-              (void *)&krkrsdl2_cleanup);
       /* Install the core's single game clock into the engine: every KiriKiri
        * timer/transition/script wait then reads the same dilated time the core
        * computes (fast-forward included), instead of the engine keeping its own
@@ -458,10 +507,6 @@ extern "C"
      * globals survive) this is what lets StartApplication run a second time.
      * The engine owns the individual flags; we call one entry point. */
       krkrsdl2_prepare_restart();
-      fprintf(stderr,
-              "krkr_init: set_ff=%p notify_poll=%p\n",
-              (void *)&krkr_set_fastforward,
-              (void *)&krkr_notify_poll);
       setenv("KRKRSDL2_LIBRETRO", "1", 1);
       setenv("SDL_VIDEODRIVER", "dummy", 1);
       setenv("SDL_AUDIODRIVER", "dummy", 1);
@@ -490,6 +535,25 @@ extern "C"
       /* Normalise at the boundary: everything downstream (chdir, ExePath, the
        * engine's storage) then sees one form. */
       krkr_normalize_path(krkr_game_path);
+   }
+
+   /* The game is THIS FILE: a single executable with an embedded XP3 archive.
+    *
+    * Handed to the engine as a storage argument (see krkr_main), which its
+    * project-directory code turns into `path>` -- "open this as an archive".
+    * Deliberately NOT the channel krkr_setArchivePath uses: that one is chdir'd
+    * to, and a file there breaks the working directory (measured: chdir fails,
+    * no project directory is selected, the run publishes nothing). */
+   void krkr_set_archive_file(const char *path)
+   {
+      if (!path || !path[0])
+      {
+         krkr_archive_file[0] = 0;
+         return;
+      }
+      strncpy(krkr_archive_file, path, sizeof(krkr_archive_file) - 1);
+      krkr_archive_file[sizeof(krkr_archive_file) - 1] = 0;
+      krkr_normalize_path(krkr_archive_file);
    }
    extern "C" void krkr_set_save_path(const char *path);
    void krkr_setSavePath(EngineHandle engine, const char *path)
@@ -674,6 +738,31 @@ extern "C"
     *
     * The plane is a page and stays valid after this returns, unlike the frame
     * buffer, so it is copied under its own lock rather than held by pointer. */
+   /* Splice mode: whether the shell wants the placement context (plane_x/
+    * plane_y). Kept here, not read from the bridge per publication, so the
+    * per-glyph path is a single bool load; the same flag is handed to the
+    * engine so its own per-publication walk is skipped entirely when off. */
+   static volatile int kiri_text_plane_splice = 0;
+
+   /* The C ABI entry point for the splice switch, reached by the bridge's
+    * callback below. Kept here so the core never names an engine symbol: every
+    * crossing uses the krkr_* ABI, as the rest of this file does. */
+   extern "C" void krkr_set_text_plane_splice(int enabled)
+   {
+      kiri_text_plane_splice = enabled ? 1 : 0;
+      /* The engine's own half: gates the per-publication parent-chain walk that
+       * produces PlaneX/PlaneY (C++ linkage, matching PresentIntf.h). */
+      TVPSetTextPlaneSplice(enabled ? true : false);
+   }
+
+   /* Split view: compose the frame from artwork only, so the core can put the
+    * text plane beside it at a different resolution. Same shape as the splice
+    * switch above - one C ABI entry, one engine-side flag. */
+   extern "C" void krkr_set_split_view(int enabled)
+   {
+      TVPSetSplitViewArtworkOnly(enabled ? true : false);
+   }
+
    static bool krkr_text_plane_cb(const tTVPTextPlane *plane)
    {
       /* pitch KEEPS ITS SIGN. The engine's bitmaps are bottom-up, so a
@@ -714,10 +803,64 @@ extern "C"
       vp.changed_h  = plane->ChangedHeight;
       vp.origin_x   = plane->OriginX;
       vp.origin_y   = plane->OriginY;
+      /* Where this fragment (a line box) sits in the window. Meaningful only
+       * while splice mode is on, which is what turns the engine's own walk on;
+       * see krkr_set_text_plane_splice below. */
+      vp.plane_x    = plane->PlaneX;
+      vp.plane_y    = plane->PlaneY;
+      vp.splice     = kiri_text_plane_splice;
+      /* The window this fragment lives in, so the shell can size its page
+       * without waiting for a frame of its own.
+       *
+       * The shell used to learn the window size on ITS thread (the present
+       * path), but the engine publishes its opening burst of text during
+       * start-up - before the shell has presented anything - so every one of
+       * those publications was dropped for want of a page size and the start of
+       * the page was lost. Reported here, on the same thread and in the same
+       * message, the size is always available when a fragment is.
+       *
+       * 0 until the engine has composited a frame; the shell then still has the
+       * frame path as a fallback. */
+      vp.window_w   = krkr_frame_w;
+      vp.window_h   = krkr_frame_h;
       vp.restart    = plane->Restart ? 1 : 0;
       vp.serial     = (unsigned long long)plane->PlaneSerial;
 
       vnovel_publish_text_plane(&vp);
+      return true;
+   }
+
+   /* The engine's text-run callback -> the shell's. One direction, no logic
+    * beyond the type translation the bridge exists for: the engine's
+    * tTVPTextRun and the bridge's VNovelTextRun carry the same fields, and
+    * keeping the translation here means the core never includes an engine
+    * header (the same rule every other crossing in this file follows).
+    *
+    * The text pointer is NOT copied: both sides document it as valid for the
+    * duration of the call only, and the shell copies what it keeps. */
+   static bool krkr_text_run_cb(const tTVPTextRun *run)
+   {
+      if (!run || !run->Text || run->TextLength <= 0)
+         return false;
+
+      VNovelTextRun vr;
+      vr.text            = (const unsigned short *)run->Text;
+      vr.text_length     = run->TextLength;
+      vr.x               = run->X;
+      vr.y               = run->Y;
+      vr.color           = run->Color;
+      vr.opacity         = run->Opacity;
+      vr.antialias       = run->Antialias ? 1 : 0;
+      vr.shadow_level    = run->ShadowLevel;
+      vr.shadow_color    = run->ShadowColor;
+      vr.shadow_offset_x = run->ShadowOffsetX;
+      vr.shadow_offset_y = run->ShadowOffsetY;
+      /* Drawn, not parsed: this callback fires when the engine renders the
+       * characters, so the run is paced and carries real position and style. */
+      vr.kind            = 0; /* VNOVEL_RUN_DRAW */
+      vr.serial          = (unsigned long long)run->RunSerial;
+
+      vnovel_publish_text_run(&vr);
       return true;
    }
 
@@ -727,6 +870,20 @@ extern "C"
       TVPSetQuerySurfaceSizeCallback(krkr_query_size_cb, NULL);
       TVPSetWaitForPresentCallback(krkr_wait_present_cb, NULL);
       TVPSetTextPlaneCallback(krkr_text_plane_cb, NULL);
+      TVPSetTextRunCallback(krkr_text_run_cb, NULL);
+      /* Only KiriKiri has a placement to give (its publications are line-box
+       * fragments), so it is the only engine that fills this in; the shell's
+       * request is routed to krkr_set_text_plane_splice (see above). */
+      vnovel_text_plane_splice_cb = krkr_set_text_plane_splice;
+      /* Likewise the split view: only KiriKiri composites frame and text in one
+       * pass, so only it has an artwork-only mode to switch on. */
+      vnovel_split_view_cb = krkr_set_split_view;
+      /* The core requested these BEFORE it started the engine thread (it has
+       * to: the engine draws its opening burst during start-up), which is
+       * before these callbacks existed. Apply whatever it asked for now that
+       * they do - without this the request is silently dropped and the engine
+       * runs with both switches off. */
+      vnovel_apply_pending_requests();
    }
 
    /* Accessors for kiri_frame(). The serial is spelled identically to the
@@ -1046,16 +1203,6 @@ static bool krkr_input_debug(void)
          * the engine's loop blocks on. With the engine linked in, that is the
          * SDL_PushEvent the core itself links against, so bind it directly. */
          p_SDL_PushEvent = SDL_PushEvent;
-      }
-      {
-         static int pe_dbg = 0;
-         if (pe_dbg < 3)
-         {
-            fprintf(stderr,
-                    "krkr_pump: SDL_PushEvent=%p\n",
-                    (void *)p_SDL_PushEvent);
-            pe_dbg++;
-         }
       }
       if (!p_SDL_PushEvent)
          return;
@@ -1492,14 +1639,6 @@ static bool krkr_input_debug(void)
          krkr_audio_cap_ptr  = &SDL_libretro_audio_capacity;
          krkr_audio_freq_ptr = &SDL_libretro_audio_freq;
          krkr_audio_resolved = 1;
-         if (krkr_audio_buf_pp)
-            fprintf(stderr,
-                    "krkr_get_audio: buf_pp=%p w=%p r=%p cap=%p freq=%p\n",
-                    (void *)krkr_audio_buf_pp,
-                    (void *)krkr_audio_w_ptr,
-                    (void *)krkr_audio_r_ptr,
-                    (void *)krkr_audio_cap_ptr,
-                    (void *)krkr_audio_freq_ptr);
       }
       if (!krkr_audio_buf_pp || !krkr_audio_w_ptr || !krkr_audio_r_ptr ||
           !krkr_audio_cap_ptr)

@@ -1,0 +1,50 @@
+// startup.tjs — the KiriKiri/KAG3 entry point for this test scenario.
+//
+// The engine executes this file by name at start-up (TVPExecuteStartupScript),
+// and this is the whole convention: a real game's startup.tjs is one line,
+// e.g. the extracted Fata Morgana one reads
+//
+//     Scripts.execStorage("system/Initialize.tjs");
+//
+// The chain here is
+//
+//     startup.tjs  ->  Initialize.tjs  ->  first.ks
+//
+// and every link is a file that already exists in the archive.
+//
+// WHERE THESE FILES LIVE IN THE ARCHIVE — the part that is easy to get wrong.
+//
+// The engine registers an XP3 archive with exactly one auto-path,
+//
+//     TVPAddAutoPath(arc_normalized + TJS_W(">scenario/"))   (ScriptMgnIntf.cpp:655)
+//
+// so every lookup is resolved *within* scenario/. And Initialize.tjs probes its
+// own dependencies by BARE NAME:
+//
+//     Storages.isExistentStorage("Config.tjs")               (Initialize.tjs:137)
+//
+// which therefore resolves to scenario/Config.tjs. So the KAG3 system scripts
+// and the scenario all live together at scenario/ inside the archive:
+//
+//     scenario/Initialize.tjs   scenario/Config.tjs   scenario/first.ks
+//
+// Two layouts that do NOT work, both established by experiment:
+//   * KAG at the archive root  — bare "Config.tjs" misses, and Initialize.tjs
+//     throws its "Config.tjs が見つかりません。" exception;
+//   * KAG under system/        — resolves only as "system/Config.tjs", so the
+//     bare-name probe misses for the same reason.
+//
+// The failure is silent and misleading either way: the throw carries a Japanese
+// message, the engine cannot format it, and the run dies reporting only
+// "Cannot convert given narrow string to wide string" — which names neither the
+// file nor the encoding. The engine's own krkr.console.log is where the real
+// error is.
+//
+// ENCODING: this file and every other script in the archive are Shift_JIS, and
+// build.sh converts them at pack time. The engine reads text as Shift_JIS
+// (TVP_TEXT_READ_ANSI_MBCS -> TextStream.cpp:34), so a UTF-8 script is read as
+// mojibake and dies the same silent way.
+//
+// No error handling on purpose, matching a real game: if Initialize.tjs cannot
+// be loaded then throwing is the correct outcome.
+Scripts.execStorage("Initialize.tjs");

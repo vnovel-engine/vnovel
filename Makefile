@@ -314,18 +314,6 @@ ifeq ($(KRKR_ENABLE),1)
    DEFINES += -DVNOVEL_KIRIKIRI
 endif
 
-# KiriKiri 2 (the original 2003 engine) is wired the same way and through the
-# same bridge: it exports the identical engine ABI, so engine_kirikiri_cabi.cpp
-# and the VNOVEL_KIRIKIRI paths in libretro.cpp drive it unchanged. `KRKR2=1`
-# swaps which fork's CMake tree is built and which archive is linked.
-ifeq ($(KRKR2),1)
-   ifeq ($(KRKR_ENABLE),1)
-      $(error KRKR_ENABLE and KRKR2 are alternative engines; pick one)
-   endif
-   KRKR_ENABLE := 1
-   DEFINES += -DVNOVEL_KIRIKIRI
-endif
-
 # Frame synchronization: remove -DLIBRETRO_FRAME_SYNC to disable 1:1 frame sync.
 
 # --- Build directory (per-platform and per-engine to avoid object collisions) ---
@@ -333,16 +321,13 @@ endif
 # Per-engine as well as per-platform: the engine flags above change DEFINES
 # (-DVNOVEL_KIRIKIRI, and which archive is linked), but a .o is a plain
 # timestamp dependency with no record of the flags that produced it. Building
-# `make platform=unix` and then `make platform=unix KRKR2=1` would leave every
-# object that had already been compiled, so libretro.cpp kept the ONScripter
-# dispatch and the core silently ran the wrong engine - while still linking the
-# KiriKiri archive, so the symbol check passed and nothing looked wrong. A
-# separate directory makes the two builds independent by construction rather
-# than relying on the caller to remember `rm -rf build`.
+# `make platform=unix` and then `make platform=unix KRKR_ENABLE=1` would leave
+# every object that had already been compiled, so libretro.cpp kept the
+# ONScripter dispatch and the core silently ran the wrong engine - while still
+# linking the KiriKiri archive, so the symbol check passed and nothing looked
+# wrong. A separate directory makes the two builds independent by construction
+# rather than relying on the caller to remember `rm -rf build`.
 ENGINE_TAG := $(if $(filter 1,$(KRKR_ENABLE)),-kirikiri)
-ifeq ($(KRKR2),1)
-   ENGINE_TAG := -kirikiri2
-endif
 # Debug and release must never share these directories either, for the same
 # reason the engine tag exists: cmake caches its configuration from the first
 # `cmake -S/-B` and ignored the flag change on later runs, so `make debug` then
@@ -382,11 +367,7 @@ include Makefile.common
 # sign was a game reporting no engine — which is indistinguishable from a game
 # whose engine genuinely is missing. Building them costs a no-op whenever they
 # are already current.
-ifeq ($(KRKR2),1)
-KRKR_DIR := $(DEPS_DIR)/kirikiri2/kirikiri2
-else
 KRKR_DIR := $(DEPS_DIR)/krkrsdl2
-endif
 # The engine's host-facing presentation contract (visual/Present.h) is a pure-C
 # header with no engine types in it, which is why the core can include it
 # directly while declaring every other engine symbol by hand. Both engine trees
@@ -403,11 +384,7 @@ CXXFLAGS += $(if $(KRKR_ENABLE),-I$(KRKR_DIR)/src/core/visual,)
 # shared tree means `make debug` and `make` overwrite each other's cmake cache,
 # and the second build silently keeps the first's flags.
 KRKR_BUILD_DIR := $(KRKR_DIR)/build-$(platform)$(BUILD_TAG)
-ifeq ($(KRKR2),1)
-KRKR_ARCHIVE := $(BUILD_DIR)/kirikiri2common.filtered.a
-else
 KRKR_ARCHIVE := $(BUILD_DIR)/krkrsdl2common.filtered.a
-endif
 
 # Where the two archives come from. Normally this Makefile builds them (below).
 #
@@ -420,23 +397,11 @@ endif
 # a thing, another consumes it.
 KRKR_PREBUILT_DIR ?=
 ifeq ($(KRKR_PREBUILT_DIR),)
-   ifeq ($(KRKR2),1)
-   KRKR_SRC_ARCHIVE := $(KRKR_BUILD_DIR)/libkirikiri2common.a
-   # This fork has no FAudio: its sound backend is OpenAL, so there is no
-   # second archive to link and the core's audio ring stays empty.
-   KRKR_FAUDIO :=
-   else
    KRKR_SRC_ARCHIVE := $(KRKR_BUILD_DIR)/libkrkrsdl2common.a
    KRKR_FAUDIO := $(KRKR_BUILD_DIR)/external/FAudio/libFAudio.a
-   endif
 else
-   ifeq ($(KRKR2),1)
-   KRKR_SRC_ARCHIVE := $(KRKR_PREBUILT_DIR)/libkirikiri2common.a
-   KRKR_FAUDIO :=
-   else
    KRKR_SRC_ARCHIVE := $(KRKR_PREBUILT_DIR)/libkrkrsdl2common.a
    KRKR_FAUDIO := $(KRKR_PREBUILT_DIR)/libFAudio.a
-   endif
 endif
 
 # The CMake options the engine needs to be a libretro engine rather than a
@@ -451,17 +416,6 @@ KRKR_CMAKE_TOOLCHAIN ?=
 # Compilers are named only when no toolchain file provides them: $(CXX) can be
 # "g++ -std=c++11" here, which is not a compiler path, and cmake rejects it.
 KRKR_CMAKE_COMPILERS := $(if $(KRKR_CMAKE_TOOLCHAIN),,$(if $(CROSS),-DCMAKE_C_COMPILER=$(CROSS)gcc -DCMAKE_CXX_COMPILER=$(CROSS)g++))
-# Diagnostic probes are named, not pasted. Set KRKR_PROBES=all for every
-# -DKRKR2_*_PROBE, or list them, e.g. KRKR_PROBES=HITTEST. They are composed
-# here rather than appended to -DCMAKE_CXX_FLAGS on the command line: a value
-# containing a space is split by the shell, and cmake then rejects the stray
-# token with 'Parse error in command line argument'.
-KRKR_PROBE_NAMES := DRAW FONT HITTEST PROVINCE_OFFSET PILE SURFACE FULL_UPLOAD COMPOSITE COMPOSITE_ALPHA CLEAR STRIPE INK OVERLAY ALPHA
-ifneq ($(filter all,$(KRKR_PROBES)),)
-KRKR_PROBE_DEFS := $(foreach p,$(KRKR_PROBE_NAMES),-DKRKR2_$(p)_PROBE)
-else
-KRKR_PROBE_DEFS := $(foreach p,$(KRKR_PROBES),-DKRKR2_$(p)_PROBE)
-endif
 # -fvisibility=hidden keeps the core's own symbols out of the dynamic table (see
 # the long note at the CMAKE flags below), and takes every vendored codec's with
 # it. `-fvisibility-inlines-hidden` is separate and is what makes small in-header
@@ -481,7 +435,6 @@ endif
 # the debug target passes a base without it (see KRKR_DEBUG_FLAGS below).
 KRKR_CXX_VIS ?= -fvisibility=hidden -fvisibility-inlines-hidden
 KRKR_CXX_BASE  := $(KRKR_CXX_VIS)
-KRKR2_CXX_BASE := $(KRKR_CXX_BASE)
 
 # Debug flags go in the per-configuration variables, not in CMAKE_CXX_FLAGS.
 # CMAKE_<LANG>_FLAGS is expanded *before* CMAKE_<LANG>_FLAGS_<CONFIG>, and the
@@ -518,9 +471,14 @@ KRKR_C_RELEASE   ?= -O3 -DNDEBUG
 # "symbols resolve but accessors have no frames" - the exact gdb symptom the
 # AGENTS.md conventions describe).
 #
-# This builds krkrsdl2, the engine the core links. Pass KRKR2=1 to build the
-# KiriKiri 2 experiment instead; it is being moved out of the tree.
-KRKR_DEBUG_PROBES ?=
+# This builds krkrsdl2, the engine the core links.
+#
+# The KiriKiri 2 experiment (deps/kirikiri2, `make KRKR2=1`) was removed from
+# the tree; it is archived beside this repo as
+# vnovel-libretro-archive/kirikiri2-<date>, with its unpushed history. Its
+# `KRKR_DEBUG_PROBES` knob went with it: those probes were defined by that fork
+# alone. The engine's own probes are OPTION_DEBUG_PROBES, pinned OFF in
+# KRKR_CMAKE_FLAGS above; the core's ad-hoc input probes are `make PROBES=1`.
 KRKR_DEBUG_FLAGS  ?= -g -O0 -fno-inline
 # A debug build drops -fvisibility-inlines-hidden, so in-header accessors keep
 # their symbols and can be called from gdb. Keeping only -fvisibility=hidden
@@ -528,9 +486,8 @@ KRKR_DEBUG_FLAGS  ?= -g -O0 -fno-inline
 # above) is what stops the compiler folding them into their callers.
 KRKR_DEBUG_VIS    ?= -fvisibility=hidden
 debug:
-	@echo "==> debug build: $(KRKR_DEBUG_FLAGS), visibility '$(KRKR_DEBUG_VIS)', probes '$(KRKR_DEBUG_PROBES)'"
-	$(Q)$(MAKE) platform=unix KRKR_DEBUG=1 $(if $(filter 1,$(KRKR2)),KRKR2=1,KRKR_ENABLE=1) \
-		KRKR_PROBES="$(KRKR_DEBUG_PROBES)" \
+	@echo "==> debug build: $(KRKR_DEBUG_FLAGS), visibility '$(KRKR_DEBUG_VIS)'"
+	$(Q)$(MAKE) platform=unix KRKR_DEBUG=1 KRKR_ENABLE=1 \
 		KRKR_CXX_VIS="$(KRKR_DEBUG_VIS)" \
 		KRKR_CXX_RELEASE="$(KRKR_DEBUG_FLAGS)" KRKR_C_RELEASE="$(KRKR_DEBUG_FLAGS)" all
 
@@ -547,32 +504,24 @@ debug:
 # Note it must be a real CMake option: appending a -D to CMAKE_CXX_FLAGS would
 # only define a preprocessor symbol, which is not how the engine's options
 # (OPTION_DEBUG_PROBES) are wired — those drive a generated header.
+# OPTION_DEBUG_PROBES is passed EXPLICITLY, and as OFF, on every configure.
+# CMake keeps a cached value otherwise: once a run passed
+# KRKR_CMAKE_EXTRA="-DOPTION_DEBUG_PROBES=ON", every later build reused the
+# cached ON and compiled the engine's ad-hoc stderr probes into a release
+# build, with nothing in the output saying so. A stale cache is a silent
+# change to the shipped engine, so the value is pinned here; an explicit
+# KRKR_CMAKE_EXTRA still wins because it is passed last.
 KRKR_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release -DKRKRSDL2_LIBRETRO=ON \
+                    -DOPTION_DEBUG_PROBES=OFF \
                     -DKRKRSDL2_BUILTIN_SHIMS=ON -DOPTION_BUILD_MACOS_BUNDLE=OFF \
                     -DCMAKE_C_FLAGS="-fvisibility=hidden" \
-                    -DCMAKE_CXX_FLAGS:STRING="$(KRKR_CXX_BASE) $(KRKR_PROBE_DEFS) $(KRKR_CXX_EXTRA)" \
+                    -DCMAKE_CXX_FLAGS:STRING="$(KRKR_CXX_BASE) $(KRKR_CXX_EXTRA)" \
                     $(if $(KRKR_CXX_RELEASE),-DCMAKE_CXX_FLAGS_RELEASE:STRING="$(KRKR_CXX_RELEASE)",) \
                     $(if $(KRKR_C_RELEASE),-DCMAKE_C_FLAGS_RELEASE:STRING="$(KRKR_C_RELEASE)",) \
                     $(if $(KRKR_CMAKE_TOOLCHAIN),-DCMAKE_TOOLCHAIN_FILE=$(KRKR_CMAKE_TOOLCHAIN),) \
                     $(KRKR_CMAKE_PKGCONFIG) $(KRKR_CMAKE_VORBIS) $(KRKR_CMAKE_EXTRA)
 
-# The KiriKiri 2 fork spells its shim option differently and has no macOS
-# bundle, so it gets its own flag set. KRKRSDL2_LIBRETRO means the same thing
-# in both trees (build the libretro entry points), which is why it is shared.
-KRKR2_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release -DKRKRSDL2_LIBRETRO=ON \
-                     -DKRKR2_BUILTIN_SHIMS=ON \
-                     -DCMAKE_C_FLAGS="-fvisibility=hidden" \
-                     -DCMAKE_CXX_FLAGS:STRING="$(KRKR2_CXX_BASE) $(KRKR_PROBE_DEFS) $(KRKR2_CXX_EXTRA)" \
-                     $(if $(KRKR_CXX_RELEASE),-DCMAKE_CXX_FLAGS_RELEASE:STRING="$(KRKR_CXX_RELEASE)",) \
-                     $(if $(KRKR_C_RELEASE),-DCMAKE_C_FLAGS_RELEASE:STRING="$(KRKR_C_RELEASE)",) \
-                     $(if $(KRKR_CMAKE_TOOLCHAIN),-DCMAKE_TOOLCHAIN_FILE=$(KRKR_CMAKE_TOOLCHAIN),) \
-                     $(KRKR_CMAKE_PKGCONFIG) $(KRKR_CMAKE_VORBIS) $(KRKR_CMAKE_EXTRA)
-ifeq ($(KRKR2),1)
-KRKR_CMAKE_FLAGS := $(KRKR2_CMAKE_FLAGS)
-KRKR_CMAKE_TARGET := kirikiri2common
-else
 KRKR_CMAKE_TARGET := krkrsdl2common
-endif
 
 # Parallelism for the engine's own CMake build. It is a separate knob from
 # `make -j`: krkrsdl2 has a few very heavy translation units (LayerIntf,
@@ -684,16 +633,6 @@ endif
 # link.txt, minus freetype which LDFLAGS already carries. Overridable so a cross
 # build can point at its target sysroot.
 KRKR_SYS_LIBS ?= -lSDL2 -lfontconfig -lvorbisfile -lvorbis
-# The KiriKiri 2 fork needs more than krkrsdl2 does: it carries its own PNG,
-# JPEG and oniguruma use, and a real zlib inflate for XP3 segments and text
-# streams, none of which the core links for its own sake (it has its own
-# vendored stb-based image path). OpenAL is its sound backend. Overridable
-# like the rest.
-ifeq ($(KRKR2),1)
-KRKR2_SYS_LIBS ?= -lSDL2 -lfontconfig -lvorbisfile -lvorbis -lpng -ljpeg -lz \
-                  -lonig -lopenal
-KRKR_SYS_LIBS := $(KRKR2_SYS_LIBS)
-endif
 ifneq ($(KRKR_ENABLE),1)
    # KiriKiri off: the core links none of the engine's extra dependencies.
    KRKR_SYS_LIBS :=

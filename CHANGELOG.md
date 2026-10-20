@@ -5,7 +5,150 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
 ## Unreleased
 
+### Added
+
+- **Page accumulation for the text plane.** KiriKiri publishes its text one
+  *line* at a time — each publication is a line-height box — while ONScripter and
+  PONScripter publish the whole (screen-sized) text surface at once. A consumer
+  that wants "the page" therefore could not just keep the latest publication: on
+  KiriKiri that is only the most recent line. The engines can now report where
+  each published surface sits in the window (`plane_x`/`plane_y`, via the bridge's
+  `vnovel_request_text_plane_splice`), and the core accumulates every publication
+  into its own page buffer at that position. One code path: on the two
+  page-publishing engines the placement is 0/0 by definition, so the formula
+  collapses to "the plane is the page". Off unless a consumer asks, and the
+  engines skip the per-publication work when it is off.
+- **A regression test for the captured text plane.** The suite asserted nothing
+  about the plane, so it stayed green with capture entirely broken — which is
+  how the bottom-up-copy crash below reached a real game. The `textplanedump`
+  script command (ONS and PON) asks the core to write its copy of the plane to
+  a BMP in the save directory, and the harness compares it like any other
+  snapshot. `tests/ons/03_text` now asserts the plane's pixels against a
+  reference.
+- **A `Text Debug View` option** (`off`, `pip`) for working on the capture: a
+  translucent picture-in-picture in the bottom-right showing the captured text
+  accumulated into a page — the dialogue alone, no artwork. It is a view only,
+  and it is what requests page accumulation. See CONTROLS.md.
+- **Text look-ahead: a page's text reaches the core before the engine draws it.**
+  A walk ahead of the typewriter publishes each page through the bridge as a
+  `VNOVEL_RUN_PARSE` run — text, `<pause>`/`<clear>` tokens, `<link:PAYLOAD>`
+  labels, and `<<choice>>`/`<<flow>>` where determination ends — on all three
+  engines: KiriKiri (a TJS walk hooked into `KAGParser.getNextTag`), ONScripter
+  and PONScripter (a shared templated C++ walk in each run loop). Verified on Fate
+  (`PAGE(832)` is line 1 of the run log, the first drawn glyph line 2) and on the
+  ONS/PON fixtures.
+- **The test harness checks that the core contains the KiriKiri engine.** A plain
+  `make` after `make KRKR_ENABLE=1` overwrites the same `vnovel_libretro.so` with
+  an ONScripter/PONScripter-only build; the KiriKiri test leg then failed with a
+  symptom ("engine never reached KAG") that named the scenario rather than the
+  cause. It now reports `has no KiriKiri engine — rebuild with KRKR_ENABLE=1`.
+
+### Added
+
+- **Per-game text drivers for the look-ahead.** The greedy walk reads text from
+  `ch`/`r`, which is right for a title that writes dialogue inline and is why
+  Fate/stay night needs nothing, but a title whose dialogue is MACRO-FORMATTED
+  emits no `ch` at all — Fata Morgana's lines arrive as `[emb exp=mp.text]`
+  inside a macro body — so the walk published nothing for it. A driver is the
+  seam: `vnovelRegisterTextDriver(["<game id>"], fn)` returns text, page
+  metadata, a stop, or "not mine", is consulted ONLY for tags the generic walk
+  declined (so it can add to the dialect and never change what already works),
+  and ships as `scenario/vnovel_textdriver.tjs` in the game's own override tree
+  — data, not a branch in a shared loop. Absent, the generic walk applies
+  unchanged: a title with no driver is unaffected.
+- **A speaker token, `<<speaker:NAME>>`,** emitted inline where the speaker
+  changes. In the page's existing token stream rather than a new field in the
+  run ABI, so no consumer has to version anything: one that does not know the
+  token still parses the page and loses only the name. Fata Morgana is the first
+  producer.
+
+### Added
+
+- **KiriKiri games that ship as ONE executable with the archive embedded.** A
+  title may distribute as a single .exe with the XP3 appended after its last
+  section (the engine's own `XOPT_EMBED_AREA_` marker); such a game has no
+  `data.xp3` on disk, so engine detection decided "not KiriKiri" and the run died
+  in ONScripter with "no game script found". The core now recognises the layout
+  and hands the executable to the engine, which reads the archive IN PLACE — no
+  extraction, no copy of a multi-hundred-MB archive. Verified on 'NORA! V1.02',
+  which boots to its title screen.
+
 ### Fixed
+
+- **The ONScripter/PONScripter look-ahead shredded Japanese text.** The
+  inline-command consumer scanned a line BYTE BY BYTE, deciding character length
+  by "is this byte >= 0x80" — false for Shift_JIS, where a two-byte character's
+  trail byte can be ASCII range (40 CP932 kanji end in `@`, 40 in `\`). A trail
+  byte equal to a command character was consumed as that command, the text marker
+  was dropped, and the orphaned lead byte was then paired with the next page byte
+  and rendered `?`. Measured on 'Boku To Iu Mono' (the first Japanese ONS script
+  the walk had seen; every fixture is ASCII, where the assumption holds). The
+  walk now tests for commands only at ASCII positions and decodes multibyte
+  characters whole, using the engine's own decoder for the length.
+- **The scenario auto-path assumed `data.xp3`.** It was `cwd + "/data.xp3"`,
+  which names a file that does not exist for an embedded-archive title, so
+  opening a scenario failed with `Cannot find storage .../data.xp3`. It now
+  derives from the project directory the engine actually selected, which is
+  correct for both layouts.
+- **The look-ahead's macro-argument stack never rewound.** The parser pushes
+  macro arguments at `KAGParser.tjs:1667`, which is not behind the
+  `processSpecialTags` gate, but the matching `macropop` pop IS — and the walk
+  blanks that gate to see control tags as data. So the walk's stack grew without
+  bound and `getMacroTopNoAddRef()` kept returning a stale frame, which broke
+  every expression evaluated against `mp` (a macro's own arguments). Generic:
+  every macro-using title leaked, not just the one that surfaced it. The walk now
+  balances the pop itself.
+- **A look-ahead double free on any ONScripter script with a `clickstr`.** The
+  walk parses a private handler that *borrows* the live script image
+  (`ScriptHandler::borrowFrom`). It correctly shared `script_buffer` and
+  `label_info`, and correctly forgot them before destruction — but not
+  `clickstr_list`, which borrowFrom also shares (it points into the borrowed
+  script). `reset()`, called from the private handler's destructor, does
+  `delete[] clickstr_list`, so every walk freed the LIVE handler's clickstring
+  list; the engine's later use, or its own destructor, then freed it again:
+  `free(): double free detected in tcache 2`, aborting the process. Reproduced
+  on Tsukihime (whose `*define` sets `clickstr` before the first walk) and fixed
+  by also clearing `clickstr_list` in `unhookBorrowedScript()`. PONScripter is
+  unaffected — it stores the clickstring list as a `std::set` it copies.
+- **The engine was silently built with its debug probes on.** KiriKiri's probe
+  flag is a CMake cache value, so once a run passed
+  `KRKR_CMAKE_EXTRA="-DOPTION_DEBUG_PROBES=ON"`, every later build reused the
+  cached ON and compiled the engine's ad-hoc stderr probes into a release build
+  with nothing in the output saying so. The flag is now pinned `OFF` on every
+  configure (`KRKR_CMAKE_EXTRA` still wins if set explicitly).
+- **A page is published once, and only if it has text.** The ONScripter and
+  PONScripter walk recorded its covered position *after* restoring the
+  interpreter, so it stored where the walk entered rather than where it stopped:
+  every line inside the page re-entered the walk and re-published the page — up
+  to ~50 copies, each one line shorter. The KiriKiri walk published a text-free
+  `<<flow>>` page for every control-flow tag it stopped at, putting eight empty
+  pages ahead of the real first page during the game's boot. Both fixed; a page
+  with no characters is not a page (a `<<choice>>` with no text still is).
+- **`TextLookAhead.tjs` had no UTF-8 BOM**, unlike every sibling polyfill. The
+  engine reads a BOM-less script as Shift_JIS, so the file's UTF-8 Japanese
+  comments were misdecoded and one sequence made the whole file fail to load —
+  silently disabling the entire look-ahead. BOM added, matching the others.
+
+- **The ONS/PON look-ahead parses a private copy, not the live engine.** It used
+  to run the engine's tokenizer on the running handler, which perturbed the game
+  and forced hand-written save/restore of the token buffer, the command type and
+  the interpreter position. It now parses a second handler that borrows the
+  script image read-only (`borrowFrom`/`unhookBorrowedScript`), the same shape
+  KiriKiri's look-ahead already used (`assign(live)`). The live interpreter is
+  never touched.
+- **The look-ahead consumes the engines' inline text commands.** A text line
+  carries control codes the renderer never draws (`@` click, `\` new page,
+  `!sd`/`!w<n>`/`!d<n>` waits, `#rrggbb` colour, the encoding's text marker). The
+  walk now consumes them the way the renderer does instead of publishing them as
+  dialogue (`!sd`, `!d15000` appeared verbatim before), and emits `<pause>`/
+  `<clear>` at the reader-facing ones.
+
+- **KiriKiri published each glyph one call too early.** `TVPPresentTextPlane`
+  ran *before* the glyph was blended into the surface it describes, and the host
+  copies that surface synchronously, so the last glyph of every publication was
+  missing — a captured line read garbled while the frame it came from was
+  clean. The publish now happens after the blend, on the single path every
+  branch of that function reaches.
 
 - **The text plane crashed on a large bitmap.** The engine's bitmaps are
   bottom-up and the pointer it publishes is the *last* row, so copying

@@ -1,0 +1,114 @@
+*define
+mode_ext
+english
+game
+*start
+; ===========================================================================
+; ONScripter-EN: text/choice layout probe.
+;
+; ENGINE IDENTIFIER: every line of text is prefixed "ONS", and every page is a
+; shade of GREEN. Nothing here should ever be ambiguous about which engine
+; produced it.
+;
+; Colour map (all green, so a page change is obvious from the background):
+;   case 1  #004400    case 2  #00CC00    case 3  #003300    case 4  #005500
+;   page 2A #007700    page 2B #00AA00    after2  #00EE00    after4  #006600
+;
+; The four situations:
+;   1. text, then a choice leading to one of two pages
+;   2. text, a choice, then more text
+;   3. a page that is only a choice
+;   4. a choice, then text
+;
+; Note: this build has NO goto/jump — `select` is the ONLY branching verb, so
+; every page transition below is a select, including the ones that merely
+; advance to the next case.
+; ===========================================================================
+
+; ---- case 1: text, then a choice leading to one of two pages -------------
+bg #004400,0
+repaint
+texton
+>ONS CASE-1 line A: message text on a green page
+br
+>ONS CASE-1 line B: then a choice follows
+textshow
+repaint
+snapshotsave "ons_tc_1_text_then_choice"
+
+select "ONS CASE-1 choice: LEFT to page 2A",*page_2a,"ONS CASE-1 choice: RIGHT to page 2B",*page_2b
+
+*page_2a
+bg #007700,0
+repaint
+texton
+>ONS PAGE-2A: the left branch of case 1
+textshow
+repaint
+snapshotsave "ons_tc_2a_left_page"
+select "ONS CASE-1 result: continue to case 2",*case2
+
+*page_2b
+bg #00AA00,0
+repaint
+texton
+>ONS PAGE-2B: the right branch of case 1
+textshow
+repaint
+snapshotsave "ons_tc_2b_right_page"
+select "ONS CASE-1 result: continue to case 2",*case2
+
+; ---- case 2: text, a choice, then more text ------------------------------
+*case2
+bg #00CC00,0
+repaint
+texton
+>ONS CASE-2 line A: message text before a choice
+textshow
+repaint
+snapshotsave "ons_tc_3_case2_before_choice"
+
+select "ONS CASE-2 choice: go on, then read more text",*case2_after
+
+*case2_after
+bg #00EE00,0
+repaint
+texton
+>ONS CASE-2 after: the choice ended the previous page
+br
+>ONS CASE-2 after B: so this text starts a new one
+textshow
+repaint
+snapshotsave "ons_tc_4_case2_after_choice"
+select "ONS CASE-2 result: continue to case 3",*case3
+
+; ---- case 3: a page that is only a choice --------------------------------
+*case3
+bg #003300,0
+repaint
+select "ONS CASE-3 choice A: this page has no message text",*case3_a,"ONS CASE-3 choice B: nothing but choices here",*case3_b
+
+*case3_a
+mov %0,1
+select "ONS CASE-3 result: from choice A, continue to case 4",*case4
+*case3_b
+mov %0,2
+select "ONS CASE-3 result: from choice B, continue to case 4",*case4
+
+; ---- case 4: a choice, then text -----------------------------------------
+*case4
+bg #005500,0
+repaint
+select "ONS CASE-4 choice: pick this, then read text",*case4_after
+
+*case4_after
+bg #006600,0
+repaint
+texton
+>ONS CASE-4 after: text reached by taking a choice
+textshow
+repaint
+snapshotsave "ons_tc_5_case4_choice_then_text"
+
+*end
+end

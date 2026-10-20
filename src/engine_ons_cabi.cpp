@@ -51,7 +51,7 @@ static void ons_setDebugLevel(EngineHandle h, int l)
 static void ons_setTextSpeed(EngineHandle h, int s)
 {
    /* Inject a key event to change text speed, same as pressing 0/1/2/3 */
-   ONScripterLabel *ons = (ONScripterLabel *)h;
+   (void)h;
    SDL_keysym sym;
    sym.sym      = SDLK_1 + s; /* 1=slow, 2=normal, 3=fast */
    sym.scancode = sym.sym;
@@ -98,13 +98,6 @@ static void engine_do_run(EngineHandle h)
    ONScripterLabel *ons = (ONScripterLabel *)h;
    if (ons->init())
       return;
-   {
-      extern int SDL_timer_started, SDL_timer_running;
-      fprintf(stderr,
-              "Timer state: started=%d running=%d\n",
-              SDL_timer_started,
-              SDL_timer_running);
-   }
    SDL_ShowCursor(SDL_DISABLE);
    ons->executeLabel();
 }

@@ -191,7 +191,6 @@ void vnovel_menu_toggle(void)
 		if (vnovel_menu_open(menu_pref_w, menu_pref_h))
 		{
 			menu_visible_hotkey = 1;
-			fprintf(stderr, "menu: opened by hotkey\n");
 		}
 		else
 		{
@@ -200,8 +199,6 @@ void vnovel_menu_toggle(void)
 		return;
 	}
 	menu_visible_hotkey = !menu_visible_hotkey;
-	fprintf(stderr, "menu: hotkey %s\n",
-	        menu_visible_hotkey ? "shown" : "hidden");
 }
 
 /* Create the menu's font handles and icon tables. Called once at start-up;
@@ -268,7 +265,6 @@ static void menu_cmd(MENUID id)
 		vnovel_menu_close();
 		return;
 	}
-	fprintf(stderr, "menu: item %u activated (no action)\n", (unsigned)id);
 }
 
 /* One live session value, by index into menu_info. Returns the slot so a caller

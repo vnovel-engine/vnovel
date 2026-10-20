@@ -1,0 +1,3 @@
+KRKR CASE-1 line A: message text on a red page[r]
+KRKR CASE-1 line B: then a choice follows[r]
+[link target=*page_2a]KRKR CASE-1 choice: LEFT to page 2A[endlink][r]

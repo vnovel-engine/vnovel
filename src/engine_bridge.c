@@ -76,6 +76,84 @@ VNOVEL_EXPORT void vnovel_publish_text_plane(const VNovelTextPlane *plane)
    vnovel_text_plane_cb(plane, vnovel_text_plane_userdata);
 }
 
+/* Filled by the shell when one is listening; the engines call the requester
+ * below rather than reaching into the core. */
+VNOVEL_EXPORT vnovel_text_plane_dump_fn vnovel_text_plane_dump_cb = 0;
+VNOVEL_EXPORT void *vnovel_text_plane_dump_userdata               = 0;
+
+VNOVEL_EXPORT void vnovel_request_text_plane_dump(const char *name)
+{
+   if (!vnovel_text_plane_dump_cb || !name || !*name)
+      return;
+   vnovel_text_plane_dump_cb(name, vnovel_text_plane_dump_userdata);
+}
+
+/* --- text runs (see engine_bridge.h) ---------------------------------------
+ * The structured half of the text separation: the characters a draw call
+ * carried, where, and in what style. Same install-before-start, no-listener-
+ * no-cost discipline as the plane above. */
+VNOVEL_EXPORT vnovel_text_run_fn vnovel_text_run_cb = 0;
+VNOVEL_EXPORT void *vnovel_text_run_userdata       = 0;
+
+VNOVEL_EXPORT int vnovel_text_run_wanted(void)
+{
+   return vnovel_text_run_cb != 0;
+}
+
+VNOVEL_EXPORT void vnovel_publish_text_run(const VNovelTextRun *run)
+{
+   if (!vnovel_text_run_cb || !run)
+      return;
+   vnovel_text_run_cb(run, vnovel_text_run_userdata);
+}
+
+/* Filled by an engine whose published surface is a FRAGMENT of the page (only
+ * KiriKiri, which publishes one line box at a time). Engines that publish the
+ * whole page leave it NULL and have nothing to maintain. */
+VNOVEL_EXPORT vnovel_text_plane_splice_fn vnovel_text_plane_splice_cb = 0;
+
+/* The last request of each kind, so a request made BEFORE an engine registered
+ * is not lost.
+ *
+ * This ordering is forced: the core must make these requests before it starts
+ * the engine (otherwise the engine draws its opening burst with the flags still
+ * off, which is invisible - it just looks like the feature does not work), but
+ * the engine only publishes its callbacks DURING that start. So the request is
+ * remembered here and replayed when a callback registers; a request that
+ * arrives after registration is forwarded immediately. */
+static int splice_request_wanted = 0;
+static int split_request_wanted  = 0;
+
+VNOVEL_EXPORT void vnovel_request_text_plane_splice(int enabled)
+{
+   splice_request_wanted = enabled ? 1 : 0;
+   if (vnovel_text_plane_splice_cb)
+      vnovel_text_plane_splice_cb(splice_request_wanted);
+}
+
+/* Called by the seam's setter when an engine installs a callback, so a request
+ * already made takes effect against it. (Engines register through
+ * vnovel_text_plane_splice_cb / vnovel_split_view_cb; see engine_bridge.h.) */
+VNOVEL_EXPORT void vnovel_apply_pending_requests(void)
+{
+   if (vnovel_text_plane_splice_cb)
+      vnovel_text_plane_splice_cb(splice_request_wanted);
+   if (vnovel_split_view_cb)
+      vnovel_split_view_cb(split_request_wanted);
+}
+
+/* Filled by an engine whose frame and text share one composite (only KiriKiri:
+ * its text is layers). The two Scripter engines composite text in a refresh
+ * pass of their own, so they leave this NULL and need nothing. */
+VNOVEL_EXPORT vnovel_split_view_fn vnovel_split_view_cb = 0;
+
+VNOVEL_EXPORT void vnovel_request_split_view(int enabled)
+{
+   split_request_wanted = enabled ? 1 : 0;
+   if (vnovel_split_view_cb)
+      vnovel_split_view_cb(split_request_wanted);
+}
+
 int remap_keys[REMAP_COUNT] = {
       [REMAP_ADVANCE]      = SDLK_RETURN,
       [REMAP_MENU]         = SDLK_BACKSPACE,

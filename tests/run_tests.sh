@@ -144,6 +144,129 @@ for test_dir in "$TESTS_DIR"/pons/*/; do
     run_test "pons/$name" "$test_dir/pscript.dat" "$expect"
 done
 
+# KiriKiri differs from the two above in ways that force its own loop:
+#
+#  - the game is an XP3 archive, not a single .dat, and it has to be built;
+#    build.sh does that (and documents the Shift_JIS requirement);
+#  - the engine writes its diagnostics to <save dir>/krkr.console.log, not to
+#    stderr, because a script error aborts the process through
+#    TVPShowScriptException -> TVPTerminateSync(1) before stderr is flushed;
+#  - so the assertion reads that log, not /tmp/nova_test.log.
+#
+# The assertion is deliberately about the SCENARIO's own text ("KRKR ..."
+# labels defined in first.ks), so it fails if KAG never reaches the scenario,
+# and not merely if the process starts.
+if [ -x "$TESTS_DIR/krkr/text_choice/build.sh" ]; then
+    echo ""
+    echo "=== KiriKiri Tests ==="
+    KRKR_WORK="${KRKR_WORK:-/tmp/vnovel-krkr-test}"
+    for test_dir in "$TESTS_DIR"/krkr/*/; do
+        [ -x "$test_dir/build.sh" ] || continue
+        name=$(basename "$test_dir")
+        expect="$test_dir/test.expect"
+        echo -n "  krkr/$name ... "
+
+        rm -rf "$KRKR_WORK"
+        if ! sh "$test_dir/build.sh" "$KRKR_WORK" >/dev/null 2>&1; then
+            echo "FAIL (fixture build)"
+            FAIL=$((FAIL + 1))
+            continue
+        fi
+
+        # The core under test must actually contain the KiriKiri engine.
+        #
+        # KiriKiri is opt-in (`make KRKR_ENABLE=1`) and BOTH builds write the
+        # same vnovel_libretro.so, so a plain `make` run after a KiriKiri build
+        # silently replaces it with an ONScripter/PONScripter-only core. This
+        # leg then fails with "engine never reached KAG" — a symptom that names
+        # the scenario and sends you looking at the fixture, the script and the
+        # look-ahead, none of which is the cause. That cost a session. The
+        # engine's own entry point is the check: it exists only in a KiriKiri
+        # build, so a missing symbol is the real diagnosis and is reported as
+        # the test's SKIP reason, not as a failure of the scenario.
+        if command -v nm >/dev/null 2>&1 && \
+           ! nm -C "$CORE" 2>/dev/null | grep -q 'krkr_main'; then
+            echo "FAIL ($CORE has no KiriKiri engine — rebuild with KRKR_ENABLE=1)"
+            FAIL=$((FAIL + 1))
+            continue
+        fi
+
+        # The engine writes its console log to "<data path>/krkr.console.log"
+        # (DebugIntf.cpp:285), and the data path is the -datapath the core
+        # passes, i.e. a directory under the frontend's save root. Which one it
+        # is depends on how the frontend identified the content, so it is not a
+        # fixed path.
+        #
+        # It is NOT deleted beforehand, and not selected by name: a real game's
+        # own krkr.console.log lives under the same root (saves/vnovel/<game>/),
+        # and deleting or matching that would both destroy the user's data and
+        # pick a log that has nothing to do with this run. Instead the newest
+        # log that postdates a stamp file is the one this run wrote.
+        stamp="$KRKR_WORK/.run-stamp"
+        touch "$stamp"
+
+        # KAG boots in ~10s wall clock and MAX_FRAMES=300 (~5s) would cut it off
+        # mid-boot, so this loop does NOT pass --max-frames: the timeout below
+        # is the budget, and the assertion is on the log's *content*, which is
+        # written before the run ends either way.
+        ( cd "$KRKR_WORK" && env \
+              KRKRSDL2_DATA_PATH="$TESTS_DIR/../deps/krkrsdl2/data" \
+              timeout 40 "$RA" -L "$CORE" data.xp3 --verbose ) \
+              2>/tmp/nova_krkr.log || true
+
+        local_log=$(find "$RA_SAVE_ROOT" "$RA_SAVE_ROOT/.." -maxdepth 2 \
+                         -name krkr.console.log -newer "$stamp" 2>/dev/null \
+                    | while read -r f; do printf '%s %s\n' "$(stat -c%Y "$f")" "$f"; done \
+                    | sort -rn | head -1 | cut -d' ' -f2-)
+
+        if grep -q "SIGSEGV\|SIGABRT\|core dumped" /tmp/nova_krkr.log 2>/dev/null; then
+            echo "FAIL (crash)"
+            FAIL=$((FAIL + 1))
+            continue
+        fi
+
+        # No log at all means the engine never reached its logging setup, which
+        # is a failure in itself: an assertion that silently finds nothing is
+        # how a broken fixture passes.
+        if [ -z "$local_log" ] || [ ! -s "$local_log" ]; then
+            echo "FAIL (no krkr.console.log — engine never reached KAG)"
+            FAIL=$((FAIL + 1))
+            continue
+        fi
+
+        # The log is UTF-16LE with a BOM (written by DebugIntf.cpp). Matching
+        # against it directly with grep is unreliable — the file reads as
+        # *binary*, and whether a plain `grep -q` reports a match depends on
+        # how GNU grep classifies the buffer it happened to read. Convert
+        # once, then assert on plain UTF-8 text.
+        log_txt="$KRKR_WORK/krkr.log.txt"
+        iconv -f UTF-16 -t UTF-8 "$local_log" > "$log_txt" 2>/dev/null \
+            || tr -d '\000' < "$local_log" > "$log_txt" 2>/dev/null || true
+
+        # A script error means KAG never ran the scenario; it is reported in
+        # the engine's log, with the file and line.
+        if grep -q "Script exception raised" "$log_txt" 2>/dev/null; then
+            echo "FAIL (script exception — see $local_log)"
+            FAIL=$((FAIL + 1))
+            continue
+        fi
+
+        ok=true
+        if [ -f "$expect" ]; then
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                if ! grep -qF "$line" "$log_txt" 2>/dev/null; then
+                    echo "FAIL (expected in scenario: $line)"
+                    FAIL=$((FAIL + 1))
+                    ok=false
+                    break
+                fi
+            done < "$expect"
+        fi
+        $ok && { echo "PASS (scenario reached)"; PASS=$((PASS + 1)); }
+    done
+fi
+
 echo ""
 echo "=== Summary ==="
 echo "  PASS: $PASS"

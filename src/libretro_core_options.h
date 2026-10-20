@@ -285,6 +285,35 @@ extern "C"
                 {NULL, NULL},
           },
           "none"},
+         {"vnovel_split_view",
+          "Split View (experimental)",
+          "Development aid for the text-plane work: compose the frame from "
+          "artwork only, then present it beside the captured text as one wide "
+          "image - graphics on the left, text on the right, each at the game's "
+          "own size (so a 640x480 game is presented as 1280x480). 'off' "
+          "presents the game normally. It is not a normal way to play: it "
+          "exists to show that the two are captured separately and can be "
+          "served at a different resolution. Only affects the KiriKiri path.",
+          {
+                {"off", NULL},
+                {"enabled", NULL},
+                {NULL, NULL},
+          },
+          "off"},
+         {"vnovel_text_debug_view",
+          "Text Debug View",
+          "Development aid for the text-plane capture. 'off' presents the frame "
+          "normally. 'pip' overlays a translucent picture-in-picture in the "
+          "bottom-right showing the text the core has captured and accumulated "
+          "into a page - the dialogue alone, without the artwork it was peeled "
+          "out of. Use it to check what was captured. It changes nothing about "
+          "capture or drawing.",
+          {
+                {"off", NULL},
+                {"pip", NULL},
+                {NULL, NULL},
+          },
+          "off"},
          {"vnovel_menu_hotkey",
           "Menu Hotkey",
           "Which key toggles the core's own menu bar. 'none' (the default) "

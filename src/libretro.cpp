@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <signal.h>
@@ -609,6 +610,18 @@ static bool opt_indicators      = true;
 static int opt_debug_level      = 0;
 static bool opt_software_cursor = true;
 static int opt_text_speed       = -1;
+/* Text debug view: 0 = off (present the frame), 1 = split (captured plane on
+ * the left, composited frame on the right). A development aid for the
+ * text-plane work; it changes nothing about capture or drawing. */
+static int opt_text_debug_view = 0;
+/* Whether the splice request is currently in effect, so the option reader can
+ * tell a change from a steady state (see read_text_debug_view_option). */
+static int splice_requested = 0;
+/* Split view: present artwork and text side by side at double width (see the
+ * `vnovel_split_view` option). Off by default; a demonstration of serving the
+ * two surfaces independently at a different resolution. */
+static int opt_split_view   = 0;
+static int split_requested  = 0;
 /* The key that toggles the core's menu bar, as a libretro keycode; 0 = unbound
  * (the default). Set from the `vnovel_menu_hotkey` option before the first
  * frame, and read by the keyboard callback, so the binding cannot drift from
@@ -665,8 +678,58 @@ static int text_plane_w = 0, text_plane_h = 0, text_plane_pitch = 0;
 static int text_plane_changed_x = 0, text_plane_changed_y = 0;
 static int text_plane_changed_w = 0, text_plane_changed_h = 0;
 static int text_plane_origin_x = 0, text_plane_origin_y = 0;
+static int text_plane_plane_x  = 0, text_plane_plane_y = 0;
+static int text_plane_splice   = 0;
 static int text_plane_restart  = 0;
 static unsigned long long text_plane_serial = 0;
+
+/* --- The accumulated page ---------------------------------------------------
+ *
+ * Some engines publish a page in one go (ONScripter/PONScripter: the plane IS
+ * the screen), and one publishes it a LINE at a time (KiriKiri: each
+ * publication is a line-height box, ~616x40 measured). A consumer that wants
+ * "the page" therefore cannot just keep the latest publication: on KiriKiri
+ * that is only the most recent line.
+ *
+ * So the core keeps its own page buffer and blits each publication into it at
+ * the position the engine reported:
+ *
+ *     page[plane_y + changed_y + j][plane_x + changed_x + i] = surface[...]
+ *
+ * which collapses to "the plane is the page" when plane_x/plane_y are 0, i.e.
+ * on the two engines that already publish whole pages. One code path, no
+ * per-engine branch - the placement is the engine's statement, the core just
+ * obeys it.
+ *
+ * Built only when the sink asks for the placement context
+ * (`vnovel_request_text_plane_splice`), so a run that never accumulates pays
+ * nothing: no buffer, and the engines skip the per-publication work too. */
+static unsigned char *page_pixels = NULL;
+static size_t page_capacity       = 0;
+static int page_w = 0, page_h = 0, page_pitch = 0;
+static volatile int page_dirty = 0;
+
+/* The last frame geometry the core presented, in pixels. This is the page's
+ * size: an engine's text surface lives in the same window its frame does, so a
+ * publication's window-relative placement is relative to this. Written on the
+ * present path (both engines), read by the sink below. 0 until the first
+ * frame, in which case the sink falls back to the surface's own size. */
+static int text_page_frame_w = 0, text_page_frame_h = 0;
+
+/* Read the accumulated page. Same contract as text_page_get: core-owned
+ * buffers, valid until the next update. Returns 0 when nothing is accumulated
+ * (splice off, or nothing captured yet). */
+static int text_page_get_accumulated(const unsigned char **pixels, int *w,
+                                     int *h, int *pitch)
+{
+   if (!page_pixels || page_w <= 0 || page_h <= 0)
+      return 0;
+   if (pixels) *pixels = page_pixels;
+   if (w)      *w      = page_w;
+   if (h)      *h      = page_h;
+   if (pitch)  *pitch  = page_pitch;
+   return 1;
+}
 
 /* Phase 4 of the text-plane plan, in its smallest useful form: present the
  * captured page instead of the game frame.
@@ -693,6 +756,34 @@ static int text_page_get(const unsigned char **pixels, int *w, int *h, int *pitc
    if (pitch)  *pitch  = text_plane_pitch;
    return 1;
 }
+/* Read "the page", whatever that is on the engine currently running.
+ *
+ * Two cases, and the difference is the engine's, not the caller's:
+ *
+ *   - the surface IS the page (ONScripter/PONScripter publish a screen-sized
+ *     text surface). The latest publication is a complete page, so it is used
+ *     directly - there is nothing to accumulate and `splice` is 0.
+ *   - the surface is a FRAGMENT (KiriKiri publishes one line box at a time,
+ *     with its own local coordinates). Then the accumulated page must exist
+ *     before anything is shown, and returning 0 until it does is correct:
+ *     drawing the fragment would place the current line at the origin, which is
+ *     how the "three lines where the scene has two" artifact appeared.
+ *
+ * Both consumers (page mode, and the debug view) go through this so the rule
+ * cannot drift between them. */
+static int text_page_get_current(const unsigned char **pixels, int *w, int *h,
+                                 int *pitch)
+{
+   if (text_page_get_accumulated(pixels, w, h, pitch))
+      return 1;
+   /* Nothing accumulated yet. Only a whole-surface engine may be shown
+    * directly; the splice flag is the engine's own statement that its
+    * publications are fragments. */
+   if (text_plane_splice)
+      return 0;
+   return text_page_get(pixels, w, h, pitch);
+}
+
 static volatile int text_plane_dirty = 0;
 
 
@@ -760,10 +851,497 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
    text_plane_changed_h = plane->changed_h;
    text_plane_origin_x  = plane->origin_x;
    text_plane_origin_y  = plane->origin_y;
+   text_plane_plane_x   = plane->plane_x;
+   text_plane_plane_y   = plane->plane_y;
+   text_plane_splice    = plane->splice;
    text_plane_restart   = plane->restart;
    text_plane_serial    = plane->serial;
    text_plane_dirty     = 1;
 
+   /* Accumulate the page: blit this publication's changed rect into the page
+    * buffer at the position the engine gave (see the page buffer above). Runs
+    * only when the engine is maintaining the placement context, and only for
+    * the region that actually moved. */
+   if (plane->splice)
+   {
+      /* The page is the WINDOW, and the window's size comes from the frame the
+       * core presented - never from the publication itself.
+       *
+       * This was the bug that lost the start of every page: on the first
+       * publication the frame size was not yet known, so the fallback below
+       * used the FRAGMENT's width (616 for a KiriKiri line box against the
+       * window's 640), the page was created at 616, and the moment the real
+       * frame size appeared the size "changed", which cleared the page and
+       * threw away everything accumulated so far. Measured as "text before CDE
+       * is lost" - the page always started over once the frame arrived.
+       *
+       * So: if the window size is not known yet, DO NOT ACCUMULATE. A
+       * publication that arrives before the core has presented a frame cannot
+       * be placed anyway (it has no window coordinate), and dropping it is
+       * honest - the alternative is inventing a size and then discarding the
+       * result. The cost is the few publications of the opening burst, once,
+       * and on the engines that publish whole pages the page is the surface
+       * itself (splice off) so nothing is lost there. */
+      /* The page is the WINDOW. The size comes from the publication itself when
+       * the engine reports it, because the engine publishes text during
+       * start-up - before the core's present path has ever run - and sizing the
+       * page from the core thread alone dropped that whole opening burst (the
+       * start of the first page was missing on every run). The core-learned
+       * size stays as the fallback for a publication that carries none. */
+      if (plane->window_w > 0 && plane->window_h > 0)
+      {
+         text_page_frame_w = plane->window_w;
+         text_page_frame_h = plane->window_h;
+      }
+      if (text_page_frame_w <= 0 || text_page_frame_h <= 0)
+         return;
+
+      const int pw = text_page_frame_w;
+      const int ph = text_page_frame_h;
+      const int prowbytes = pw * 4;
+      const size_t pneeded = (size_t)prowbytes * (size_t)ph;
+      if (pneeded > 0 && pneeded <= (size_t)64 * 1024 * 1024)
+      {
+         if (pneeded > page_capacity)
+         {
+            unsigned char *np = (unsigned char *)realloc(page_pixels, pneeded);
+            if (np)
+            {
+               page_pixels   = np;
+               page_capacity = pneeded;
+               page_w = pw;
+               page_h = ph;
+               page_pitch = prowbytes;
+               /* A fresh allocation has no valid contents. */
+               memset(page_pixels, 0, pneeded);
+            }
+         }
+         else if ((page_w != pw || page_h != ph) && page_pixels)
+         {
+            /* The window itself changed size. Old coordinates are meaningless,
+             * so the page starts over - and this is the only case that clears
+             * it besides `restart`. */
+            page_w = pw;
+            page_h = ph;
+            page_pitch = prowbytes;
+            memset(page_pixels, 0, (size_t)page_pitch * (size_t)page_h);
+         }
+
+         if (page_pixels && page_w == pw && page_h == ph)
+         {
+            /* A new page clears everything on it. */
+            if (plane->restart)
+               memset(page_pixels, 0, (size_t)page_pitch * (size_t)page_h);
+
+            /* Clamp the source rect the engine reported to the surface it came
+             * from, and the destination to the page: neither side's numbers are
+             * trusted beyond their own bounds. */
+            int cx = plane->changed_x, cy = plane->changed_y;
+            int cw = plane->changed_w, ch = plane->changed_h;
+            if (cw <= 0 || ch <= 0)
+            {
+               /* No pixel change reported (geometry or restart only): with a
+                * restart already handled above there is nothing to blit. */
+            }
+            else
+            {
+               if (cx < 0) { cw += cx; cx = 0; }
+               if (cy < 0) { ch += cy; cy = 0; }
+               if (cx + cw > plane->width)  cw = plane->width - cx;
+               if (cy + ch > plane->height) ch = plane->height - cy;
+
+               int dx = plane->plane_x + cx, dy = plane->plane_y + cy;
+               if (dx < 0) { cw += dx; cx -= dx; dx = 0; }
+               if (dy < 0) { ch += dy; cy -= dy; dy = 0; }
+               if (dx + cw > page_w) cw = page_w - dx;
+               if (dy + ch > page_h) ch = page_h - dy;
+
+               for (int j = 0; j < ch; j++)
+               {
+                  const unsigned char *src =
+                        text_plane_pixels +
+                        (size_t)(cy + j) * (size_t)text_plane_pitch +
+                        (size_t)cx * 4u;
+                  unsigned char *dst = page_pixels +
+                                       (size_t)(dy + j) * (size_t)page_pitch +
+                                       (size_t)dx * 4u;
+                  memcpy(dst, src, (size_t)cw * 4u);
+               }
+            }
+            page_dirty = 1;
+         }
+      }
+   }
+}
+
+/* --- Text runs: the core side of the structured stream ---------------------
+ *
+ * The engine hands over each draw call's characters, position and style (see
+ * VNovelTextRun). At this stage the sink only OBSERVES: it writes the stream to
+ * a file so the shape of what the engine actually reports can be checked before
+ * anything renders from it.
+ *
+ * Why a log and not a data structure yet: the plan's premise is that a greedy
+ * parse can hand the core the page's text as fast as the engine can produce it,
+ * and that this is faster and more faithful than accumulating pixels. That
+ * premise is only worth building on if the stream is actually complete and
+ * correctly placed, and the way to know is to read it.
+ *
+ * The file is fixed and in tmpfs, for the same reason the audio diagnostic is:
+ * the launcher buffers the core's stderr and only flushes it when the game
+ * exits, so anything written there is invisible while a run is alive. */
+static FILE *text_run_log = NULL;
+
+static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
+{
+   (void)userdata;
+   if (!run || !run->text || run->text_length <= 0)
+      return;
+
+   if (!text_run_log)
+   {
+      const char *p = getenv("VNOVEL_TEXT_RUN_LOG");
+      if (!p)
+         return; /* not asked for: observe nothing */
+      text_run_log = fopen(p, "w");
+      if (!text_run_log)
+         return;
+   }
+
+   /* The characters are UTF-16 and not NUL-terminated. Written as UTF-8 so the
+    * log is readable and greppable; surrogates are passed through, which is
+    * correct for anything that later decodes the file as UTF-8.
+    *
+    * The buffer is sized from the run rather than being a fixed 256 bytes: a
+    * page-level run is a WHOLE PAGE, and a fixed small buffer silently dropped
+    * the tail of every page longer than ~255 characters. That is exactly what
+    * made the Disclaimer's choice labels ("Yes," / "No,") appear to be missing
+    * from the look-ahead when the walk had in fact collected them. */
+   const size_t cap = (size_t)run->text_length * 4u + 1u;
+   char *utf8 = (char *)malloc(cap);
+   if (!utf8)
+      return;
+   size_t n = 0;
+   for (int i = 0; i < run->text_length; i++)
+   {
+      unsigned cp = run->text[i];
+      if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < run->text_length)
+      {
+         const unsigned lo = run->text[i + 1];
+         if (lo >= 0xDC00 && lo <= 0xDFFF)
+         {
+            cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
+            i++;
+         }
+      }
+      if (cp < 0x80)
+         utf8[n++] = (char)cp;
+      else if (cp < 0x800)
+      {
+         utf8[n++] = (char)(0xC0 | (cp >> 6));
+         utf8[n++] = (char)(0x80 | (cp & 0x3F));
+      }
+      else if (cp < 0x10000)
+      {
+         utf8[n++] = (char)(0xE0 | (cp >> 12));
+         utf8[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+         utf8[n++] = (char)(0x80 | (cp & 0x3F));
+      }
+      else
+      {
+         utf8[n++] = (char)(0xF0 | (cp >> 18));
+         utf8[n++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+         utf8[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+         utf8[n++] = (char)(0x80 | (cp & 0x3F));
+      }
+   }
+   utf8[n] = 0;
+
+   /* A PAGE from the look-ahead is the unit a renderer wants, so it is logged
+    * as one line, marked and unquoted, rather than as a byte run in the same
+    * shape as a single drawn glyph. Newlines inside the page are escaped so one
+    * page stays one line and `tail | grep '^PAGE'` reads them back in order. */
+   if (run->kind == VNOVEL_RUN_PARSE)
+   {
+      fprintf(text_run_log, "PAGE(%d) ", (int)n);
+      for (size_t k = 0; k < n; k++)
+      {
+         if (utf8[k] == '\n')      fputs("\\n", text_run_log);
+         else if (utf8[k] == '\r') fputs("\\r", text_run_log);
+         else                      fputc(utf8[k], text_run_log);
+      }
+      fputc('\n', text_run_log);
+      fflush(text_run_log);
+      free(utf8);
+      return;
+   }
+
+   fprintf(text_run_log,
+           "run %llu %s local=(%d,%d) text=%s color=%06X "
+           "opacity=%d aa=%d shadow=%d/%06X%+d%+d\n",
+           run->serial, "draw",
+           run->x, run->y, utf8,
+           run->color & 0xFFFFFFu, run->opacity, run->antialias,
+           run->shadow_level, run->shadow_color & 0xFFFFFFu,
+           run->shadow_offset_x, run->shadow_offset_y);
+   fflush(text_run_log);
+   free(utf8);
+}
+
+/* --- Step 0: a regression signal for the captured plane ---------------------
+ *
+ * The suite asserted nothing about the plane, so it passed with capture
+ * entirely broken - which is how the pitch-sign rejection and the memcpy
+ * overrun shipped. `snapshotsave` dumps the engine's own frame, not the core's
+ * copy of the plane; this writes the copy, so a test can compare the pixels the
+ * seam actually produced.
+ *
+ * Bottom-up 32bpp BMP, matching what the engines' own SDL_SaveBMP writes, so a
+ * golden from here sits beside the frame goldens with no special handling. The
+ * plane's pixels are BGRA in a line's byte order; BMP wants BGRA too, so the
+ * rows copy with no channel swap. */
+static void write_bmp32(const char *path, const unsigned char *pixels,
+                        int w, int h, int pitch)
+{
+   FILE *f = fopen(path, "wb");
+   if (!f)
+      return;
+   const int rowbytes = w * 4;
+   const int imagesz  = rowbytes * h;
+   const int filesz   = 54 + imagesz;
+   unsigned char hdr[54] = {0};
+   hdr[0] = 'B'; hdr[1] = 'M';
+   hdr[2] = (unsigned char)(filesz);
+   hdr[3] = (unsigned char)(filesz >> 8);
+   hdr[4] = (unsigned char)(filesz >> 16);
+   hdr[5] = (unsigned char)(filesz >> 24);
+   hdr[10] = 54;            /* pixel data offset */
+   hdr[14] = 40;            /* BITMAPINFOHEADER size */
+   hdr[18] = (unsigned char)(w);
+   hdr[19] = (unsigned char)(w >> 8);
+   hdr[20] = (unsigned char)(w >> 16);
+   hdr[21] = (unsigned char)(w >> 24);
+   hdr[22] = (unsigned char)(h);
+   hdr[23] = (unsigned char)(h >> 8);
+   hdr[24] = (unsigned char)(h >> 16);
+   hdr[25] = (unsigned char)(h >> 24); /* positive: bottom-up */
+   hdr[26] = 1;                        /* planes */
+   hdr[28] = 32;                       /* bpp */
+   hdr[34] = (unsigned char)(imagesz);
+   hdr[35] = (unsigned char)(imagesz >> 8);
+   hdr[36] = (unsigned char)(imagesz >> 16);
+   hdr[37] = (unsigned char)(imagesz >> 24);
+   fwrite(hdr, 1, sizeof(hdr), f);
+   /* Bottom-up: last source row first. */
+   for (int y = h - 1; y >= 0; y--)
+      fwrite(pixels + (size_t)y * (size_t)pitch, 1, (size_t)rowbytes, f);
+   fclose(f);
+}
+
+/* Dump the core's captured plane to <last_save_path><name>.bmp.
+ *
+ * `name` comes from the script (the plane equivalent of `snapshotsave`), so a
+ * test names the artifact and the harness's existing reference comparison picks
+ * it up with no new machinery. No-op when nothing has been captured, so a
+ * script command on a frame that drew no text does not write a stale plane. */
+static int text_plane_dump(const char *name)
+{
+   if (!name || !*name || !text_plane_pixels || text_plane_w <= 0 ||
+       text_plane_h <= 0)
+      return 0;
+   char path[PATH_MAX_LENGTH];
+   /* last_save_path is canonical and has NO trailing separator (unlike the
+    * engines' own script_h.save_path), so a plain "%s%s.bmp" concatenation
+    * writes to a sibling of the save directory. Join properly instead. */
+   char file[256];
+   snprintf(file, sizeof(file), "%s.bmp", name);
+   fill_pathname_join(path, last_save_path, file, sizeof(path));
+   write_bmp32(path, text_plane_pixels, text_plane_w, text_plane_h,
+               text_plane_pitch);
+   return 1;
+}
+
+/* Bridge-facing wrapper: the engines request a dump through a function
+ * pointer, so the core's own helper has to match that shape. */
+static void vnovel_text_plane_dump_cb_impl(const char *name, void *userdata)
+{
+   (void)userdata;
+   text_plane_dump(name);
+}
+
+/* --- Text debug view (core option `vnovel_text_debug_view`) -----------------
+ *
+ * A development aid: show the text the core has captured, so it can be judged
+ * against the frame it was peeled out of.
+ *
+ * Drawn as a translucent picture-in-picture in the bottom-right of the frame,
+ * showing ONE thing: the accumulated text page. There is deliberately no
+ * frame panel beside it - the frame is already on screen behind the PiP, so a
+ * second copy would say nothing and halve the space the text gets. The page is
+ * aspect-preserving (panel_w:panel_h == w:h) and scaled to a quarter, so what
+ * the panel shows is what was captured, never a distortion of it.
+ *
+ * The backing is flat dark rather than the frame: the page is transparent where
+ * nothing was drawn, and letting artwork show through there would make "not
+ * captured" look like captured content - the one confusion this tool must not
+ * create. Blended at partial alpha so it reads as an overlay.
+ *
+ * `dst` is the core's own shadow buffer (never the engine's framebuffer), and
+ * `pitch` is in pixels. Runs last, so nothing the core draws can overpaint it.
+ */
+static void text_debug_view_apply(Uint32 *dst, int pitch, int w, int h)
+{
+   if (!opt_text_debug_view || !dst || w < 8 || h < 8)
+      return;
+
+   const unsigned char *tp = NULL;
+   int tw = 0, th = 0, tpitch = 0;
+   /* Through the one shared rule (see text_page_get_current): the accumulator
+    * when there is one, else the publication only if the engine publishes whole
+    * pages. Never a fragment drawn as if it were the page. */
+   const int have = text_page_get_current(&tp, &tw, &th, &tpitch) && tp &&
+                    tw > 0 && th > 0 && tpitch > 0;
+
+   /* Aspect-preserving quarter scale: w/4 : h/4 == w : h. */
+   const int pip_w = w / 4;
+   const int pip_h = h / 4;
+   if (pip_w < 8 || pip_h < 8)
+      return;
+   const int margin = 6;
+   const int x0     = w - pip_w - margin;
+   const int y0     = h - pip_h - margin;
+   if (x0 < 0 || y0 < 0)
+      return;
+
+   /* Mostly opaque, but the frame underneath still reads through, so the PiP
+    * can be judged as an overlay without hiding what it overlays. */
+   const unsigned PIP_A = 208; /* of 255 */
+
+   for (int py = 0; py < pip_h; py++)
+   {
+      Uint32 *drow = dst + (size_t)(y0 + py) * pitch;
+      const unsigned char *prow =
+            have ? tp + (size_t)((int)((long long)py * th / pip_h)) *
+                             (size_t)tpitch
+                 : NULL;
+
+      for (int px = 0; px < pip_w; px++)
+      {
+         /* The captured text, over a flat dark backing (see above). */
+         Uint32 sr = 0x40, sg = 0x40, sb = 0x40;
+         if (prow)
+         {
+            Uint32 v;
+            const int sx = (int)((long long)px * tw / pip_w);
+            memcpy(&v, prow + (size_t)sx * 4u, 4);
+            const Uint32 a = (v >> 24) & 0xff;
+            sr = (((v >> 16) & 0xff) * a + sr * (255 - a)) / 255;
+            sg = (((v >> 8) & 0xff) * a + sg * (255 - a)) / 255;
+            sb = ((v & 0xff) * a + sb * (255 - a)) / 255;
+         }
+
+         /* Border, so the panel is unmistakably the tool's own overlay. */
+         if (py == 0 || py == pip_h - 1 || px == 0 || px == pip_w - 1)
+         {
+            sr = 0x00; sg = 0xD0; sb = 0xFF;
+         }
+
+         Uint32 d;
+         memcpy(&d, drow + (x0 + px), 4);
+         const Uint32 r = (sr * PIP_A + ((d >> 16) & 0xff) * (255 - PIP_A)) / 255;
+         const Uint32 g = (sg * PIP_A + ((d >> 8) & 0xff) * (255 - PIP_A)) / 255;
+         const Uint32 b = (sb * PIP_A + (d & 0xff) * (255 - PIP_A)) / 255;
+         drow[x0 + px] = 0xFF000000u | (r << 16) | (g << 8) | b;
+      }
+   }
+}
+
+/* --- Split view (`vnovel_split_view`) ---------------------------------------
+ *
+ * Present the two surfaces side by side, at the game's own size each: artwork
+ * on the left, text on the right. A 640x480 game therefore presents as 1280x480.
+ *
+ * This is a demonstration, not a way to play: its point is that the frame and
+ * the text are now genuinely separate - the engine composes artwork only (text
+ * layers skipped, see TVPSetSplitViewArtworkOnly), and the text arrives on the
+ * plane seam - so the core is free to lay them out however it likes, including
+ * at a resolution the game never had.
+ *
+ * `artwork` is the composed frame (already artwork-only); `pitch` is in pixels.
+ * Returns the composed buffer, or NULL if it could not be built (the caller
+ * then presents normally rather than showing a broken layout).
+ *
+ * The result is a single buffer presented as one wide image. RetroArch scales
+ * it like any other output, so the split is visible on any display without the
+ * frontend needing to know about it. */
+static Uint32 *split_view_compose(const Uint32 *artwork, int pitch, int w, int h)
+{
+   static Uint32 *canvas = NULL;
+   static int canvas_px  = 0;
+   const int out_w       = w * 2;
+   const int out_h       = h;
+   const int need        = out_w * out_h;
+   if (need <= 0)
+      return NULL;
+   if (need > canvas_px)
+   {
+      Uint32 *np = (Uint32 *)realloc(canvas, (size_t)need * sizeof(Uint32));
+      if (!np)
+         return NULL;
+      canvas    = np;
+      canvas_px = need;
+   }
+
+   /* Left half: the artwork frame, copied row by row (the source pitch is in
+    * pixels and may exceed w). */
+   for (int y = 0; y < h; y++)
+   {
+      const Uint32 *src = artwork + (size_t)y * pitch;
+      Uint32 *dst       = canvas + (size_t)y * out_w;
+      memcpy(dst, src, (size_t)w * sizeof(Uint32));
+   }
+
+   /* Right half: the text surface, and nothing else.
+    *
+    * Alpha ZERO, not opaque black: this half is only the text, and what shows
+    * through it is the reader's background, not a colour the core invents. An
+    * opaque fill here would make the text side a black rectangle for every
+    * pixel the page does not cover, which is exactly what the earlier
+    * diagnostic (opaque red) was.
+    *
+    * The page is BGRA; it is copied through with its alpha intact, so a pixel
+    * with no glyph stays transparent and the text side carries only the text. */
+   for (int y = 0; y < h; y++)
+   {
+      Uint32 *row = canvas + (size_t)y * out_w + w;
+      for (int x = 0; x < w; x++)
+         row[x] = 0u;
+   }
+   {
+      const unsigned char *tp = NULL;
+      int tw = 0, th = 0, tpitch = 0;
+      if (text_page_get_current(&tp, &tw, &th, &tpitch) && tp && tw > 0 &&
+          th > 0 && tpitch > 0)
+      {
+         const int rows = th < h ? th : h;
+         const int cols = tw < w ? tw : w;
+         for (int y = 0; y < rows; y++)
+         {
+            const unsigned char *src = tp + (size_t)y * (size_t)tpitch;
+            Uint32 *dst              = canvas + (size_t)y * out_w + w;
+            /* BGRA in, ARGB out. The page's alpha is carried, not flattened. */
+            for (int x = 0; x < cols; x++)
+            {
+               const Uint32 b = src[x * 4 + 0];
+               const Uint32 g = src[x * 4 + 1];
+               const Uint32 r = src[x * 4 + 2];
+               const Uint32 a = src[x * 4 + 3];
+               dst[x]         = (a << 24) | (r << 16) | (g << 8) | b;
+            }
+         }
+      }
+   }
+   return canvas;
 }
 
 /* Dedicated audio diagnostic log. The launcher pipes the core's stderr into a
@@ -1013,30 +1591,16 @@ void retro_set_environment(retro_environment_t cb)
    * when it expects the ring to run dry during the next frame. This is the only
    * feedback the core gets about the ring it feeds — RetroArch's own statistics
    * printout is #ifdef DEBUG and only at deinit — and the KiriKiri submit
-   * controller steers on it (see krkr_abuf_drain). We also log transitions so
-   * an underrun shows up in the core stderr log with a timestamp. */
+   * controller steers on it (see krkr_abuf_drain). */
 #ifdef VNOVEL_KIRIKIRI
    static struct retro_audio_buffer_status_callback audio_status_cb = {
          [](bool active, unsigned occupancy, bool underrun_likely)
          {
-            static bool last_underrun = false;
-            static unsigned n         = 0;
             if (active)
             {
                krkr_ring_occupancy = (int)occupancy;
             }
             krkr_underrun_likely = underrun_likely ? 1 : 0;
-            /* Log only on state change (and the first report), not every frame. */
-            if (n++ == 0 || underrun_likely != last_underrun)
-            {
-               fprintf(stderr,
-                       "audio_status: active=%d occupancy=%u%% "
-                       "underrun_likely=%d\n",
-                       active ? 1 : 0,
-                       occupancy,
-                       underrun_likely ? 1 : 0);
-               last_underrun = underrun_likely;
-            }
          }};
    environ_cb(RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK,
               &audio_status_cb);
@@ -1134,9 +1698,6 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    * ONS/PONS path re-emits the real spec->freq in retro_run. So this value is
    * only in effect for the first frame or two. */
    info->timing.sample_rate = 44100.0;
-   fprintf(stderr,
-           "ons_audio: get_system_av_info: initial sample_rate=44100 (engine "
-           "not up yet)\n");
    audio_logf(
          "get_system_av_info: initial sample_rate=44100 (engine not up yet)\n");
 }
@@ -1214,6 +1775,15 @@ void retro_init(void)
     * that composites or replaces the plane is a separate, later step, so today
     * the plane is captured and held. */
    vnovel_text_plane_cb       = vnovel_text_plane_sink;
+   /* The structured text stream: the characters the engine was asked to draw,
+    * with position and style (see VNovelTextRun). Installed unconditionally;
+    * the sink itself only writes when VNOVEL_TEXT_RUN_LOG names a file, so a
+    * run that does not ask for the log pays one pointer test per glyph and
+    * nothing else. */
+   vnovel_text_run_cb         = vnovel_text_run_sink;
+   /* The plane dump request path (see engine_bridge.h): the engines' own
+    * snapshot commands reach the core's plane copy through this. */
+   vnovel_text_plane_dump_cb = vnovel_text_plane_dump_cb_impl;
 
    /* Phase 4: present the captured page instead of the frame. Off unless
     * asked for, so a normal run is unchanged. */
@@ -1265,8 +1835,76 @@ void retro_init(void)
 extern "C"
 {
    typedef void *EngineHandle;
+   /* True when `path` is a PE executable carrying an embedded XP3 archive.
+    *
+    * A KiriKiri game may ship as ONE file: the runtime .exe with the game
+    * archive appended after its last section, marked "XOPT_EMBED_AREA_" by the
+    * engine itself. Measured on NORA! V1.02: a 304 MB PE with the XP3 at offset
+    * 3,324,416 (851 files). Such a title has no data.xp3 on disk, so a
+    * data.xp3-only test decides "not KiriKiri" and the run falls through to
+    * ONScripter, which reports "no game script found".
+    *
+    * The RULE mirrors the engine's own (XP3Archive.cpp TVPGetXP3ArchiveOffset):
+    * the first two bytes are "MZ", and the 11-byte XP3 mark sits at a 16-byte
+    * (paragraph) boundary. Only aligned positions are tested, which is what
+    * keeps this cheap on a 300 MB file. Reads only; called once per load.
+    *
+    * FILE SCOPE on purpose: it was first written at the detection site, which
+    * is inside retro_load_game, and C does not allow a nested function
+    * definition there. */
+   static int file_has_embedded_xp3(const char *path)
+   {
+      static const unsigned char kXp3Mark[11] = {
+         0x58, 0x50, 0x33, 0x0d, 0x0a, 0x20, 0x0a, 0x1a, 0x8b, 0x67, 0x01
+      };
+      FILE *f = fopen(path, "rb");
+      if (!f)
+         return 0;
+
+      unsigned char head[2] = {0, 0};
+      if (fread(head, 1, 2, f) != 2 || head[0] != 'M' || head[1] != 'Z')
+      {
+         fclose(f);
+         return 0;
+      }
+
+      enum { WINDOW = 256 * 1024 };
+      unsigned char *buf = (unsigned char *)malloc(WINDOW + 16);
+      if (!buf)
+      {
+         fclose(f);
+         return 0;
+      }
+
+      int found = 0;
+      if (fseek(f, 16L, SEEK_SET) == 0)
+      {
+         size_t got;
+         while (!found && (got = fread(buf, 1, WINDOW, f)) > 0)
+         {
+            size_t p = 0;
+            while (p + 11 <= got)
+            {
+               if (memcmp(buf + p, kXp3Mark, 11) == 0)
+               {
+                  found = 1;
+                  break;
+               }
+               p += 16;
+            }
+            if (got < WINDOW)
+               break;
+         }
+      }
+
+      free(buf);
+      fclose(f);
+      return found;
+   }
+
    EngineHandle krkr_create(void);
    void krkr_setArchivePath(EngineHandle, const char *);
+   void krkr_set_archive_file(const char *);
    void krkr_setSavePath(EngineHandle, const char *);
    void krkr_set_engine_compat(const char *era);
    void krkr_set_game_id(const char *id);
@@ -1394,8 +2032,6 @@ static int krkr_abuf_drain(int rate)
    krkr_drain_last_ms = now;
    if (dt < 0 || dt > 250)
    { /* first call, or a real pause */
-      if (dt > 250)
-         fprintf(stderr, "krkr_audio: pause gap dt=%lldms -> discard\n", dt);
       return krkr_abuf_drain_suspend();
    }
    /* A gap beyond one frame is the frontend not calling retro_run for a while —
@@ -1409,10 +2045,6 @@ static int krkr_abuf_drain(int rate)
    * dropped. */
    if (dt > 40)
    {
-      fprintf(stderr,
-              "krkr_audio: gap dt=%lldms occ=%d%% -> forgive, play on\n",
-              dt,
-              krkr_ring_occupancy);
       /* Credit up to two frames: the frontend drained its ring during the gap, so
      * it needs a little, but more than its ring holds would burst it. */
       if (dt > 2000 / 60)
@@ -1476,17 +2108,6 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
    if (vnovel_core_keyboard_handle(down, keycode))
       return;
 
-   /* Input probe. Set KRKR_INPUT_DEBUG=1 to trace the whole path: this is the
-     RetroArch->core entry point, so its absence proves RetroArch never routed
-     a key here (input driver / focus), while its presence with no visible
-     effect points at the engine side. */
-   {
-      static int dbg = -1;
-      if (dbg < 0)
-         dbg = getenv("KRKR_INPUT_DEBUG") ? 1 : 0;
-      if (dbg)
-         fprintf(stderr, "[in] kb_cb down=%d code=%u\n", (int)down, keycode);
-   }
    /* Translate a remapped function key to what KAG expects. Keys here are
    * ASCII/control codes, where RETROK_* and SDLK_* coincide. */
    if (vtable == NULL)
@@ -1624,19 +2245,67 @@ bool retro_load_game(const struct retro_game_info *game)
 
    // Detect engine: KiriKiri for .xp3, PONScripter for pscript.dat, ONScripter-EN otherwise
 #ifdef VNOVEL_KIRIKIRI
+
    char xp3_check[PATH_MAX_LENGTH];
    fill_pathname_join(xp3_check, archive_path, "data.xp3", sizeof(xp3_check));
    FILE *xp3_fp = fopen(xp3_check, "rb");
-   if (xp3_fp)
+   /* No `data.xp3`? A KiriKiri game may instead ship as ONE executable with the
+    * archive embedded in it (see file_has_embedded_xp3). In that layout the
+    * ENGINE is pointed at the executable itself: its XP3 reader finds the mark,
+    * works out the offset and reads in place, so nothing is extracted and no
+    * copy of a multi-hundred-MB archive is made.
+    *
+    * Consulted ONLY when data.xp3 is absent, so a normal install is untouched,
+    * and only for a file that actually carries the mark, so an unrelated .exe
+    * in the game directory cannot hijack detection. */
+   char embedded_exe[PATH_MAX_LENGTH];
+   embedded_exe[0] = 0;
+   if (!xp3_fp)
    {
-      fclose(xp3_fp);
+      DIR *dir = opendir(archive_path);
+      if (dir)
+      {
+         struct dirent *de;
+         while ((de = readdir(dir)) != NULL)
+         {
+            if (de->d_name[0] == '.')
+               continue;
+            char cand[PATH_MAX_LENGTH];
+            fill_pathname_join(cand, archive_path, de->d_name, sizeof(cand));
+            if (file_has_embedded_xp3(cand))
+            {
+               strncpy(embedded_exe, cand, sizeof(embedded_exe) - 1);
+               embedded_exe[sizeof(embedded_exe) - 1] = 0;
+               break;
+            }
+         }
+         closedir(dir);
+      }
+   }
+   if (xp3_fp || embedded_exe[0])
+   {
+      if (xp3_fp)
+         fclose(xp3_fp);
       engine = krkr_create();
-      log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (data.xp3)\n");
-      audio_logf("ENGINE=KiriKiri (data.xp3) save=%s\n", game_save_dir);
+      if (embedded_exe[0])
+      {
+         log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (embedded XP3 in %s)\n", embedded_exe);
+         audio_logf("ENGINE=KiriKiri (embedded XP3) save=%s\n", game_save_dir);
+      }
+      else
+      {
+         log_cb(RETRO_LOG_INFO, "Using KiriKiri engine (data.xp3)\n");
+         audio_logf("ENGINE=KiriKiri (data.xp3) save=%s\n", game_save_dir);
+      }
       {
          char na[PATH_MAX_LENGTH], ns[PATH_MAX_LENGTH];
+         /* The DIRECTORY always: the engine chdir's here, so a file would break
+          * the working directory. An embedded-XP3 title additionally names the
+          * FILE, which the engine opens as storage and reads in place. */
          krkr_setArchivePath(engine,
                              realize_path(archive_path, na, sizeof(na)));
+         if (embedded_exe[0])
+            krkr_set_archive_file(realize_path(embedded_exe, na, sizeof(na)));
          mkdir_p(game_save_dir);
          krkr_setSavePath(engine, realize_path(game_save_dir, ns, sizeof(ns)));
       }
@@ -1814,6 +2483,48 @@ bool retro_load_game(const struct retro_game_info *game)
       {
          krkr_set_resolution(0, 0);
          log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
+      }
+      /* Read the text-plane options and make the requests BEFORE the engine
+       * starts, not on the first retro_run.
+       *
+       * This is an initialization-order requirement, and getting it wrong is
+       * invisible rather than loud. `krkr_init` below starts the engine thread,
+       * which boots KAG and draws its opening text immediately - a whole page,
+       * in one burst, before `retro_run` is ever called. Requesting the flags
+       * per-frame therefore arrived after every glyph had already been drawn
+       * and composited: the text plane reported `splice=0` for all of it (so
+       * the core accumulated nothing and showed a raw line box), and the
+       * artwork skip could not apply to layers already in the frame.
+       *
+       * Measured, and confirmed the other way round: with a slow-text scenario
+       * that draws over many frames, the same requests land mid-scene and both
+       * switches work (6 publications with splice=0, then 38 with splice=1).
+       * So the mechanism was always correct; only the moment was wrong.
+       *
+       * The read must happen here rather than in the option block below, which
+       * runs on the first frame - too late by exactly that burst. */
+      {
+         struct retro_variable kvar = {0};
+         kvar.key = "vnovel_text_debug_view";
+         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &kvar) && kvar.value)
+            opt_text_debug_view = (strcmp(kvar.value, "pip") == 0) ? 1 : 0;
+         kvar.key = "vnovel_split_view";
+         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &kvar) && kvar.value)
+            opt_split_view = (strcmp(kvar.value, "enabled") == 0) ? 1 : 0;
+
+         /* Page mode is an env var read at load, above; keep the union rule the
+          * per-frame path uses (see update_splice_request) in one place by
+          * asking for the same thing here. */
+         if (opt_text_debug_view || text_page_mode || opt_split_view)
+         {
+            vnovel_request_text_plane_splice(1);
+            splice_requested = 1;
+         }
+         if (opt_split_view)
+         {
+            vnovel_request_split_view(1);
+            split_requested = 1;
+         }
       }
       krkr_init(engine);
       strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
@@ -2372,27 +3083,6 @@ static void kiri_frame(void)
       int fr_ok = krkr_take_frame(&frame_pixels, &w, &h, &pitch, &frame_serial);
       const void *pixels = fr_ok ? (const void *)frame_pixels : NULL;
       (void)frame_serial;
-      /* Trace every geometry change. Two things appear here: a genuine CRT
-       * SuperRez mode (large but sane, e.g. 1920x240) versus a dangling-surface
-       * read (garbage like 2097259x6225971), and a surface being replaced by
-       * another one that took over rendering (a modal/dialog, say) — which is
-       * exactly why the code below only ever *grows* the reported geometry. */
-      {
-         static int tw = -1, th = -1, tp = -1;
-         if (w != tw || h != th || pitch != tp)
-         {
-            audio_logf(
-                  "KRKR geom w=%d h=%d pitch=%d pixels=%p bytes=%lld\n",
-                  w,
-                  h,
-                  pitch,
-                  pixels,
-                  (long long)pitch * h);
-            tw = w;
-            th = h;
-            tp = pitch;
-         }
-      }
       /* Sanity-bound the geometry before using it. SDL_libretro_surface is a
        * pointer the engine publishes from another thread; if it dangles (or
        * points at a half-freed surface) these fields are garbage and the
@@ -2416,13 +3106,6 @@ static void kiri_frame(void)
                   h,
                   pitch,
                   pixels);
-            fprintf(stderr,
-                    "krkr: rejecting implausible surface w=%d h=%d pitch=%d "
-                    "pixels=%p\n",
-                    w,
-                    h,
-                    pitch,
-                    pixels);
             last_dbg++;
          }
          return;
@@ -2438,30 +3121,50 @@ static void kiri_frame(void)
        * coordinates. So only ever report a surface larger than everything seen
        * so far; anything smaller is a dialog and is ignored. */
       {
+         /* `max_w`/`max_h` are the growth watermark, and split view changes the
+          * OUTPUT width without changing the engine's surface - so a toggle
+          * would never pass the guard and the frontend would keep the old
+          * window (measured: a black screen). `last_split` remembers which
+          * state the watermark describes, and a change drops it to force one
+          * re-report. */
          static int max_w = 0, max_h = 0;
-         if (w > 0 && h > 0 && (w > max_w || h > max_h))
+         static int last_split = -1;
+         if (last_split != opt_split_view)
+         {
+            last_split = opt_split_view;
+            max_w = max_h = 0;
+         }
+         /* Split view presents twice the width (artwork | text), so the
+          * geometry reported must be the OUTPUT's, not the engine surface's. */
+         const int out_w = opt_split_view ? w * 2 : w;
+         const int out_h = h;
+         if (w > 0 && h > 0 && (out_w > max_w || out_h > max_h))
          {
             struct retro_system_av_info av = {};
-            av.geometry.base_width         = w;
-            av.geometry.base_height        = h;
-            av.geometry.max_width          = w;
-            av.geometry.max_height         = h;
-            av.geometry.aspect_ratio       = (float)w / (float)h;
+            av.geometry.base_width         = out_w;
+            av.geometry.base_height        = out_h;
+            av.geometry.max_width          = out_w;
+            av.geometry.max_height         = out_h;
+            av.geometry.aspect_ratio       = (float)out_w / (float)out_h;
             av.timing.fps                  = 60.0;
             av.timing.sample_rate          = 48000.0;
             environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
             fprintf(stderr,
                     "krkr_audio: SET_SYSTEM_AV_INFO %dx%d @ 48000 Hz\n",
-                    w,
-                    h);
-            max_w = w;
-            max_h = h;
+                    out_w,
+                    out_h);
+            max_w = out_w;
+            max_h = out_h;
          }
       }
       if (pixels)
       {
          /* Tell the menu what size to open at (see vnovel_menu_poll_input). */
          vnovel_publish_frame_size(w, h);
+         /* The page's size, for the text-plane accumulator (see the page buffer
+          * in the plane state above). Same window the text surfaces live in. */
+         text_page_frame_w = w;
+         text_page_frame_h = h;
          /* Auto/skip mode badge: mirror of the game's own state (kag.tflags
          * .autoMode -> krkrsdl2_auto_mode: 0 off, 1 skip, 2 auto), matching the
          * ons/pons indicators so the same core option applies. */
@@ -2470,7 +3173,7 @@ static void kiri_frame(void)
          bool draw_auto       = opt_indicators && am == 2;
          bool draw_skip       = opt_indicators && am == 1;
          bool draw_ff         = opt_indicators && kiri_ff;
-         /* Diagnostic stripe overlay (KRKR2_PRESENT_STRIPES="height:alpha").
+         /* Diagnostic stripe overlay (VNOVEL_PRESENT_STRIPES="height:alpha").
           * Draws cycling low-alpha tint bands over the *finished* frame, at the
           * last boundary the core controls, so nothing the engine does can paint
           * over them. Reading the result per raster line separates two cases
@@ -2483,7 +3186,7 @@ static void kiri_frame(void)
          if (!stripe_init)
          {
             stripe_init = true;
-            const char *sv = getenv("KRKR2_PRESENT_STRIPES");
+            const char *sv = getenv("VNOVEL_PRESENT_STRIPES");
             if (sv && sv[0]) sscanf(sv, "%d:%d", &stripe_h, &stripe_a);
             if (stripe_h <= 0) stripe_h = 0;
          }
@@ -2493,7 +3196,8 @@ static void kiri_frame(void)
          * The menu composites onto that same copy, so it belongs in this
          * condition too - otherwise it would open but never draw. */
          if (opt_software_cursor || draw_auto || draw_skip || draw_ff ||
-             draw_stripes || vnovel_menu_should_draw())
+             draw_stripes || vnovel_menu_should_draw() ||
+             opt_text_debug_view)
          {
             static Uint32 *kshadow = NULL;
             static int kshadow_sz  = 0;
@@ -2617,15 +3321,38 @@ static void kiri_frame(void)
                 * tracking must be left alone. */
                composite_menu(kshadow, kpitch, w, h);
 
-               /* Page mode: show the captured text instead of the frame. This
+               /* Split view (experimental): artwork on the left, text on the
+                * right, at double width. Checked before page mode because both
+                * take over the whole output and the split is the more specific
+                * request; with only one of them on, the order is moot. The
+                * frame here is artwork-only already: the engine skips layers
+                * that have received glyphs (TVPSetSplitViewArtworkOnly). */
+               if (opt_split_view)
+               {
+                  Uint32 *wide = split_view_compose(kshadow, kpitch, w, h);
+                  if (wide)
+                  {
+                     video_cb(wide, w * 2, h, (w * 2) * 4);
+                     return;
+                  }
+               }
+
+               /* Page mode: show the captured page instead of the frame. This
                 * is the consumer the text-plane seam exists for - the page is
-                * what a reader or a page-based port would present. */
+                * what a reader or a page-based port would present.
+                *
+                * One shared rule decides what "the page" is (see
+                * text_page_get_current): the accumulator when there is one, and
+                * on an engine that publishes fragments, nothing until the
+                * accumulator has something - drawing the fragment would put the
+                * current line at the origin, which is the artifact this rule
+                * exists to prevent. */
                if (text_page_mode)
                {
                   const unsigned char *tp = NULL;
                   int tw = 0, th = 0, tpitch = 0;
-                  if (text_page_get(&tp, &tw, &th, &tpitch) && tp && tw > 0 &&
-                      th > 0 && tpitch != 0)
+                  if (text_page_get_current(&tp, &tw, &th, &tpitch) && tp &&
+                      tw > 0 && th > 0 && tpitch > 0)
                   {
                      /* The sink stores the page packed, one row after another,
                       * so the pitch it reports is a plain row size - the
@@ -2641,19 +3368,11 @@ static void kiri_frame(void)
                         memcpy(kshadow + (size_t)y * kpitch, src,
                                (size_t)cols * 4);
                      }
-                     video_cb(kshadow, w, h, pitch);
-                  }
-                  else
-                  {
-                     /* Nothing captured yet: present the frame rather than a
-                      * stale or torn page. */
-                     video_cb(kshadow, w, h, pitch);
                   }
                }
-               else
-               {
-                  video_cb(kshadow, w, h, pitch);
-               }
+               /* Last, so the right pane is the frame as presented. */
+               text_debug_view_apply(kshadow, kpitch, w, h);
+               video_cb(kshadow, w, h, pitch);
             }
             else
             {
@@ -2724,17 +3443,9 @@ static void kiri_frame(void)
          long long now         = ons_libretro_game_clock_ms();
          frames_out += got;
          if (t0 == 0)
-         {
             t0 = now;
-            fprintf(stderr,
-                    "krkr_audio: ring_rate=%d advertised=%d ch=%d\n",
-                    krkr_audio_rate(),
-                    krkr_audio_rate(),
-                    krkr_audio_channels());
-         }
          else if (now - t0 >= 1000)
          {
-            double secs             = (double)(now - t0) / 1000.0;
             static int last_written = 0;
             int written             = krkr_audio_written();
             int produced            = last_written ? written - last_written : 0;
@@ -2744,15 +3455,18 @@ static void kiri_frame(void)
              * the one that carries meaning). Compiled out unless asked for:
              * -DVNOVEL_AUDIO_LOG. */
 #ifdef VNOVEL_AUDIO_LOG
-            fprintf(stderr,
-                    "krkr_audio: out=%.0f fps produced=%d/s ring_occ=%d%% "
-                    "buf_pk=%d drop=%d ch=%d\n",
-                    frames_out / secs,
-                    produced,
-                    krkr_ring_occupancy,
-                    krkr_abuf_peak,
-                    krkr_abuf_dropped,
-                    krkr_audio_channels());
+            {
+               double secs = (double)(now - t0) / 1000.0;
+               fprintf(stderr,
+                       "krkr_audio: out=%.0f fps produced=%d/s ring_occ=%d%% "
+                       "buf_pk=%d drop=%d ch=%d\n",
+                       frames_out / secs,
+                       produced,
+                       krkr_ring_occupancy,
+                       krkr_abuf_peak,
+                       krkr_abuf_dropped,
+                       krkr_audio_channels());
+            }
 #else
             (void)frames_out; (void)produced;
 #endif
@@ -2822,6 +3536,13 @@ static void ons_present_frame(const EngineSurface *screen)
 {
    if (screen)
       vnovel_publish_frame_size(screen->width, screen->height);
+   /* The page's size, for the text-plane accumulator (see the page buffer in the
+    * plane state above). */
+   if (screen)
+   {
+      text_page_frame_w = screen->width;
+      text_page_frame_h = screen->height;
+   }
    bool draw_auto = opt_indicators && engine && vtable->isAutoMode(engine);
    bool draw_skip = opt_indicators && engine && vtable->isSkipMode(engine);
    // Use a shadow buffer for overlays (indicators + cursor) so the engine's
@@ -2832,7 +3553,7 @@ static void ons_present_frame(const EngineSurface *screen)
     * the shadow branch is skipped the menu would be silently invisible, which
     * is why it belongs in this condition and not only in the draw below. */
    bool need_shadow = opt_software_cursor || draw_auto || draw_skip ||
-                      vnovel_menu_should_draw();
+                      vnovel_menu_should_draw() || opt_text_debug_view;
    if (need_shadow && screen && screen->pixels)
    {
       static Uint32 *shadow  = NULL;
@@ -2905,6 +3626,21 @@ static void ons_present_frame(const EngineSurface *screen)
        * indicators and cursor use, so the engine's framebuffer is never
        * modified. */
       composite_menu(shadow, pitch, w, h);
+      /* Split view (experimental): put the text beside the artwork instead of
+       * presenting the frame alone. Takes over the whole output, so it is the
+       * last thing to touch the frame; the debug view below is then off (they
+       * both present a composed image and are not meant to combine). */
+      if (opt_split_view)
+      {
+         Uint32 *wide = split_view_compose(shadow, pitch, w, h);
+         if (wide)
+         {
+            video_cb(wide, w * 2, h, (w * 2) * 4);
+            return;
+         }
+      }
+      /* Last, so the right pane is the frame as presented. */
+      text_debug_view_apply(shadow, pitch, w, h);
       video_cb(shadow, screen->width, screen->height, screen->pitch);
    }
    else if (screen && screen->pixels)
@@ -2978,6 +3714,66 @@ static void read_pointer_options(void)
                                  : POINTER_SOURCE_RIGHT;
 }
 
+/* The text debug view option. Read on the same shared per-frame path as the
+ * pointer options, not in read_frame_options(): the KiriKiri branch returns
+ * through kiri_frame() before that block, so an option read there would never
+ * take effect on KiriKiri. */
+static void read_text_debug_view_option(void)
+{
+   struct retro_variable dvar = {0};
+   dvar.key                   = "vnovel_text_debug_view";
+   int want = opt_text_debug_view;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dvar) && dvar.value)
+      want = (strcmp(dvar.value, "pip") == 0) ? 1 : 0;
+
+   if (want != opt_text_debug_view)
+      opt_text_debug_view = want;
+
+   /* Split view. Read here, on the same shared path, for the same reason as the
+    * debug view: the KiriKiri branch returns through kiri_frame() before
+    * read_frame_options(), so an option read there would never take effect on
+    * the engine this mode exists for. */
+   dvar.key = "vnovel_split_view";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dvar) && dvar.value)
+      opt_split_view = (strcmp(dvar.value, "enabled") == 0) ? 1 : 0;
+}
+
+/* Whether anything currently wants a page assembled. Called after every option
+ * that can ask for one, so the request tracks the union of consumers rather
+ * than one of them: page mode needs the accumulated page just as much as the
+ * debug view does, and tying the request to only the debug view meant page mode
+ * read an accumulation that was never built (it showed one line on KiriKiri).
+ *
+ * Asked on change only - the engines gate their own per-publication work on it,
+ * and the request is not free to repeat per frame. */
+static void update_splice_request(void)
+{
+   int want = opt_text_debug_view || text_page_mode || opt_split_view;
+   if (want != splice_requested)
+   {
+      splice_requested = want;
+      vnovel_request_text_plane_splice(splice_requested);
+      /* Whatever was accumulated under the old setting does not correspond to
+       * what the consumers now want: drop it so nothing shows a stale page, and
+       * the next publication rebuilds from scratch. */
+      if (!splice_requested)
+      {
+         page_w = page_h = 0;
+         page_dirty       = 0;
+      }
+   }
+
+   /* The split view needs the text as a page of its own (the right half), so it
+    * asks for the same accumulation the debug view does; and it asks the engine
+    * to compose artwork only, so the left half has no text in it. Both are
+    * change-driven: they gate engine-side work. */
+   if (opt_split_view != split_requested)
+   {
+      split_requested = opt_split_view;
+      vnovel_request_split_view(split_requested);
+   }
+}
+
 /* The menu hotkey. Read on the same per-frame path as the pointer options so a
  * change takes effect without a restart, and so the binding is a property of
  * the option rather than of a key name compiled into the handler.
@@ -3005,6 +3801,8 @@ void retro_run(void)
 {
    stamp_frontend_heartbeat();
    read_pointer_options();
+   read_text_debug_view_option();
+   update_splice_request();
    read_menu_hotkey();
 
    /* The menu hotkey is handled by the keyboard callback
@@ -3088,36 +3886,41 @@ void retro_run(void)
    * first frame without the geometry changing. */
    if (screen && screen->width > 0 && screen->height > 0)
    {
-      static int last_w = 0, last_h = 0, last_rate = 0;
-      if (screen->width != last_w || screen->height != last_h ||
-          rate != last_rate)
+      static int last_w = 0, last_h = 0, last_rate = 0, last_split = -1;
+      /* Split view doubles the presented width, and toggling it changes the
+       * output without changing the engine's surface - so both the split state
+       * and the rate are part of the "did the output geometry change" test. */
+      const int out_w = opt_split_view ? screen->width * 2 : screen->width;
+      const int out_h = screen->height;
+      if (out_w != last_w || out_h != last_h || rate != last_rate ||
+          opt_split_view != last_split)
       {
          struct retro_system_av_info av;
-         av.geometry.base_width  = screen->width;
-         av.geometry.base_height = screen->height;
-         av.geometry.max_width   = screen->width;
-         av.geometry.max_height  = screen->height;
-         av.geometry.aspect_ratio =
-               (float)screen->width / (float)screen->height;
+         av.geometry.base_width  = out_w;
+         av.geometry.base_height = out_h;
+         av.geometry.max_width   = out_w;
+         av.geometry.max_height  = out_h;
+         av.geometry.aspect_ratio = (float)out_w / (float)out_h;
          av.timing.fps         = 60.0;
          av.timing.sample_rate = (double)rate;
          environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
          fprintf(stderr,
                  "ons_audio: SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d Hz)\n",
-                 screen->width,
-                 screen->height,
+                 out_w,
+                 out_h,
                  rate,
                  last_rate);
          audio_logf(
                "SET_SYSTEM_AV_INFO %dx%d @ %d Hz (was %d) frames/frame=%zu\n",
-               screen->width,
-               screen->height,
+               out_w,
+               out_h,
                rate,
                last_rate,
                ((size_t)rate / 60 / 32 + 1) * 32);
-         last_w    = screen->width;
-         last_h    = screen->height;
-         last_rate = rate;
+         last_w     = out_w;
+         last_h     = out_h;
+         last_rate  = rate;
+         last_split = opt_split_view;
       }
    }
    static const size_t max_frames = 2048;

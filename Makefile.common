@@ -192,6 +192,7 @@ ONS_CXX := $(addprefix $(ONSCRIPTER_EN)/, \
   ONScripterLabel_rmenu.cpp \
   ONScripterLabel_sound.cpp \
   ONScripterLabel_text.cpp \
+  ONScripterLookAhead.cpp \
   resize_image.cpp \
   sjis2utf16.cpp \
   DirectReader.cpp \
@@ -249,6 +250,7 @@ PONS_CXX := $(addprefix $(PONSCRIPTER)/, \
   prng.cpp \
   pstring.cpp \
   bstrwrap.cpp \
+  PONScripterLookAhead.cpp \
 )
 
 PONS_OBJS := $(PONS_CXX:.cpp=.pons.o)
