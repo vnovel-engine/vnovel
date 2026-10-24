@@ -52,32 +52,15 @@ CC            ?= cc
 CXX           ?= c++
 fpic          :=
 SHARED        :=
-# The output name carries the DEVWIRE tag for the same reason BUILD_DIR does: the
-# objects for the two flavours must never be shared, and a single output path let
-# one build overwrite the other -- so a client that had been connecting fine
-# suddenly got "connection refused", with nothing in the build to say the binary
-# had been replaced.
-#   make                 -> vnovel_libretro-devwire.so  (socket; the default)
-#   make DEVWIRE=0       -> vnovel_libretro.so          (ships; no socket)
-#
-# DEVWIRE is ON by default: the socket is what every harness, client and test in
-# this repo talks to, and a build that silently lacks it costs a debugging
-# session every time. Turn it OFF for a build meant to ship -- `make DEVWIRE=0`
-# (or NO_DEVWIRE=1) -- and the output name changes with it so the two can never
-# be confused or overwrite one another.
-# Two ways to say "no wire protocol": DEVWIRE=0 is the symmetrical spelling,
-# NO_DEVWIRE=1 reads better in a release script. Both set the same marker, which
-# is what every use below tests -- so there is one condition, not three.
+# DEVWIRE is a compile flag, not a different artefact: the output is
+# vnovel_libretro.so either way. ON by default, because that is what every
+# harness, client and test in this repo talks to. `make DEVWIRE=0` (or
+# NO_DEVWIRE=1) turns the wire protocol off for a build meant to ship.
 ifeq ($(DEVWIRE),0)
    DEVWIRE_OFF := 1
 endif
 ifneq ($(NO_DEVWIRE),)
    DEVWIRE_OFF := 1
-endif
-ifeq ($(DEVWIRE_OFF),1)
-   DEVWIRE_TAG :=
-else
-   DEVWIRE_TAG := -devwire
 endif
 TARGET_EXT    := .so
 PLATFLAGS     :=
@@ -348,10 +331,25 @@ endif
 # through a module handle. See krkr_sym in engine_kirikiri_cabi.cpp.
 DEFINES += -DKRKR_STATIC_ENGINE
 
-# KiriKiri is opt-in (see CORE_CXX in Makefile.common): the engine is not yet
-# release quality, so a default build is ONScripter-EN + PONScripter only.
-# `make KRKR_ENABLE=1` compiles engine_kirikiri_cabi.cpp, links the krkrsdl2
-# archive, and turns on the KiriKiri path in libretro.cpp.
+# KiriKiri is ON by default. The engine is statically linked into the core (no
+# runtime dlopen: see KRKR_STATIC_ENGINE below and engine_kirikiri_cabi.cpp), so
+# a build without it simply cannot run a .xp3 game.
+#
+# `make KRKR_ENABLE=0` turns it off, for a tree that cannot build the engine at
+# all (its CMake needs SDL2, fontconfig and vorbisfile). That is NOT a supported
+# release configuration.
+#
+# Normalised to 1/empty here, so every use below keeps its plain `ifeq (=1)`
+# test and there is one place that decides the default. Leaving this opt-in cost
+# a deploy: the buildroot recipe stages the engine's archives for linking and
+# lists libretro-krkrsdl2 as a dependency, but never passed the flag -- so the
+# image shipped a core with no KiriKiri in it, and every KiriKiri game sat on a
+# black screen.
+ifeq ($(KRKR_ENABLE),0)
+   KRKR_ENABLE :=
+else
+   KRKR_ENABLE := 1
+endif
 ifeq ($(KRKR_ENABLE),1)
    DEFINES += -DVNOVEL_KIRIKIRI
 endif
@@ -402,14 +400,12 @@ CFLAGS   += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall $(fpic) $(VISIBILITY)
 
 # --- The output name ---------------------------------------------------------
 # Composed HERE, after every platform block has had its say, because those blocks
-# set the extension and this adds the DEVWIRE tag -- and a platform block that
-# wrote `TARGET` wholesale (which is what they used to do) silently discarded the
-# tag, so `make DEVWIRE=1` produced a file with no socket in it under the name of
-# the build that has none.
+# set the extension: a platform block that wrote `TARGET` wholesale (which is
+# what they used to do) silently discarded what this adds.
 #
-#   make            -> vnovel_libretro-devwire.so   (socket; the default)
-#   make DEVWIRE=0  -> vnovel_libretro.so           (ships; no socket)
-TARGET := $(TARGET_NAME)_libretro$(TARGET_STEM_EXTRA)$(DEVWIRE_TAG)$(TARGET_EXT)
+#   make            -> vnovel_libretro.so   (socket; the default)
+#   make DEVWIRE=0  -> vnovel_libretro.so   (no socket)
+TARGET := $(TARGET_NAME)_libretro$(TARGET_STEM_EXTRA)$(TARGET_EXT)
 
 # --- Source files and includes ---
 include Makefile.common

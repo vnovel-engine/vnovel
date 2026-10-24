@@ -78,17 +78,13 @@ mkdir -p "$cfgdir"
 
 SECS="${1:-${SECS:-60}}"
 PORT="${2:-${PORT:-8777}}"
-# Which core to load. The two flavours have separate outputs (see the Makefile:
-# a plain `make` must not clobber the socket-enabled build), and every script here
-# wants the one WITH the socket, so prefer it when it is present.
+# Which core to load. There is now one output name for both DEVWIRE flavours
+# (see the Makefile: the flag changes what is compiled in, not the path), so a
+# plain `make` produces the socket-enabled build this script wants by default.
 resolve_core() {
 	local root="$1"
 	if [ -n "${CORE:-}" ]; then printf '%s' "$CORE"; return; fi
-	if [ -f "$root/vnovel_libretro-devwire.so" ]; then
-		printf '%s' "$root/vnovel_libretro-devwire.so"
-	else
-		printf '%s' "$root/vnovel_libretro.so"
-	fi
+	printf '%s' "$root/vnovel_libretro.so"
 }
 CORE="$(resolve_core "$root")"
 GAME="${GAME:-/home/matcha/VN/Le sanglot des cigales}"

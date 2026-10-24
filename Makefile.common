@@ -278,10 +278,10 @@ CORE_CXX := \
   $(SRC_DIR)/menu.cpp \
   $(SRC_DIR)/wrap.cpp
 
-# KiriKiri is opt-in: its engine is still being brought up, so it is not part
-# of a release build. Off, engine_kirikiri_cabi.cpp is not compiled, the
-# krkrsdl2 archive is not linked, and libretro.cpp compiles the KiriKiri path
-# out entirely (see VNOVEL_KIRIKIRI). Build it with `make KRKR_ENABLE=1`.
+# The KiriKiri engine wrapper, compiled unless KiriKiri is explicitly turned off
+# (`make KRKR_ENABLE=0`; ON by default, normalised in the Makefile). Off, the
+# krkrsdl2 archive is not linked and libretro.cpp compiles the KiriKiri path out
+# entirely (see VNOVEL_KIRIKIRI).
 ifeq ($(KRKR_ENABLE),1)
    CORE_CXX += $(SRC_DIR)/engine_kirikiri_cabi.cpp
 endif

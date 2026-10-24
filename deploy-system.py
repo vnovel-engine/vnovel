@@ -19,6 +19,7 @@ import sys
 import os
 import subprocess
 import time
+import configparser
 
 # Credentials are never committed. Provide them in a gitignored
 # deploy-system.local.py (HOST/USER/PASS), or via the environment. See the
@@ -76,17 +77,130 @@ SYSTEMLIST_INIT = "/recalbox/share_init/system/.emulationstation/systemlist.xml"
 RECALBOX_CONF = "/recalbox/share/system/recalbox.conf"
 CORE_NAME = "vnovel"
 
-# The vnovel system XML to inject
-SYSTEM_XML = '''  <system uuid="c2e3b2c6-2a11-49b4-9d90-1903b7a55488" name="vnovel" fullname="Visual Novels">
-    <descriptor path="%ROOT%/vnovel" theme="vnovel" extensions="files:nscript.dat pscript.dat nscript.___" extension.types="*=file" icon="$F02D" downloader="0" port="0" readonly="0"/>
-    <scraper screenscraper="0"/>
-    <properties type="engine" pad="mandatory" keyboard="optional" mouse="optional" lightgun="no" releasedate="1999-01" manufacturer="07th Expansion / TYPE-MOON / various" retroachievements="0" crt.multiresolution="0" crt.multiregion="0" ignoredfiles=""/>
-    <emulatorList>
-      <emulator name="libretro">
-        <core name="vnovel" priority="1" extensions="files:nscript.dat pscript.dat nscript.___" netplay="0" softpatching="0" compatibility="high" speed="high" crt.available="1" video.backend="default"/>
-      </emulator>
-    </emulatorList>
-  </system>'''
+# The vnovel system XML to inject.
+#
+# DERIVED FROM system.ini, not duplicated here. A hardcoded copy had TWO wrong
+# extension lists (both missing data.xp3), and a deploy therefore replaced a
+# correct systemlist.xml entry with one that hid every KiriKiri game from
+# EmulationStation. The .ini is the source of truth; read it at deploy time.
+#
+# The extensions matter more than they look: a system definition is the only
+# place that can name a FULL FILENAME, which is what tells nscript.dat apart
+# from, say, a MAME `.dat`. The core's .info cannot do that -- RetroArch matches
+# only the text after the last dot (core_info.c, core_info_does_support_file:
+# `string_list_find_elem(list, ext + 1)`), so a `nscript.dat` entry there would
+# reduce to `dat`.
+SYSTEM_INI_CANDIDATES = [
+    os.environ.get("VNOVEL_SYSTEM_INI", ""),
+    os.path.expanduser(
+        "~/dev/recalbox/package/recalbox-romfs2/systems/vnovel/system.ini"),
+]
+
+
+def _system_xml_from_ini(path):
+    """Build the <system> element the way Recalbox's systembuilder.py does.
+
+    Field mapping copied from package/recalbox-romfs2/scripts/{systemholder,
+    systembuilder}.py so a deploy and an image agree. Only the fields this
+    system actually uses are emitted; a new one must be added to both.
+    """
+    # RawConfigParser, not ConfigParser: the values contain `%ROOT%` (a Recalbox
+    # placeholder), which ConfigParser's interpolation rejects.
+    ini = configparser.RawConfigParser()
+    ini.read(path)
+
+    def get(section, key, default=""):
+        return ini.get(section, key, fallback=default).strip().strip('"')
+
+    def flag(section, key):
+        return "1" if get(section, key, "0").lower() in ("1", "true", "yes", "on") else "0"
+
+    def esc(s):
+        return (s.replace("&", "&amp;").replace('"', "&quot;")
+                 .replace("<", "&lt;").replace(">", "&gt;"))
+
+    core_sections = sorted(
+        (s for s in ini.sections() if s.startswith("core.")),
+        key=lambda s: int(s.split(".", 1)[1]) if s.split(".", 1)[1].isdigit() else 0)
+
+    # The descriptor's extension list is the UNION across cores, with `files:`
+    # hoisted to the front (systemholder.py:410-417).
+    exts = []
+    for sec in core_sections:
+        for e in get(sec, "extensions").split():
+            if e not in exts:
+                exts.append(e)
+    ext_str = " ".join(exts)
+    if "files:" in ext_str:
+        ext_str = "files:" + ext_str.replace("files:", "")
+
+    lines = []
+    lines.append(
+        f'  <system uuid="{esc(get("system","uuid"))}" '
+        f'name="{esc(get("system","name"))}" '
+        f'fullname="{esc(get("system","fullname"))}">')
+    # port/readonly are emitted ONLY for a port system (systembuilder.py:104-106);
+    # a normal system omits them, and emitting them made a deploy's XML differ
+    # from the image's for no reason.
+    descriptor = (
+        f'    <descriptor path="{esc(get("system","roms.folder"))}" '
+        f'theme="{esc(get("system","theme.folder"))}" '
+        f'extensions="{esc(ext_str)}" '
+        f'extension.types="{esc(get("system","extension.types"))}" '
+        f'icon="{esc(get("system","icon.unicode"))}" downloader="0"')
+    if flag("system", "port") == "1":
+        descriptor += f' port="1" readonly="{flag("system","readonly")}"'
+    descriptor += "/>"
+    lines.append(descriptor)
+    lines.append(
+        f'    <scraper screenscraper="{esc(get("system","screenscraper.id","0"))}"/>')
+    lines.append(
+        f'    <properties type="{esc(get("properties","type"))}" '
+        f'pad="{esc(get("properties","device.pad"))}" '
+        f'keyboard="{esc(get("properties","device.keyboard"))}" '
+        f'mouse="{esc(get("properties","device.mouse"))}" '
+        f'lightgun="{esc(get("properties","device.lightgun"))}" '
+        f'releasedate="{esc(get("properties","release.date"))}" '
+        f'manufacturer="{esc(get("properties","manufacturer"))}" '
+        f'retroachievements="{flag("properties","retroachievements")}" '
+        f'crt.multiresolution="{flag("properties","crt.multiresolution")}" '
+        f'crt.multiregion="{flag("properties","crt.multiregion")}" '
+        f'ignoredfiles="{esc(get("properties","ignoredfiles"))}"/>')
+
+    by_emulator = {}
+    for sec in core_sections:
+        by_emulator.setdefault(get(sec, "emulator", "libretro"), []).append(sec)
+
+    lines.append('    <emulatorList>')
+    for emulator, sections in by_emulator.items():
+        lines.append(f'      <emulator name="{esc(emulator)}">')
+        for sec in sections:
+            lines.append(
+                f'        <core name="{esc(get(sec,"core"))}" '
+                f'priority="{esc(get(sec,"priority"))}" '
+                f'extensions="{esc(get(sec,"extensions"))}" '
+                f'netplay="{flag(sec,"netplay")}" '
+                f'softpatching="{flag(sec,"softpatching")}" '
+                f'compatibility="{esc(get(sec,"compatibility"))}" '
+                f'speed="{esc(get(sec,"speed"))}" '
+                f'crt.available="{flag(sec,"crt.available")}" '
+                f'video.backend="{esc(get(sec,"video.backend","default"))}"/>')
+        lines.append('      </emulator>')
+    lines.append('    </emulatorList>')
+    lines.append('  </system>')
+    return "\n".join(lines), ext_str
+
+
+def load_system_xml():
+    """(xml, extensions) from the first system.ini that exists, or (None, None)."""
+    for path in SYSTEM_INI_CANDIDATES:
+        if path and os.path.exists(path):
+            xml, exts = _system_xml_from_ini(path)
+            print(f"System definition read from {path}")
+            print(f"  extensions: {exts}")
+            return xml, exts
+    return None, None
+
 
 def _remote_arch(ssh):
     """'aarch64', 'x86_64', ... — or None if uname is unavailable."""
@@ -245,6 +359,13 @@ def deploy_emulator_selection(ssh):
 
 def deploy_system(ssh):
     """Add the vnovel system to systemlist.xml."""
+    system_xml, _exts = load_system_xml()
+    if not system_xml:
+        print("ERROR: no system.ini found; tried:\n  "
+              + "\n  ".join(p for p in SYSTEM_INI_CANDIDATES if p)
+              + "\nSet VNOVEL_SYSTEM_INI to override.", file=sys.stderr)
+        return False
+
     sftp = ssh.open_sftp()
 
     with sftp.open(SYSTEMLIST, 'r') as f:
@@ -257,7 +378,7 @@ def deploy_system(ssh):
             '', content, flags=re.DOTALL
         )
 
-    content = content.replace('</systemList>', SYSTEM_XML + '\n</systemList>')
+    content = content.replace('</systemList>', system_xml + '\n</systemList>')
 
     with sftp.open(SYSTEMLIST, 'w') as f:
         f.write(content)

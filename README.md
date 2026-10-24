@@ -130,26 +130,29 @@ make platform=mingw
 # Debug build
 make DEBUG=1
 
-# Include the KiriKiri engine (see below)
-make KRKR_ENABLE=1
+# Exclude the KiriKiri engine (not a supported release configuration)
+make KRKR_ENABLE=0
 ```
 
-**KiriKiri is opt-in.** A default build contains ONScripter-EN and PONScripter
-only; it does not compile `engine_kirikiri_cabi.cpp`, does not build or link the
-krkrsdl2 archives, and does not pull in SDL2/fontconfig/vorbisfile. `make
-KRKR_ENABLE=1` turns all of that on. Fate/stay night runs to the disclaimer and
-into the game with it, message text and all — the opaque fill that used to
-overpaint KAG link text is the modern layer-compositing algorithm, and the
-per-game compatibility table selects the pre-2006 one for the titles that need
-it. Other titles are less well covered, so treat the engine as opt-in rather
-than as one of the default two.
+**All three engines are in the default build.** ONScripter-EN, PONScripter and
+KiriKiri are compiled and linked into one core, so a default build runs
+`.xp3` games as well as `nscript.dat`/`pscript.dat` ones. Fate/stay night runs
+to the disclaimer and into the game, message text and all — the opaque fill that
+used to overpaint KAG link text is the modern layer-compositing algorithm, and
+the per-game compatibility table selects the pre-2006 one for the titles that
+need it.
+
+`make KRKR_ENABLE=0` drops KiriKiri, for a tree that cannot build the engine at
+all (its CMake needs SDL2, fontconfig and vorbisfile). Such a core cannot run a
+`.xp3` game, so that is a build for a constrained host rather than a release.
 
 The build produces one self-contained `vnovel_libretro.so`: the runtime and the
-selected engines are linked into it, so nothing else has to ship beside it. That
-is the shape a distribution needs — libretro's buildbot copies exactly one file
-per core. With `KRKR_ENABLE=1` the KiriKiri engine's static archives are built
-from `deps/krkrsdl2` with CMake on demand, so a tree that has not built it still
-produces a working ONScripter/PONScripter core.
+engine are linked into it, so nothing else has to ship beside it. That is the
+shape a distribution needs — libretro's buildbot copies exactly one file per
+core. There is **no runtime `dlopen`**: the engine's static archives are built
+from `deps/krkrsdl2` with CMake on demand and archived whole into the core (the
+engine reaches its own objects through a registry, not through references the
+linker can follow).
 `make rdb` additionally builds the game database; see
 [Game database](#game-database-vnovelrdb).
 
