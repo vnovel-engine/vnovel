@@ -154,6 +154,55 @@ VNOVEL_EXPORT void vnovel_request_split_view(int enabled)
       vnovel_split_view_cb(split_request_wanted);
 }
 
+/* --- navigation results (engine -> shell) ---------------------------------
+ *
+ * The shell asks an engine to take the Nth choice a page offers; the engine
+ * answers here, because only it knows whether that choice exists. See the
+ * navigation section of engine_bridge.h for the contract.
+ *
+ * No remembered value, unlike the requests above: a result describes one
+ * request that has already been made, and replaying it to a shell that
+ * registered its callback later would report an outcome for something the
+ * shell never asked. It is published to whoever is listening at the time. */
+VNOVEL_EXPORT vnovel_nav_result_fn vnovel_nav_result_cb = 0;
+VNOVEL_EXPORT void *vnovel_nav_result_userdata      = 0;
+
+VNOVEL_EXPORT void vnovel_publish_nav_result(int ordinal, int accepted)
+{
+   if (vnovel_nav_result_cb)
+      vnovel_nav_result_cb(ordinal, accepted);
+}
+
+/* The page-event and choice-label sinks. They exist whether or not the wire
+ * protocol is compiled in: the shell assigns its own sink unconditionally, so a
+ * non-wire build still needs the symbols to assign to (the publishers become
+ * inline no-ops in that build -- engine_bridge.h). */
+VNOVEL_EXPORT vnovel_page_event_fn vnovel_page_event_cb = 0;
+VNOVEL_EXPORT vnovel_choice_label_fn vnovel_choice_label_cb = 0;
+
+/* --- page events (engine -> shell) ---------------------------------------
+ *
+ * The reader's place in the text, as one vocabulary shared with the client
+ * (see engine_bridge.h). One-way and edge-only: an event describes something
+ * that has just happened, so replaying it to a shell that registered later
+ * would claim a page just began when the engine may be pages further on. */
+#ifdef VNOVEL_DEVWIRE
+VNOVEL_EXPORT void vnovel_publish_page_event(int event)
+{
+   if (vnovel_page_event_cb)
+      vnovel_page_event_cb(event);
+}
+
+/* WHAT a menu's options are, for a menu whose labels are not text: an
+ * Onscripter sprite button's label is an image, so a consumer that renders only
+ * text shows a page with no options while the engine waits on one. */
+VNOVEL_EXPORT void vnovel_publish_choice_label(int ordinal, const char *label)
+{
+   if (vnovel_choice_label_cb && label)
+      vnovel_choice_label_cb(ordinal, label);
+}
+#endif /* VNOVEL_DEVWIRE */
+
 int remap_keys[REMAP_COUNT] = {
       [REMAP_ADVANCE]      = SDLK_RETURN,
       [REMAP_MENU]         = SDLK_BACKSPACE,

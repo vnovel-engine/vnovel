@@ -94,6 +94,7 @@ extern "C"
    extern int krkr_take_frame(const unsigned char **pixels, int *w, int *h,
                               int *pitch, unsigned long long *serial);
    extern void krkrsdl2_request_quit(void);
+   extern volatile int krkrsdl2_pending_select;
 
    /* The engine-neutral text plane (engine_bridge.h). Declared by hand rather
     * than by including that header, because it pulls in SDL 1.2's SDL.h whose
@@ -1137,6 +1138,22 @@ extern "C"
       krkr_keyq_sym[krkr_keyq_head]  = sym;
       krkr_keyq_down[krkr_keyq_head] = (unsigned char)(down ? 1 : 0);
       krkr_keyq_head                 = n;
+   }
+
+   /* Inbound navigation intent from the development socket (select N). Called
+    * on the frontend thread (retro_run), which is NOT the engine thread: TJS
+    * is not thread-safe, so this only hands the ordinal to the engine, which
+    * takes it in its per-frame path (SDLApplication.cpp, next to the autoMode
+    * eval) and reports the verdict through vnovel_publish_nav_result. A newer
+    * intent replaces an older one — the socket has one consumer, so the latest
+    * select is what the user meant. KiriKiri has no EngineVTable (it is driven
+    * by direct krkr_* calls), so the core calls this directly when vtable is
+    * NULL rather than through vtable->pushSelect. */
+   extern "C" void krkr_push_select(int ordinal)
+   {
+      if (ordinal <= 0)
+         return;
+      krkrsdl2_pending_select = ordinal;
    }
 
 /* Input diagnostics. KRKR_INPUT_DEBUG=1 traces the whole input path, which is

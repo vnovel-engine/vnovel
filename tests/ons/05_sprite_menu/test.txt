@@ -1,0 +1,50 @@
+*define
+mode_ext
+english
+game
+*start
+; ===========================================================================
+; ONScripter-EN: SPRITE-BUTTON menu probe.
+;
+; The case a text stream cannot describe by itself. Every option here is an
+; IMAGE loaded into a sprite slot with `lsph` and armed with `spbtn`; nothing in
+; the page's text names any of them, so a consumer that renders only text shows
+; a menu with no options at all while the engine waits on one.
+;
+; The wire protocol answers that with CHOICE(<n>) <label>: the engine publishes
+; each button's slot sprite filename, and <n> is the button's own number, which
+; is both what btnwait returns to the script and what a click produces. This
+; fixture exists so that path is exercised by the suite and not only by a real
+; game (where it was first missed: the title screen published nothing, because
+; the label was read from AnimationInfo::file_name, which lsp/lsph never set --
+; they fill image_name).
+;
+; Engine identifier: every page is MAGENTA, so a capture cannot be confused with
+; the ONS text/choice fixture (green) or the PON one (blue).
+; ===========================================================================
+bg #440044,0
+repaint
+
+lsph 10,"btn_new.bmp",40,100
+lsph 11,"btn_load.bmp",40,140
+lsph 12,"btn_exit.bmp",40,180
+print 1
+
+*menu_loop
+spbtn 10,1
+spbtn 11,2
+spbtn 12,3
+btnwait %0
+
+; The menu simply stays up, and that is deliberate. What this fixture exists to
+; prove is that the LABELS reach the wire and that a `select N` is accepted --
+; neither needs a branch, and this build has NO goto/jump (see the sibling
+; 04_text_choice fixture: `select` is its only branching verb, and a bare label
+; cannot be entered without one). A script that branched here would be testing
+; the engine's control flow rather than the text seam.
+; Wait for the pick. `btnwait` returns the button's number; with no branch verb
+; there is nowhere to go, so the loop simply re-arms and waits again -- which is
+; exactly the re-arm the client's label de-duplication is written for.
+resettimer
+waittimer 500
+goto_unsupported

@@ -29,6 +29,10 @@
 #include "fallback_font.h"
 #include "extra_fallback_font.h"
 
+/* The development socket: the text stream out, navigation intents in. See
+ * devsock.h. Off unless VNOVEL_DEV_PORT names a port. */
+#include "devsock.h"
+
 /* Crash diagnostics: on SIGSEGV/SIGBUS/SIGABRT dump the fault address and a
  * symbolicated backtrace to the crash log, then re-raise so the default
  * action still kills the process. Core crashes otherwise surface only as
@@ -989,38 +993,28 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
  *
  * The file is fixed and in tmpfs, for the same reason the audio diagnostic is:
  * the launcher buffers the core's stderr and only flushes it when the game
- * exits, so anything written there is invisible while a run is alive. */
+ * exits, so anything written there is invisible while a run is alive.
+ *
+ * The SAME records go to the development socket (devsock.h) when one is open,
+ * which is the live form of this log: same shape, same decoder, no launcher
+ * buffering. That is why the decode below is shared rather than duplicated -
+ * two producers of these lines would drift. */
 static FILE *text_run_log = NULL;
 
-static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
+/* Decode the run's UTF-16 into `utf8`, which must have room for
+ * text_length * 4 + 1 bytes. Returns the byte count.
+ *
+ * The buffer is sized from the run rather than being a fixed 256 bytes: a
+ * page-level run is a WHOLE PAGE, and a fixed small buffer silently dropped
+ * the tail of every page longer than ~255 characters. That is exactly what
+ * made the Disclaimer's choice labels ("Yes," / "No,") appear to be missing
+ * from the look-ahead when the walk had in fact collected them.
+ *
+ * Written as UTF-8 so the result is readable and greppable; surrogates are
+ * passed through, which is correct for anything that later decodes the text as
+ * UTF-8. */
+static size_t text_run_utf8(const VNovelTextRun *run, char *utf8)
 {
-   (void)userdata;
-   if (!run || !run->text || run->text_length <= 0)
-      return;
-
-   if (!text_run_log)
-   {
-      const char *p = getenv("VNOVEL_TEXT_RUN_LOG");
-      if (!p)
-         return; /* not asked for: observe nothing */
-      text_run_log = fopen(p, "w");
-      if (!text_run_log)
-         return;
-   }
-
-   /* The characters are UTF-16 and not NUL-terminated. Written as UTF-8 so the
-    * log is readable and greppable; surrogates are passed through, which is
-    * correct for anything that later decodes the file as UTF-8.
-    *
-    * The buffer is sized from the run rather than being a fixed 256 bytes: a
-    * page-level run is a WHOLE PAGE, and a fixed small buffer silently dropped
-    * the tail of every page longer than ~255 characters. That is exactly what
-    * made the Disclaimer's choice labels ("Yes," / "No,") appear to be missing
-    * from the look-ahead when the walk had in fact collected them. */
-   const size_t cap = (size_t)run->text_length * 4u + 1u;
-   char *utf8 = (char *)malloc(cap);
-   if (!utf8)
-      return;
    size_t n = 0;
    for (int i = 0; i < run->text_length; i++)
    {
@@ -1056,36 +1050,294 @@ static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
       }
    }
    utf8[n] = 0;
+   return n;
+}
 
-   /* A PAGE from the look-ahead is the unit a renderer wants, so it is logged
-    * as one line, marked and unquoted, rather than as a byte run in the same
-    * shape as a single drawn glyph. Newlines inside the page are escaped so one
-    * page stays one line and `tail | grep '^PAGE'` reads them back in order. */
+static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
+{
+   (void)userdata;
+   if (!run || !run->text || run->text_length <= 0)
+      return;
+
+   /* The socket, or the log: either one means the record is wanted. Listening
+    * rather than connected, because records published before a client attaches
+    * are buffered and released to it - the walk's opening pages would otherwise
+    * be lost to a consumer started a moment too late. */
+   const int socked = vnovel_dev_socket_listening();
+   if (!text_run_log && !socked)
+   {
+      const char *p = getenv("VNOVEL_TEXT_RUN_LOG");
+      if (!p)
+         return; /* not asked for: observe nothing */
+      text_run_log = fopen(p, "w");
+      if (!text_run_log && !socked)
+         return;
+   }
+
+   const size_t cap = (size_t)run->text_length * 4u + 1u;
+   char *utf8 = (char *)malloc(cap);
+   if (!utf8)
+      return;
+   const size_t n = text_run_utf8(run, utf8);
+
+   /* One line per record, in the log's own vocabulary (see the header comment).
+    * A page from the look-ahead is the unit a renderer wants, so it is one
+    * marked, unquoted line; newlines inside it are escaped so a page stays one
+    * line and `grep '^PAGE'` reads them back in order. A drawn run keeps its
+    * serial, position and style, which a consumer needs to tell the two
+    * producers apart and to correlate with the plane. */
+   char line[8192];
+   int len;
    if (run->kind == VNOVEL_RUN_PARSE)
    {
-      fprintf(text_run_log, "PAGE(%d) ", (int)n);
-      for (size_t k = 0; k < n; k++)
+      /* The page's ORDINAL, not its byte count: numbering is structure (see
+       * devsock.h), and it is what lets an event or a choice name the page it
+       * belongs to. The count was redundant besides -- the text follows on this
+       * same line, so its length is a strlen. */
+      static unsigned int page_ordinal = 0;
+      len = snprintf(line, sizeof(line), VNOVEL_REC_PAGE "%u) ",
+                     ++page_ordinal);
+      for (size_t k = 0; k < n && len < (int)sizeof(line) - 1; k++)
       {
-         if (utf8[k] == '\n')      fputs("\\n", text_run_log);
-         else if (utf8[k] == '\r') fputs("\\r", text_run_log);
-         else                      fputc(utf8[k], text_run_log);
+         if (utf8[k] == '\n')
+         {
+            if (len < (int)sizeof(line) - 3)
+               line[len++] = '\\', line[len++] = 'n';
+         }
+         else if (utf8[k] == '\r')
+         {
+            if (len < (int)sizeof(line) - 3)
+               line[len++] = '\\', line[len++] = 'r';
+         }
+         else
+            line[len++] = utf8[k];
       }
+      line[len] = 0;
+   }
+   else
+   {
+      len = snprintf(line, sizeof(line),
+                     "run %llu draw local=(%d,%d) text=%s color=%06X "
+                     "opacity=%d aa=%d shadow=%d/%06X%+d%+d",
+                     run->serial, run->x, run->y, utf8,
+                     run->color & 0xFFFFFFu, run->opacity, run->antialias,
+                     run->shadow_level, run->shadow_color & 0xFFFFFFu,
+                     run->shadow_offset_x, run->shadow_offset_y);
+      if (len < 0)
+         len = 0;
+      if (len > (int)sizeof(line) - 1)
+         len = (int)sizeof(line) - 1;
+   }
+
+   if (text_run_log)
+   {
+      fputs(line, text_run_log);
       fputc('\n', text_run_log);
       fflush(text_run_log);
-      free(utf8);
+   }
+   if (socked)
+      vnovel_dev_socket_send(line, (size_t)len);
+
+   free(utf8);
+}
+
+/* --- The development socket: navigation in --------------------------------
+ *
+ * The outbound half needs no code of its own: the text-run sink above writes its
+ * records to the socket when one is connected (see devsock.h). This is the
+ * inbound half - the consumer's navigation intents - and the lifecycle.
+ *
+ * The intent vocabulary is one line per intent:
+ *
+ *   continue     advance past a text pause, exactly as pressing the advance key
+ *                does: the engine's next clickwait/textwait resolves and the
+ *                script moves on. Also accepted as `c` and `next`.
+ *   select N     take the Nth choice the current page offers, exactly as a
+ *                click on that label would. 1-based, in page order.
+ *
+ * Why `continue` has no engine-side code at all: on every engine the advance IS
+ * a key press (ONScripter's keyPressEvent sets the same button state a click
+ * does; KAG advances on VK_SPACE/VK_RETURN), and the input path that turns a
+ * key press into that state already exists and is already correct - engines'
+ * own SDL queues, the frontend's input callback, the pad mappings. So this
+ * pushes SPACE through the engine's existing key entry point rather than
+ * inventing a second advance path that could drift from the real one.
+ *
+ * Why the ORDINAL and not a link target: an ordinal is what a page actually has
+ * (the labels arrive in order), it is what a click produces on every engine
+ * (ONScripter's `ButtonLink::no`, KiriKiri's index into the layer's `links`),
+ * and it needs no payload grammar - `<link:...>` carries an engine-specific
+ * expression whose evaluation the engine, not this socket, must own. The engine
+ * is also the only side that can say whether the choice EXISTS, which is why the
+ * verdict comes back rather than being assumed: see vnovel_publish_nav_result.
+ *
+ * Nothing here goes through the input layers: the ordinal reaches the engine
+ * through its vtable (pushSelect), which mirrors the state change a click makes.
+ * No synthetic mouse event, no coordinate, no hover state.
+ *
+ * Deliberately not a protocol with a future: unknown lines are logged and
+ * ignored, and there is no ack, no sequence number and no framing beyond '\n'. */
+
+/* Which engine takes a selection, and how. One place, because the two engine
+ * families are driven differently: ONScripter/PONScripter hand it to the vtable
+ * slot, while KiriKiri has no vtable at all (it is driven by direct krkr_* calls
+ * and owns its own thread) and queues it for its own loop to apply. */
+#ifdef VNOVEL_KIRIKIRI
+/* Defined in engine_kirikiri_cabi.cpp, which is the other side of the same
+ * hand-off krkr_push_key is: this file's socket poll runs on the frontend's
+ * thread, so it hands the ordinal over rather than touching the message layer. */
+extern "C" void krkr_push_select(int ordinal);
+/* The key entry point, declared here too: the socket's `continue` intent uses
+ * the same advance key the frontend does, and it is defined in the same file. */
+extern "C" void krkr_push_key(int sym, int down);
+#endif
+static int vnovel_dispatch_select(int ordinal)
+{
+   if (!engine)
+      return 0;
+#ifdef VNOVEL_KIRIKIRI
+   if (!vtable)
+   {
+      krkr_push_select(ordinal);
+      return 1;
+   }
+#endif
+   if (vtable->pushSelect)
+   {
+      vtable->pushSelect(engine, ordinal);
+      return 1;
+   }
+   return 0;
+}
+
+/* One line from the consumer. Runs on the frontend's thread (retro_run), which
+ * is NOT the engine thread on KiriKiri - hence pushSelect queues rather than
+ * applies. */
+static void vnovel_dev_line(const char *line, void *userdata)
+{
+   (void)userdata;
+   if (!line || !*line)
+      return;
+
+   /* A leading command word, then its argument. Whitespace-tolerant because a
+    * human is expected to be typing this into a terminal. */
+   const char *p = line;
+   while (*p == ' ' || *p == '\t')
+      p++;
+
+   if (strncmp(p, "select", 6) == 0 &&
+       (p[6] == ' ' || p[6] == '\t' || p[6] == 0))
+   {
+      const char *arg = p + 6;
+      while (*arg == ' ' || *arg == '\t')
+         arg++;
+      const int n = atoi(arg);
+      if (n <= 0)
+      {
+         fprintf(stderr, "devsocket: 'select' needs a 1-based ordinal\n");
+         return;
+      }
+      if (!vnovel_dispatch_select(n))
+      {
+         fprintf(stderr, "devsocket: select %d: this engine cannot take a "
+                         "selection\n", n);
+         return;
+      }
       return;
    }
 
-   fprintf(text_run_log,
-           "run %llu %s local=(%d,%d) text=%s color=%06X "
-           "opacity=%d aa=%d shadow=%d/%06X%+d%+d\n",
-           run->serial, "draw",
-           run->x, run->y, utf8,
-           run->color & 0xFFFFFFu, run->opacity, run->antialias,
-           run->shadow_level, run->shadow_color & 0xFFFFFFu,
-           run->shadow_offset_x, run->shadow_offset_y);
-   fflush(text_run_log);
-   free(utf8);
+   /* `continue` / `c` (and `next`, the same key's other name in the engines).
+    * SPACE is the advance key on all three - ONScripter's keyPressEvent treats
+    * it as a left-click on the button under the cursor, KAG's own input maps it
+    * to onPrimaryClick - so the existing key entry point is the advance. Press
+    * and release together, the same way a tap arrives from a frontend. */
+   if (strcmp(p, "continue") == 0 || strcmp(p, "c") == 0 ||
+       strcmp(p, "next") == 0)
+   {
+#ifdef VNOVEL_KIRIKIRI
+      if (!vtable)
+      {
+         krkr_push_key(SDLK_SPACE, 1);
+         krkr_push_key(SDLK_SPACE, 0);
+         return;
+      }
+#endif
+      if (vtable && vtable->pushKey)
+      {
+         vtable->pushKey(engine, SDLK_SPACE, 1);
+         vtable->pushKey(engine, SDLK_SPACE, 0);
+         return;
+      }
+      fprintf(stderr, "devsocket: continue: this engine cannot take a key\n");
+      return;
+   }
+
+   fprintf(stderr, "devsocket: unknown intent: %s\n", line);
+}
+
+/* The engines report the verdict through the bridge (engine_bridge.h) on their
+ * own thread. Logged, not answered on the socket: the client sees the outcome
+ * as the page that follows (or does not), which keeps this direction one-way
+ * and the transport dumb. */
+static void vnovel_nav_result(int ordinal, int accepted)
+{
+   fprintf(stderr, "devsocket: select %d -> %s\n",
+           ordinal, accepted ? "accepted" : "no such choice");
+}
+
+/* --- Page flow out: the engine's own "paused" / "running" edge -------------
+ *
+ * The text-run stream is produced by a look-ahead walk, so pages arrive while
+ * the engine is still several pages behind. This is the engine's own signal of
+ * where it actually is: a text pause is armed (the reader must click) or the
+ * reader acted and it is running again. A consumer pairs the Nth page it queued
+ * with the Nth pause it sees, which is what stops a transcript running ahead of
+ * the game. See engine_bridge.h for the contract.
+ *
+ * Published to the socket (and the run log, when one is open) as two bare words.
+ * Deliberately no page number: the page's identity is its order, which both
+ * sides already have, and a number here would be a second source of truth for
+ * something the ordering already decides. */
+static void vnovel_page_event(int event)
+{
+   /* The event's token, from the ONE list (devsock.h). A boundary and a wait are
+    * different events and reach the client as different tokens, so a consumer
+    * never has to infer which it is from context. */
+   const char *line = VNOVEL_REC_PAGE_START;
+   switch (event)
+   {
+      case VNOVEL_EV_PAGE_END:   line = VNOVEL_REC_PAGE_END;   break;
+      case VNOVEL_EV_LINE_PAUSE: line = VNOVEL_REC_LINE_PAUSE; break;
+      case VNOVEL_EV_PAGE_PAUSE: line = VNOVEL_REC_PAGE_PAUSE; break;
+      case VNOVEL_EV_RESUME:     line = VNOVEL_REC_RESUME;     break;
+      default:                   line = VNOVEL_REC_PAGE_START; break;
+   }
+   if (text_run_log)
+   {
+      fputs(line, text_run_log);
+      fputc('\n', text_run_log);
+      fflush(text_run_log);
+   }
+   if (vnovel_dev_socket_listening())
+      vnovel_dev_socket_send(line, strlen(line));
+}
+
+/* One choice's label, for a menu the page text cannot describe. */
+static void vnovel_choice_label(int ordinal, const char *label)
+{
+   char line[1024];
+   const int n = snprintf(line, sizeof(line), VNOVEL_REC_CHOICE "%d) %s",
+                          ordinal, label ? label : "");
+   if (n <= 0 || n >= (int)sizeof(line))
+      return;
+   if (text_run_log)
+   {
+      fputs(line, text_run_log);
+      fputc('\n', text_run_log);
+      fflush(text_run_log);
+   }
+   if (vnovel_dev_socket_listening())
+      vnovel_dev_socket_send(line, (size_t)n);
 }
 
 /* --- Step 0: a regression signal for the captured plane ---------------------
@@ -1784,6 +2036,33 @@ void retro_init(void)
    /* The plane dump request path (see engine_bridge.h): the engines' own
     * snapshot commands reach the core's plane copy through this. */
    vnovel_text_plane_dump_cb = vnovel_text_plane_dump_cb_impl;
+
+   /* The navigation RESULT path (engine_bridge.h): an engine answers a
+    * `select N` through this, from its own thread. Registered here beside the
+    * other bridge callbacks; only the development socket ever sends a request,
+    * so with no socket this is one pointer nobody calls. */
+   vnovel_nav_result_cb     = vnovel_nav_result;
+   vnovel_nav_result_userdata = NULL;
+
+   /* Page-flow edges (engine_bridge.h): the engine's own "text pause armed" /
+    * "running again", so the stream can be revealed in step with the game
+    * rather than as fast as the look-ahead parses. */
+   vnovel_page_event_cb = vnovel_page_event;
+   vnovel_choice_label_cb = vnovel_choice_label;
+
+   /* The development socket (devsock.h). Off unless asked for: a core that
+    * opens a port nobody expects is a liability, not a convenience. */
+   {
+      const char *port = getenv("VNOVEL_DEV_PORT");
+      if (port && *port)
+      {
+         if (vnovel_dev_socket_open(atoi(port)) == 0)
+            fprintf(stderr, "devsocket: development socket on 127.0.0.1:%s\n",
+                    port);
+         else
+            fprintf(stderr, "devsocket: could not listen on port %s\n", port);
+      }
+   }
 
    /* Phase 4: present the captured page instead of the frame. Off unless
     * asked for, so a normal run is unchanged. */
@@ -2680,6 +2959,10 @@ static void stop_engine_thread(void)
 
 void retro_deinit(void)
 {
+   /* Drop the development socket: the listener must not outlive the core that
+    * opened it (a frontend that loads, unloads and reloads the core would
+    * otherwise leave the port bound). Safe with no socket open. */
+   vnovel_dev_socket_close();
 }
 
 void retro_reset(void)
@@ -3804,6 +4087,13 @@ void retro_run(void)
    read_text_debug_view_option();
    update_splice_request();
    read_menu_hotkey();
+
+   /* The development socket (devsock.h). Read here, on the frontend's thread,
+    * before the engines run: this is the same place the frontend's own input is
+    * read, so a `select N` lands in the same frame the engine's next loop
+    * iteration sees. A no-op with no socket open (one listener test) or no
+    * consumer connected (one accept test). */
+   vnovel_dev_socket_poll(vnovel_dev_line, NULL);
 
    /* The menu hotkey is handled by the keyboard callback
     * (vnovel_core_keyboard_handle), not polled here: the polled key state is a

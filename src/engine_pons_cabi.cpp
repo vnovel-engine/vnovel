@@ -99,6 +99,21 @@ static void engine_do_run(EngineHandle h)
  * because they read only this module's own SDL and glue. */
 #include "engine_runtime_accessors.h"
 
+/* Deliver an ordinal `select N` to the engine's script thread. Pushes the
+ * private SDL user event the event loop handles (see PONS_SELECT_EVENT in
+ * PonscripterLabel.h); the ordinal rides in event.user.code. Queued, not
+ * applied: the engine takes it when its loop next runs and reports the
+ * verdict through vnovel_publish_nav_result. */
+static void pons_pushSelect(EngineHandle h, int ordinal)
+{
+   (void)h;
+   SDL_Event event;
+   SDL_memset(&event, 0, sizeof(event));
+   event.type = PONS_SELECT_EVENT;
+   event.user.code = ordinal;
+   SDL_PushEvent(&event);
+}
+
 extern "C" const EngineVTable pons_engine_vtable = {
       pons_create,
       pons_destroy,
@@ -134,4 +149,5 @@ extern "C" const EngineVTable pons_engine_vtable = {
       engine_drainUserEvents,
       engine_showCursor,
       engine_timerStartedPtr,
-      engine_timerRunningPtr};
+      engine_timerRunningPtr,
+      pons_pushSelect}; /* last slot: NULL here means the engine lacks select-from-socket */

@@ -7,6 +7,173 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
 ### Added
 
+- **A development socket for the text stream, in both directions.** With
+  `VNOVEL_DEV_PORT=<port>` in the run's environment the core listens on
+  127.0.0.1 and serves the same records the text-run log writes — `PAGE(n) …`
+  from the look-ahead, `run … draw …` per drawn glyph — as live lines instead of
+  a tmpfs file the launcher only flushes at exit. Nothing is lost to a late
+  client: records published before one attaches are buffered and released on
+  accept (oldest lines dropped first if the backlog overflows). The same
+  connection accepts navigation intents:
+  - `continue` — advance past a text pause, the way the advance key does. It
+    pushes the key through the engine's own input path rather than inventing a
+    second advance, so it cannot drift from what a real press does on any
+    engine.
+  - `select N` — take the Nth choice the current page offers, exactly as a click
+    on that label would. It goes through the ENGINE, not the input layers: no
+    synthetic mouse event, no coordinate, no hover state — which is what makes
+    it work on a page whose pixels the client has never seen. The engine is also
+    the side that knows whether the choice exists, and it reports accept/refuse
+    back through the bridge (`vnovel_publish_nav_result`) rather than the socket
+    assuming.
+
+  Ordering is the reader's: a page reaches the socket when the look-ahead PARSES
+  it, which on KiriKiri is before the typewriter has built the message layer's
+  link set, so a `select` sent then is refused (correctly) and needs a
+  `continue` or three first. One consumer at a time, best-effort both ways (a
+  peer that stops reading drops records rather than stalling the game), and no
+  framing beyond a newline — it is a development tool, not a protocol. Terminal
+  client: `vnovel-client/terminal/vnovel-dev.py`.
+- **Page flow on the text stream: `<<<lp>>>` / `<<<pp>>>` / `<go>`.** The stream
+  is produced by a look-ahead walk, so it runs AHEAD of the game — a consumer that
+  renders what it receives shows text the reader has not reached, and choices the
+  engine is not waiting at. The engines now publish the edges that close that gap,
+  in two kinds, because they are different actions for a consumer:
+  `<<<lp>>>` is an in-page line pause (the same page continues below) and
+  `<<<pp>>>` a page boundary (the page ends), with `<go>` for the reader acting.
+  The kind is not decoration: a page's text carries its own pause markers, so ONE
+  page can correspond to SEVERAL engine waits — measured on Fate's disclaimer, 1
+  page against 7 waits, because `[l]` breaks a line without ending a page. A
+  consumer that cannot tell the kinds apart skips a page or stalls one. (What the
+  measurement also settled: a page's waits ALL arrive BEFORE the page does — 7 on
+  Fate's disclaimer — because the engine walks its lines and the stream is
+  published after. They describe the page at a whole, not one step at a time, so a
+  consumer must not replay them as segments.) All three
+  engines publish them: ONScripter/PONScripter from their own click states
+  (`CLICK_WAIT` vs `CLICK_NEWPAGE`, and their `select`/`btnwait` waits, which is
+  why a save list works too), KiriKiri from the polyfill that already sees every
+  tag the live game dispatches. The record vocabulary is defined once in
+  `src/devsock.h` (`VNOVEL_REC_*`); the engine-side kinds in `src/engine_bridge.h`
+  (`VNOVEL_FLOW_*`) — two protocols, two definition sites.
+- **The browser client honours those pauses, and can pass them through.** A page
+  is published WHOLE and its own text carries the markers where the engine waits;
+  the reader's place in it is the typewriter reveal, which stops at each marker
+  and goes on when the reader says so. The engine is told LAST, on the reader's
+  own step: it is not asked for permission to reveal a page it has already
+  published, and asking first would deadlock the very case this exists for. The
+  kinds are therefore used for what they can mean at that moment — `<<<pp>>>`
+  ends the page the reader is on and `<<<lp>>>` does not. Each kind can be
+  un-ticked, which turns it into AUTO-ADVANCE: the client answers the wait itself
+  after a configurable delay. It presses repeatedly until the engine's OWN resume
+  (`<go>`) is seen, and not merely until it has sent a `continue`, because an
+  engine's first press during its own text-out only fast-forwards the typewriter
+  (ONScripter sets `SKIP_TO_WAIT|SKIP_TO_EOL` in `keyPressEvent`) — so sending one
+  and assuming the wait passed is exactly the mistake this guards against.
+- **The two protocols are now ONE vocabulary, with the client's as the
+  superset.** The engine ABI and the client protocol used to be two lists that
+  had to be kept in step by hand, and they had already drifted where it hurt
+  most: `VNOVEL_FLOW_LP` and `VNOVEL_EDGE_START` were **both 0**, so publishing
+  one where the other belonged compiled, linked, and sent a plausible wrong
+  event. Now there is one list of five page events — `VNOVEL_EV_PAGE_START`,
+  `_PAGE_END`, `_LINE_PAUSE`, `_PAGE_PAUSE`, `_RESUME` — which the engines
+  publish and the client receives under the same names, and the client protocol
+  is that list PLUS the records only the shell can produce (`PAGE`, `run`,
+  `CHOICE`). One `vnovel_publish_page_event(int)` replaces the two publishers,
+  and KiriKiri's `vnovelPublishPageFlow`/`vnovelPublishPageEdge` collapse to one
+  `vnovelPublishPageEvent`.
+- **`PAGE(<n>) <text>` carries the page's ORDINAL, and page markup carries a
+  sentinel byte.** The number is structure, like `CHOICE(<n>)` and `run <n>`: it
+  ties a page to the events and choices that belong to it across a stream a
+  consumer reads asynchronously. The byte count it replaces was redundant — the
+  text is on the same line, so its length is a `strlen` — and a page's END is
+  already its own event. The sentinel (0x01, `LA_MARK`) prefixes every markup
+  token so a page can never be MANGLED by its own prose: a scenario that literally
+  writes `<pause>`, or an unlucky `<` (one real script has one), is text, and only
+  a sentinel introduces a mark. The tokens stay readable ASCII, so a page on the
+  wire is still legible.
+- **The wire protocol is a BUILD option, and page boundaries are their own
+  records.** `make DEVWIRE=1` compiles the development socket in; without it
+  `src/devsock.c` is an empty translation unit and the engines' publish calls are
+  inline no-ops (`src/engine_bridge.h`), so a
+  build that ships a game carries no socket code to reach — not a listener that
+  is merely switched off. The flag has to reach the engines' own CMake build too
+  (`-DVNOVEL_DEVWIRE=ON`), or the KiriKiri shim compiles its publishes to no-ops
+  while the core listens: half a protocol, which presents as a socket that never
+  says anything. The build tree is tagged with the flag for the same reason the
+  build type is — one directory would otherwise hold whichever flavour was
+  compiled first, which is exactly how the shim and the core came out with
+  different opinions and the link failed on symbols only one side had.
+- **`!w<n>` / `!d<n>` timed waits are carried into the page as `<wait:n>`.**
+  The walk dropped them, so a script's own pacing vanished from the stream --
+  and Le sanglot alone has 3,679 of them, from 15 ms to 3000. They are INLINE
+  tokens rather than edge records because the delay belongs at a position in the
+  text, between the same two words in any rendering; an edge record would have
+  nowhere to say where. A consumer may honour them (pace the reveal) or ignore
+  them: the engine has already run the real wait either way, so this is pacing
+  information, not a gate the reader must pass. (`!d` is the same wait plus a
+  click, so the two are not interchangeable.)
+- **A menu's LABELS reach the wire, so a client can name its choices.**
+  `CHOICE(<n>) <label>` follows the pause that arms a menu, one per choice in the
+  engine's own order, and `<n>` is the ordinal `select` takes. A pause says the
+  reader must act but not what they are choosing between, and usually the page's
+  text says it — but a menu built from SPRITES has no text label anywhere: the
+  option IS an image (`title\\Start.bmp`), so a text client showed a menu of bare
+  numbers while the engine waited. Measured on PONScripter's own choice fixture:
+  the `select` labels now arrive as `CHOICE(1) … LEFT to page 2A` /
+  `CHOICE(2) … RIGHT to page 2B`. Onscripter publishes a `btnwait` sprite
+  button's own filename (all the engine retains, and enough to name the option)
+  and a text button's text. The labels are published from EVERY reader wait, not
+  only `btnwait`: any command that makes a clickable visible has armed an option,
+  whatever wait the script then reads it with. The sprite's name comes from
+  `AnimationInfo::image_name` -- `lsp`/`lsph` store it through `setImageName()`,
+  which fills only that field.
+- **Page START and page END are records of their own, separate from the pause.**
+  A boundary and a wait are different events: a script that flows from one page
+  into the next pauses nowhere, and still ends a page and begins another. Inferred
+  from the pause, that game looked continuous; so `<<<ps>>>` (a page began, drawn
+  as a rule), `<<<pe>>>` (a page ended, structural) and the existing waits
+  (`<<<lp>>>`, `<<<pp>>>`, `<go>`) are now published separately, each engine from
+  the one point every page transition passes: ONScripter and PONScripter from
+  `newPage()` (placing it in the click path alone missed every caller that goes
+  straight there — measured: a select turn published a START with no END), and
+  KiriKiri from the clear tags the walk already understands.
+- **The browser client's typewriter reveal hides unrevealed text with a MASK, and
+  its speed slider means what it says.** Two defects the reader sees and no test
+  would: (1) the reveal used `background-clip: text` with a two-stop gradient, so
+  the unrevealed side had to be coloured with something -- and with the colour
+  left off it simply inherited the normal text colour and read as ordinary text
+  that was SLIGHTLY DIMMER than the revealed part, rather than as text that has
+  not arrived; giving it `color: transparent` instead would have flattened every
+  colour the markup chose (`.speaker`, `.inlink`). A CSS mask controls visibility
+  only, so it needs no colour and preserves them. (2) The tick advanced `shown`
+  by `Math.round(cps / 30)` characters per 33ms frame, which rounds UP to a whole
+  character and so made 30 characters a second the FLOOR of the slider: 4/s ran
+  at 30/s and 45/s ran at 60/s. Counting characters against elapsed time is what
+  makes the rate real, and the default came down from 45/s to 22/s, which is
+  closer to how the games themselves type.
+- **`[l]` is a page pause in the walk's token stream.** `TextLookAhead.tjs`'s
+  `pauseTags` listed `p`, `wait` and `click` but not `l`, so a page whose lines
+  end in `[l]` -- Fate's disclaimer, and most dialogue -- carried NO `<pause>`
+  markers while the engine emitted one `<<<lp>>>` per line. Measured: 7 waits
+  against a page with zero markers, which left a consumer nothing to stop at and
+  typing each page out in one go.
+- **A browser client for the text stream** (`vnovel-client/browser/`): the stream
+  rendered as a reading column with Knuth-Plass line breaking, a typewriter
+  reveal, clickable choices, and controls for column width, font size, leading,
+  wrap mode, justification, hyphenation and reveal speed. `serve.py` bridges the
+  core's one permitted TCP consumer to any number of browser tabs (Server-Sent
+  Events out, POST in) and replays a backlog to a tab that attaches late; the
+  page, its layout code and the vendored line breaker (tex-linebreak, MIT) are
+  self-contained, and the bridge is stdlib-only so there is nothing to install
+  before a dev tool can run. The line breaking is the vendored library rather
+  than this repo's own `src/wrap.cpp`: the same total-fit core, plus glue
+  stretch/shrink with real adjustment ratios and penalty costs.
+- **`tools/run-sanglot.sh`**, a launcher for Le sanglot des cigales
+  (PONScripter) with the socket and optionally the browser client wired up. It
+  inherits `DISPLAY` (unlike the Xvfb-based `krun.sh`/`onrun.sh`, since the point
+  is to watch text) and passes `--appendconfig` with `pause_nonactive = "false"`
+  so the stream does not freeze when the window loses focus. The game runs
+  UNPATCHED: reach text with `ADVANCE=N`, by clicking, or through the socket.
 - **Page accumulation for the text plane.** KiriKiri publishes its text one
   *line* at a time — each publication is a line-height box — while ONScripter and
   PONScripter publish the whole (screen-sized) text surface at once. A consumer
@@ -75,6 +242,16 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
 ### Fixed
 
+- **The look-ahead published the engine's own text markup.** ONScripter's
+  `readToken` replaces a leading `>` with `TXTBTN_END` (0x04), a `<` with
+  `TXTBTN_START` (0x01), and a ruby-free `(`/`)` with `LEFT_PAREN`/`RIGHT_PAREN`
+  (0x02/0x03) — engine sentinels defined at `ScriptHandler.h:376-382` and consumed
+  by the renderer as markup. The walk published all four verbatim, so every text
+  line of the ONS fixtures carried a leading 0x04 on the wire. Invisible in the
+  game (the renderer drops them) and invisible to anything that only looked at
+  ASCII pages, which is why it survived: it is text the reader never sees, in a
+  dimension markup should not reach. Dropped in the walk now, alongside the text
+  marker it already stripped.
 - **The ONScripter/PONScripter look-ahead shredded Japanese text.** The
   inline-command consumer scanned a line BYTE BY BYTE, deciding character length
   by "is this byte >= 0x80" — false for Shift_JIS, where a two-byte character's

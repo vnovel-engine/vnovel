@@ -350,6 +350,132 @@ extern "C"
 
    VNOVEL_EXPORT void vnovel_request_split_view(int enabled);
 
+   /* --- navigation results: the shell <- engine half of "select link N" ----
+    *
+    * The shell can ask the engine to take the Nth choice a page offers (the
+    * development socket's inbound direction; see devsock.h). The engine is the
+    * only side that knows whether that choice EXISTS - it holds the live button
+    * set, and the published page text names `<<choice>>` without saying how many
+    * labels follow it - so the verdict comes back through here rather than being
+    * guessed by the shell.
+    *
+    * `ordinal` is 1-based and is the same number a CLICK on that label produces,
+    * which is also what `selnum` reports (minus one): the index of the choice in
+    * the page's own list. `accepted` is nonzero when the engine took it, zero
+    * when nothing was pending or no such choice was offered.
+    *
+    * Called from the engine's own script thread (the engine resolves the
+    * request there, because that is where the button set lives), so an
+    * implementation must be safe to call from a thread other than the shell's. */
+   typedef void (*vnovel_nav_result_fn)(int ordinal, int accepted);
+   VNOVEL_EXPORT extern vnovel_nav_result_fn vnovel_nav_result_cb;
+   VNOVEL_EXPORT extern void *vnovel_nav_result_userdata;
+
+   /* Report the outcome of a navigation request. A no-op when no shell is
+    * listening, so an engine that reports unconditionally is still correct. */
+   VNOVEL_EXPORT void vnovel_publish_nav_result(int ordinal, int accepted);
+
+   /* --- choice labels: WHAT the choices are, not just that there are some ---
+    *
+    * A pause says the reader must act; it does not say what they are choosing
+    * between. Usually the page's own text carries the labels, so a consumer that
+    * renders the page already shows them. But a menu built from SPRITES (PON's
+    * `spbtn`, the title screen's Start/Replay/System/Exit, a scenario select)
+    * has no text anywhere: the label IS an image, and a consumer that only reads
+    * text sees a page with no options at all while the engine waits on one.
+    *
+    * So the engine publishes the label as its own record when it arms a button
+    * wait. `label` is UTF-8 and is a DESCRIPTION, not the pixels: for an
+    * Onscripter sprite button it is the sprite's own filename (which is all the
+    * engine retains -- `title\Start.bmp` -- and all a consumer needs to name the
+    * option), for a text button it is the button's text.
+    *
+    * Published AFTER the pause edge for the same wait, once per label, in the
+    * engine's own button order, so a consumer collects them until the next
+    * record that is not one. `ordinal` is 1-based and is the number `select`
+    * takes: the same one a click on that label produces. */
+   typedef void (*vnovel_choice_label_fn)(int ordinal, const char *label);
+   VNOVEL_EXPORT extern vnovel_choice_label_fn vnovel_choice_label_cb;
+
+   /* The publisher is declared with the rest of the wire-protocol surface, at
+    * the end of this file, so that a non-DEVWIRE build's inline no-op and this
+    * declaration cannot both be visible (that was a compile error: a static
+    * declaration after a non-static one). */
+
+   /* --- the page-event vocabulary: ONE list, shared with the client --------
+ *
+ * What happens to the READER's place in the text, as five events. They are the
+ * same vocabulary the client sees, under the same names (devsock.h spells each
+ * as a wire token), so the engine side and the client side are one protocol
+ * rather than two that have to be kept in step -- and the client's own tokens
+ * (PAGE, run, CHOICE) are a SUPERSET of these, which is what makes the client
+ * protocol the whole picture and this ABI its event half.
+ *
+ * The shape this replaces had two separate enums, and they collided:
+ * VNOVEL_FLOW_LP and VNOVEL_EDGE_START were BOTH 0, so passing one where the
+ * other belonged compiled, linked, and published a plausible wrong event. One
+ * list with distinct values cannot do that.
+ *
+ * A boundary and a wait are different events, and a script may have one without
+ * the other: a game that flows from page into page pauses nowhere and still
+ * begins and ends pages. So START/END describe the page's LIMITS and the three
+ * pauses describe the reader being BLOCKED (or released).
+ */
+#define VNOVEL_EV_PAGE_START  0   /* a page began            -> `<<<ps>>>` */
+#define VNOVEL_EV_PAGE_END    1   /* a page ended            -> `<<<pe>>>` */
+#define VNOVEL_EV_LINE_PAUSE  2   /* an in-page wait         -> `<<<lp>>>` */
+#define VNOVEL_EV_PAGE_PAUSE  3   /* a wait at a page's end  -> `<<<pp>>>` */
+#define VNOVEL_EV_RESUME      4   /* the reader acted        -> `<go>`     */
+
+   /* The publisher is declared with the rest of the wire-protocol surface at the
+    * end of this file, so that a non-DEVWIRE build's inline no-op and a real
+    * declaration cannot both be visible (that was a compile error).
+    *
+    * The shell's sink is registered through this, either way. */
+   typedef void (*vnovel_page_event_fn)(int event);
+   VNOVEL_EXPORT extern vnovel_page_event_fn vnovel_page_event_cb;
+
+/* --- WHAT a menu's options are, for a menu with no text labels -----------
+ *
+ * A pause says the reader must act; it does not say what they are choosing
+ * between. Usually the page's text carries the labels, so a consumer that
+ * renders the page shows them. But a menu built from SPRITES (the title screen,
+ * a scenario select) has no text anywhere: the option IS an image.
+ *
+ * `label` is UTF-8 and is a DESCRIPTION, not pixels: for an Onscripter sprite
+ * button it is the sprite's own name (all the engine retains, and all a consumer
+ * needs to name the option), for a text button its text. `ordinal` is 1-based
+ * and is the number `select` takes -- the same one a click on that label makes.
+ *
+ * Published after the pause that arms the menu, one per choice in the engine's
+ * own order. */
+   typedef void (*vnovel_choice_label_fn)(int ordinal, const char *label);
+   VNOVEL_EXPORT extern vnovel_choice_label_fn vnovel_choice_label_cb;
+
+/* --- the wire protocol, compiled out ------------------------------------
+ *
+ * The PUBLISHERS are development surface: they feed devsock.c and its records,
+ * which the Makefile compiles in only for `make DEVWIRE=1`. Without VNOVEL_DEVWIRE
+ * they are INLINE NO-OPS rather than declarations.
+ *
+ * Here and not at the call sites on purpose: the engines publish unconditionally,
+ * and a caller that must remember an #ifdef will one day forget one -- linking
+ * against a socket the build does not have, or silently dropping an event it
+ * meant to send. An inline no-op makes the call vanish at compile time and
+ * cannot be forgotten.
+ *
+ * The event constants and the callback globals stay unconditional: they are the
+ * bridge's own vocabulary, and the shell defines its sink whether or not the
+ * wire protocol is compiled in. */
+#define VNOVEL_BRIDGE_SUPPLIES_FLOW 1
+#ifndef VNOVEL_DEVWIRE
+   static inline void vnovel_publish_page_event(int event) { (void)event; }
+   static inline void vnovel_publish_choice_label(int o, const char *l)
+   { (void)o; (void)l; }
+#else
+   VNOVEL_EXPORT void vnovel_publish_page_event(int event);
+   VNOVEL_EXPORT void vnovel_publish_choice_label(int ordinal, const char *label);
+#endif /* VNOVEL_DEVWIRE */
    /* Apply any request made before this engine registered its callbacks.
     *
     * The core must request these BEFORE it starts an engine (an engine draws

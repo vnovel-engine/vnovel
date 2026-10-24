@@ -65,6 +65,16 @@ The window is an 800x600 Xvfb `:97`. Our core runs via
 `tools/krun.sh <tag> <secs> <env…>` / `tools/kstop.sh`; the reference is
 `Fate.exe` under `WINEPREFIX=/home/matcha/.wine-fate` on the same display.
 
+`tools/run-sanglot.sh` runs Le sanglot des cigales (PONScripter) the same way
+for text-seam work, with the socket and optionally the browser client wired up.
+It differs from the two above on purpose: it inherits `DISPLAY` (a game you
+cannot see is no use for looking at text) and passes
+`--appendconfig` with `pause_nonactive = "false"`, because RetroArch otherwise
+stops calling `retro_run` on defocus and the stream goes quiet. It runs the
+ORIGINAL install — nothing about the script is patched; reach text with
+`ADVANCE=N` (SPACE every N frames), by clicking the window, or through the
+socket once text is flowing.
+
 Input is injected with the **`clickd` server that runs under systemd**
 (`fate-harness/tools/clickd.py` — a *different file* from this repo's
 `tools/clickd.py`, which is the uinput variant). It listens on
@@ -104,3 +114,24 @@ anything. Capture the disclaimer by launching, waiting for the script to reach
 the disclaimer, then clicking a fixed safe point (mid-window, well above the
 link rows); clicks that land on the link rows select an answer and the script
 branches or exits.
+
+## The development socket
+
+`VNOVEL_DEV_PORT=<port>` (in the run's own environment — a trailing argument to
+`krun.sh`/`onrun.sh`, since those put it after `env -u`) makes the core listen on
+127.0.0.1 with the text stream going out and navigation intents coming in. Client:
+the terminal client (`vnovel-client/terminal/vnovel-dev.py <port>`). Records published before a client attaches are
+buffered and released on accept, so it is safe to attach late.
+
+Two intents, and the order a reader would use them in:
+
+- `continue` — advance past a text pause (the advance key, pushed through the
+  engine's own input path).
+- `select N` — take the Nth choice the page offers, as a click would, but through
+  the engine rather than the input layers. The engine answers accept/refuse on
+  stderr (`devsocket: select N -> …`).
+
+A page reaches the socket when the look-ahead PARSES it, which on KiriKiri is
+before the typewriter has built the message layer's link set: `select` then is
+refused (correctly) and needs a few `continue`s first. `KRKR_SELECT_DEBUG=1`
+reports which guard refused on the KiriKiri side.

@@ -295,6 +295,10 @@ RUNTIME_C += $(SRC_DIR)/engine_bridge.c
 # engine-side runtime rather than the core.
 RUNTIME_CXX += $(SRC_DIR)/embed_stub.cpp
 
+# The development socket (the text stream out, navigation intents in). In the
+# runtime, not the core: it is transport, and both are in the same .so anyway.
+RUNTIME_C += $(SRC_DIR)/devsock.c
+
 # engine_ons_cabi.o / engine_pons_cabi.o are built by the generic
 # $(BUILD_DIR)/%.o rule, so their engine-specific flags have to be attached to
 # the object target, not to a hand-written rule. A hand-written

@@ -105,6 +105,20 @@ extern "C"
      * pointer may be NULL if the engine does not expose them. */
       const int *(*timerStartedPtr)(EngineHandle);
       const int *(*timerRunningPtr)(EngineHandle);
+
+      /* Take the Nth choice the current page offers, exactly as a click on that
+     * label would (the development socket's inbound direction; see devsock.h and
+     * the navigation section of engine_bridge.h). `ordinal` is 1-based, in page
+     * order.
+     *
+     * Queued, not applied: the selector lives on the engine's own thread (the
+     * live button set, which is what knows how many choices there are), so this
+     * only hands the intent over. The engine takes it when its loop next runs
+     * and reports the verdict through vnovel_publish_nav_result - a refusal
+     * included, so a consumer learns "no such choice" rather than nothing.
+     * May be NULL, and it is the last field so a vtable built before the slot
+     * existed still lines up. */
+      void (*pushSelect)(EngineHandle, int ordinal);
    } EngineVTable;
 
    extern const EngineVTable ons_engine_vtable;

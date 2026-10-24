@@ -104,6 +104,21 @@ static void engine_do_run(EngineHandle h)
 
 #include "engine_runtime_accessors.h"
 
+/* Deliver an ordinal `select N` to the engine's script thread. Pushes the
+ * private SDL user event the event loop handles (see ONS_SELECT_EVENT in
+ * ONScripterLabel.h); the ordinal rides in event.user.code. Queued, not
+ * applied: the engine takes it when its loop next runs and reports the
+ * verdict through vnovel_publish_nav_result. */
+static void ons_pushSelect(EngineHandle h, int ordinal)
+{
+   (void)h;
+   SDL_Event event;
+   SDL_memset(&event, 0, sizeof(event));
+   event.type = ONS_SELECT_EVENT;
+   event.user.code = ordinal;
+   SDL_PushEvent(&event);
+}
+
 extern "C" const EngineVTable ons_engine_vtable = {
       ons_create,
       ons_destroy,
@@ -139,4 +154,5 @@ extern "C" const EngineVTable ons_engine_vtable = {
       engine_drainUserEvents,
       engine_showCursor,
       engine_timerStartedPtr,
-      engine_timerRunningPtr};
+      engine_timerRunningPtr,
+      ons_pushSelect}; /* last slot: NULL here means the engine lacks select-from-socket */

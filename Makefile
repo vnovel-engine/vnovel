@@ -301,6 +301,20 @@ ifeq ($(PROBES), 1)
    DEFINES += -DKRKR_DEBUG_PROBES
 endif
 
+# The development wire protocol (the text stream out, navigation intents in).
+# `make DEVWIRE=1` to compile it in.
+#
+# Gated at the SOURCE level, not only at runtime: the socket, its records and the
+# engine-side publishers are all development surface, and a build that ships a
+# game should not carry a listener, however politely it is disabled by default.
+# OFF unless asked for, so a default build has no socket code at all -- and the
+# engines' publish calls compile to nothing rather than to a call that inspects a
+# flag (see the ifdef in engine_bridge.h), because a caller that must check
+# first is a caller that can forget to.
+ifeq ($(DEVWIRE), 1)
+   DEFINES += -DVNOVEL_DEVWIRE
+endif
+
 # There is one layout: every engine is linked into the core, so the KiriKiri
 # ABI wrapper resolves the engine's symbols by direct reference rather than
 # through a module handle. See krkr_sym in engine_kirikiri_cabi.cpp.
@@ -339,6 +353,15 @@ ifeq ($(KRKR_DEBUG),1)
    BUILD_TAG := -debug
 else
    BUILD_TAG :=
+endif
+# The wire protocol belongs in the tag for the same reason the build type does:
+# flipping DEVWIRE changes what the objects must contain (the socket, the call
+# sites' no-ops), and one directory would then hold whichever flavour was
+# compiled first -- which is how an engine shim built WITH the protocol ended up
+# linked against a core built without it, and the link failed on symbols that
+# only one side had.
+ifeq ($(DEVWIRE),1)
+   BUILD_TAG := $(BUILD_TAG)-devwire
 endif
 BUILD_DIR := build/$(platform)$(ENGINE_TAG)$(BUILD_TAG)
 
@@ -511,8 +534,14 @@ debug:
 # build, with nothing in the output saying so. A stale cache is a silent
 # change to the shipped engine, so the value is pinned here; an explicit
 # KRKR_CMAKE_EXTRA still wins because it is passed last.
+# VNOVEL_DEVWIRE must reach the ENGINE's own CMake build too, or the shim that
+# publishes the flow and edge records compiles its calls to no-ops and the wire
+# protocol is silently half-present (the core would listen and nothing would ever
+# arrive). The engines are a separate project with their own compiler
+# invocations, so a -D in this Makefile's DEFINES does not reach them.
 KRKR_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release -DKRKRSDL2_LIBRETRO=ON \
                     -DOPTION_DEBUG_PROBES=OFF \
+                    $(if $(filter 1,$(DEVWIRE)),-DVNOVEL_DEVWIRE=ON) \
                     -DKRKRSDL2_BUILTIN_SHIMS=ON -DOPTION_BUILD_MACOS_BUNDLE=OFF \
                     -DCMAKE_C_FLAGS="-fvisibility=hidden" \
                     -DCMAKE_CXX_FLAGS:STRING="$(KRKR_CXX_BASE) $(KRKR_CXX_EXTRA)" \
