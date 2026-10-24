@@ -48,7 +48,7 @@ VNOVEL_EXPORT float opt_mouse_sensitivity = 1.0;
  * frontend options, read by the ONScripter engine. */
 VNOVEL_EXPORT int vnovel_english_word_wrap    = 1;
 VNOVEL_EXPORT int vnovel_fit_oversize_banners = 0;
-VNOVEL_EXPORT int vnovel_wrap_total_fit       = 0;
+VNOVEL_EXPORT int vnovel_wrap_total_fit       = 1;
 
 /* Last-resort font and asset-override directory (see engine_bridge.h). Written
  * by the core at start-up, read by the engine. */

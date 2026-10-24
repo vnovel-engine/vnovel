@@ -1,0 +1,21 @@
+*define
+mode_ext
+english
+game
+*start
+setwindow 18,18, 36,21, 17,17, 0, 4, 22, 1, 1, #aaaaaa, 0, 0, 639, 479
+!s0
+bg #000000,0
+repaint
+texton
+`"You know it's pointless yet you do it. || I really don't get it. I can't do anything pointless. Even now, I haven't done anything that I didn't need to do."
+br
+`"What are you saying? Wasn't this whole day full of pointlessness? Isn't your purpose hunting vampires? Then there's really no need for you to go walking around with me."
+br
+` TEST DONE
+textshow
+repaint
+snapshotsave "wrap_tf_page"
+*hold
+`@
+goto *hold

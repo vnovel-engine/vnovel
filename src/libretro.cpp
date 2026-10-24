@@ -2510,6 +2510,27 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
 }
 #endif /* VNOVEL_KIRIKIRI */
 
+/* The text-layout flags the ONS/PONS engines read through the bridge
+ * (engine_bridge.h). Called once before the engine thread starts and once per
+ * frame; the first call matters, because the engine thread runs the script (and
+ * lays out its text) before retro_run is ever reached. */
+static void read_text_behaviour_options(void)
+{
+   struct retro_variable var = {0};
+
+   var.key = "vnovel_english_word_wrap";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      vnovel_english_word_wrap = (strcmp(var.value, "enabled") == 0);
+
+   var.key = "vnovel_fit_oversize_banners";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      vnovel_fit_oversize_banners = (strcmp(var.value, "enabled") == 0);
+
+   var.key = "vnovel_wrap_total_fit";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      vnovel_wrap_total_fit = (strcmp(var.value, "enabled") == 0);
+}
+
 bool retro_load_game(const struct retro_game_info *game)
 {
    if (!game)
@@ -3012,6 +3033,10 @@ bool retro_load_game(const struct retro_game_info *game)
       }
    }
 
+   /* Must precede the engine thread: it runs the whole script, and text layout
+    * consults these flags as it goes. See read_text_behaviour_options. */
+   read_text_behaviour_options();
+
    if (vtable->startThread)
       vtable->startThread(engine);
 
@@ -3248,18 +3273,8 @@ static void read_frame_options(void)
    read_ff_speed_option(); /* shared with the KiriKiri branch (line ~917) */
 
    /* Text-rendering behaviour, consumed by the ONScripter engine via the
-   * bridge (engine_bridge.h). Read each frame so Quick Menu changes apply. */
-   var.key = "vnovel_english_word_wrap";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      vnovel_english_word_wrap = (strcmp(var.value, "enabled") == 0);
-
-   var.key = "vnovel_fit_oversize_banners";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      vnovel_fit_oversize_banners = (strcmp(var.value, "enabled") == 0);
-
-   var.key = "vnovel_wrap_total_fit";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      vnovel_wrap_total_fit = (strcmp(var.value, "enabled") == 0);
+    * bridge (engine_bridge.h). Read each frame so Quick Menu changes apply. */
+   read_text_behaviour_options();
 
    var.key = "vnovel_textbox_opacity";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)

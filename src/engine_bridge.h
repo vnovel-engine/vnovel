@@ -78,8 +78,8 @@ extern "C"
  *   choosing one word at a time. A segment runs to the next page break, hard
  *   newline, prompt or control-flow command — a clickwait ('@') is a pause
  *   inside it, not an end — so the layout can see the whole line, including
- *   what follows a pause. Off (default) = the greedy per-word wrap, whose
- *   behaviour is unchanged. See ONScripterLabel::planSegment. */
+ *   what follows a pause. On (default) = the total-fit plan; off = the classic
+ *   greedy per-word wrap. See ONScripterLabel::planSegment. */
    VNOVEL_EXPORT extern int vnovel_wrap_total_fit;
 
    /* Last-resort font, published by the core and read by the engine. Points at an

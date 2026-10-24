@@ -66,11 +66,11 @@ extern "C"
           "what follows a pause. Balances lines against each other and prefers "
           "word boundaries. Off keeps the classic greedy wrap.",
           {
-                {"disabled", NULL},
                 {"enabled", NULL},
+                {"disabled", NULL},
                 {NULL, NULL},
           },
-          "disabled"},
+          "enabled"},
          {"vnovel_textbox_opacity",
           "Textbox Backdrop Opacity",
           "Multiplier applied to the text-window backdrop image's alpha "
