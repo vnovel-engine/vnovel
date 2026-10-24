@@ -2,6 +2,7 @@
 #include <sdl/src/events/SDL_events_c.h>
 #include <sdl/src/video/dummy/SDL_nullevents_c.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "../key_remap.h"
 /* Which RetroPad button generates a right-click (-1 = none) */
 int SDL_libretro_rightclick_button = RIGHTCLICK_NONE;

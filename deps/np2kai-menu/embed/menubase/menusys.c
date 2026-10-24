@@ -1180,3 +1180,60 @@ void menusys_setstyle(UINT16 style) {
 	menusys.style = style;
 }
 
+// ---- menu tree dump (development aid)
+
+/* Walk the tree the menu actually BUILT and print it, one line per item.
+ *
+ * This is the structure menusys_open() renders, reached through the library's
+ * own links -- not the MSYSITEM array a caller passed in. The difference matters
+ * when the array is wrong: appends() advances with `item++` until a MENU_DELETED
+ * flag, so an array whose runs are not properly terminated produces a tree that
+ * differs from the one the caller intended, and only the built tree shows it.
+ *
+ * Items are printed in the order the walker sees them, with a nesting indent,
+ * because the order and the parentage ARE the questions being asked. The flag is
+ * printed raw (MENU_GRAY = 0x0002, MENU_NOSEND = 0x2000, MENU_DELETED = 0x8000);
+ * MENU_DELETED is stripped by append1() and so never appears in a built item.
+ *
+ * Off unless VNOVEL_MENU_DUMP=1, so a normal run is silent. */
+static void menusys_dumpchain(MENUHDL menu, int depth) {
+
+	while (menu) {
+		int i;
+		OEMCHAR buf[64];
+		for (i = 0; i < depth && i < 16; i++) {
+			buf[i * 2]     = ' ';
+			buf[i * 2 + 1] = ' ';
+		}
+		buf[i * 2] = '\0';
+		fprintf(stderr, "menutree: %s%s%s id=%u flag=0x%04x%s\n",
+						buf,
+						menu->string[0] ? "" : "(no text)",
+						menu->string,
+						(unsigned)menu->id,
+						(unsigned)menu->flag,
+						menu->child ? " [children]" : "");
+		if (menu->child) {
+			menusys_dumpchain(menu->child, depth + 1);
+		}
+		menu = menu->next;
+	}
+}
+
+void menusys_dump(void) {
+
+	static int dumped;
+	const char *env;
+	if (dumped) {
+		return;
+	}
+	env = getenv("VNOVEL_MENU_DUMP");
+	if (env == NULL || env[0] != '1') {
+		return;
+	}
+	dumped = 1;
+	fprintf(stderr, "menutree: ---- built by menusys_create ----\n");
+	menusys_dumpchain(menusys.root, 0);
+	fprintf(stderr, "menutree: ---- end ----\n");
+}
+

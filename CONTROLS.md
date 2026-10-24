@@ -91,22 +91,39 @@ regardless of which engine is running.
 ### The core's own menu (`Menu Hotkey`)
 
 The `vnovel_menu_hotkey` option binds a key to toggle a menu the **core** draws
-over the frame — not the game's menu. It is **unbound by default** (`none`).
+over the frame — not the game's menu. It is **F12** by default.
 
-That default is deliberate: this is an addition to the picture, not something
-the game asked for, so nothing puts it on screen until you bind a key. It is
-independent of the game's own menus, which keep their usual keys and gestures
-(right-click on KiriKiri, for instance).
+Two other ways in, so the bar is never unreachable:
 
-Available bindings: `F12`, `F11`, `F10`, `Tab`, `Backquote`. While the bar is
-open it takes the keyboard (arrows move, Enter activates, Escape closes) and the
-game receives no input, the same way the game receives none while the engine's
-own modal dialogs are up.
+- **click the bottom-right corner** of the frame (about 64x32 pixels, scaled with
+  the frame). The click opens the menu and does not also reach the game.
+- the option accepts `F12`, `F11`, `F10`, `Tab`, `Backquote`, or `none` to leave
+  it unbound.
+
+While the bar is open it takes the keyboard (arrows move, Enter activates, Escape
+closes) and the game receives no input, the same way the game receives none while
+the engine's own modal dialogs are up.
+
+The bar's **Game** page is the game's own menubar, when a script declares one with
+`resetmenu`/`insertmenu`: those entries are built into a tree, with the script's
+submenu depths honoured. An entry whose code the engine cannot perform is drawn
+greyed rather than wired to nothing. This is a different menu from the game's
+**right-click** menu (`rmenu`), which the engine draws itself and which the core
+does not touch — a game may have one, both, or neither.
 
 The bar's **Session** page reports what the core actually resolved for this run:
 the loaded archive and its identity, the engine, the era option as set, the
 build string, where saves land, and the override directory with whether it is
 even present.
+
+### Seeing the menu tree (`VNOVEL_MENU_DUMP`)
+
+`VNOVEL_MENU_DUMP=1` makes the core print the menu tree it built, to stderr: one
+`menutree:` line per item with two spaces of indent per level, its id, and its raw
+flag. Off unless set. It exists because the vendored menu walker (`appends()` in
+`deps/np2kai-menu/embed/menubase/menusys.c`) re-walks the item array and can build
+a tree that differs from what was handed to it — the dump shows what was actually
+put in the menu. `tests/ons/06_menu_tree` asserts on it.
 
 ## Development aids
 

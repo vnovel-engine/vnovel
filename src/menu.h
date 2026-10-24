@@ -54,6 +54,39 @@ int vnovel_menu_should_draw(void);
  * matches the running game rather than a hardcoded size. */
 void vnovel_menu_set_pref_geometry(int w, int h);
 
+/* --- the game's own menu, as entries ---------------------------------------
+ *
+ * A script declares its right-click menu and this is where those entries are
+ * offered to the core's menu bar, so the game's options appear in the menu the
+ * reader can actually reach. The engine's own renderer cannot show them nested
+ * (its menu is a flat list), and the vendored menu HERE can (MSYSITEM carries a
+ * child pointer), so the tree is built on this side.
+ *
+ * A game sends its entries through the bridge -- `vnovel_menu_entry` in
+ * engine_bridge.h -- and the core translates them into the menu's own tree.
+ *
+ * `id` is the GAME's own code for the entry (PONScripter's system-call number),
+ * handed back when the reader picks it, so the core never has to know what
+ * "save" means: it reports the code and the engine acts on it. 0 means "this is
+ * a submenu heading, not a selectable entry" -- the parent of the entries that
+ * follow at a greater depth.
+ *
+ * A heading is signalled by a negative id -- the engine passes -1 when the script
+ * named no code the engine knows (its `SUB`, which only opens a submenu), and the
+ * core turns that into a non-selectable parent. Any other negative is treated the
+ * same way, so an unresolved code degrades into an inert heading rather than into
+ * a wrong action.
+ *
+ * `depth` is 0 for a top-level entry, 1 for a child of the last depth-0 entry,
+ * and so on. Entries arrive in script order. */
+void vnovel_menu_begin_entries(void);
+void vnovel_menu_add_entry(const char *label, int id, int depth);
+void vnovel_menu_end_entries(void);
+
+/* Take the code of the entry the reader last picked, or 0 when none is pending.
+ * A one-shot read, so a game acts on a pick exactly once. */
+int vnovel_menu_take_pick(void);
+
 /* One live session value for the Session page, applied when the bar next opens.
  *
  * `which` is a VNOVEL_MENU_INFO_* index; the text is copied into the menu's own

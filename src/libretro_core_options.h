@@ -316,10 +316,10 @@ extern "C"
           "off"},
          {"vnovel_menu_hotkey",
           "Menu Hotkey",
-          "Which key toggles the core's own menu bar. 'none' (the default) "
-          "leaves it unbound, because the bar is an addition to the frame rather "
-          "than something a game draws: a title that never asks for one gets no "
-          "bar and no key does anything. Bind one when you want it. This acts "
+          "Which key toggles the core's own menu bar. Bound to F12 by default. "
+          "The bar is where a game's customized menu (resetmenu/insertmenu) "
+          "appears, and it is also reachable by clicking the bottom-right corner "
+          "of the frame, so it is never unreachable without a key. This acts "
           "independently of a game that shows a menu of its own, and it always "
           "works, so it is the way to reach the menu when a title's own request "
           "is unavailable.",
@@ -332,7 +332,7 @@ extern "C"
                 {"Backquote", NULL},
                 {NULL, NULL},
           },
-          "none"},
+          "F12"},
          {NULL, NULL, NULL, {{0}}, NULL},
    };
 

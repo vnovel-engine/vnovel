@@ -41,6 +41,11 @@ BRESULT menusys_create(const MSYSITEM *item, void (*cmd)(MENUID id),
 										UINT16 icon, const OEMCHAR *title);
 void menusys_destroy(void);
 
+/* Print the menu tree the library built (see menusys.c). Development aid, off
+ * unless VNOVEL_MENU_DUMP=1: it answers "what did this array actually become",
+ * which is not the same question as "what did I pass in". */
+void menusys_dump(void);
+
 BRESULT menusys_open(int x, int y);
 void menusys_close(void);
 

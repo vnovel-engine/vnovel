@@ -1,0 +1,103 @@
+*define
+mode_ext
+english
+game
+*start
+; ===========================================================================
+; ONScripter-EN: resetmenu/insertmenu probe (the game's own menubar).
+;
+; Two things this covers that nothing else does:
+;
+;   1. insertmenu reaches the CORE's menu bar rather than being dropped. It was
+;      a bare `script_h.skipToken()` stub ("suppress unwanted debug messages"),
+;      so a game's custom menu vanished with no error at all -- the failure mode
+;      the reference warns about: "a silently dead menu entry".
+;
+;   2. The depth argument NESTS. `SUB` opens a submenu and the entries after it
+;      at a deeper level belong inside THAT, not to the entry before it. The
+;      loader's code field is what makes it work: entries wired to the core
+;      with VNOVEL_MENU_DUMP=1 print as
+;
+;          Settings flag=0xa000
+;            Wave flag=0x2000
+;              On
+;
+;      which is the script's own shape -- Wave's options at depth 2 hang from
+;      the depth-1 Wave heading, with no other depth-1 parent in between.
+;
+; The codes used are deliberately a MIX, because the loader resolves them
+; case-insensitively and only some are implemented (see system-call codes in the
+; reference). `SKIP`/`END` are engine calls spelled in capitals; `textslow` and
+; its siblings are implemented as text speeds; `waveon` is not implemented and
+; must therefore come out as an inert row rather than a wrong action.
+;
+; Engine identifier: every page is CYAN, so a capture cannot be confused with
+; the ONS text/choice fixture (green), the sprite-menu one (magenta), or the PON
+; one (blue).
+; ===========================================================================
+bg #004444,0
+repaint
+
+; A right-click menu of its own, to prove resetmenu does NOT wipe it (that was
+; the other half of the bug: resetmenu used to clear `rmenu`, deleting the six
+; entries a game declares before it builds its custom menu).
+rmenu "^Save",save,"^Load",load
+
+resetmenu
+insertmenu "^Quit",END
+insertmenu "^Skip",SKIP
+insertmenu "^Settings",SUB
+insertmenu "^Wave",SUB,1
+insertmenu "^On",WAVEON,2
+insertmenu "^Off",WAVEOFF,2
+insertmenu "^Text",SUB,1
+insertmenu "^Slow",TEXTSLOW,2
+insertmenu "^Normal",TEXTMIDDLE,2
+insertmenu "^Fast",TEXTFAST,2
+
+; Closes the list (the core rebuilds its tree here, once).
+menusetwindow 26,26,0,0,0,0,#ffffff
+
+; WAITS ON A REAL READER PAUSE, between two pages, and never ends.
+;
+; Deliberately: `end` would quit the script within a second or two of launch and
+; take the engine's event loop with it, so there would be nothing left to receive
+; a menu request or to observe.
+;
+; Two things this gets right, each of which a first version got wrong:
+;
+;   * The wait must be a state the engine's OWN right-click guard accepts:
+;
+;         (rmode_flag && (event_mode & WAIT_TEXT_MODE)) ||
+;         (event_mode & (WAIT_BUTTON_MODE | WAIT_RCLICK_MODE))
+;
+;     A bare `click` does not qualify (clickCommand sets WAIT_TIMER_MODE |
+;     WAIT_INPUT_MODE = 0x24, which has neither WAIT_TEXT_MODE (0x100) nor
+;     WAIT_BUTTON_MODE (0x2)), so a right-click there is ignored by the ENGINE,
+;     menu or no menu. `select` sets WAIT_TEXT_MODE | WAIT_BUTTON_MODE |
+;     WAIT_TIMER_MODE, which is also the state a real choice screen waits in --
+;     the state a reader actually opens a menu from.
+;
+;   * `select` is also the ONLY branching verb in this build (there is no
+;     goto/jump), so the loop back to page A has to be a choice. A `goto` here
+;     would not assemble, and the loop would fall through and spin.
+;
+; The choice is never taken: what is under test is that the engine reaches a
+; pause with the menu declared, not the branch.
+*page_a
+bg #004444,0
+repaint
+texton
+>Page A: the menu is declared.
+textshow
+repaint
+select "continue",*page_b
+
+*page_b
+bg #006666,0
+repaint
+texton
+>Page B: still here.
+textshow
+repaint
+select "back to page A",*page_a

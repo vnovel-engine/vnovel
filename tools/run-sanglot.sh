@@ -52,7 +52,9 @@
 #      required for the socket to exist at all).
 #
 # Env:
-#   CORE     core .so to load (default: the repo's vnovel_libretro.so)
+#   CORE     core .so to load (default: the repo's DEVWIRE build when it
+#            exists -- that is the one with the socket this script uses --
+#            else vnovel_libretro.so)
 #   GAME     install DIRECTORY (default below); its pscript.dat is the ROM
 #   SECS     how long to run (arg 1 wins)
 #   PORT     the socket port (arg 2 wins)
@@ -76,7 +78,19 @@ mkdir -p "$cfgdir"
 
 SECS="${1:-${SECS:-60}}"
 PORT="${2:-${PORT:-8777}}"
-CORE="${CORE:-$root/vnovel_libretro.so}"
+# Which core to load. The two flavours have separate outputs (see the Makefile:
+# a plain `make` must not clobber the socket-enabled build), and every script here
+# wants the one WITH the socket, so prefer it when it is present.
+resolve_core() {
+	local root="$1"
+	if [ -n "${CORE:-}" ]; then printf '%s' "$CORE"; return; fi
+	if [ -f "$root/vnovel_libretro-devwire.so" ]; then
+		printf '%s' "$root/vnovel_libretro-devwire.so"
+	else
+		printf '%s' "$root/vnovel_libretro.so"
+	fi
+}
+CORE="$(resolve_core "$root")"
 GAME="${GAME:-/home/matcha/VN/Le sanglot des cigales}"
 ADVANCE="${ADVANCE:-0}"
 

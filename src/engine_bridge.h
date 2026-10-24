@@ -375,6 +375,31 @@ extern "C"
     * listening, so an engine that reports unconditionally is still correct. */
    VNOVEL_EXPORT void vnovel_publish_nav_result(int ordinal, int accepted);
 
+   /* --- the game's own menu, offered to the core's menu bar ----------------
+    *
+    * A script declares a right-click menu and the engine can only draw it as a
+    * FLAT list; the core's menu bar (menu.h) can draw a TREE. So the entries are
+    * handed over here and built on that side, which is what makes a script's
+    * `insertmenu` depths show up as real submenus.
+    *
+    * A game calls begin, add for each entry in script order, then end -- end is
+    * what builds the menu, so once per game rather than once per entry. `depth`
+    * is 0 for a top-level entry, 1 for a child of the last depth-0 entry, and so
+    * on; `id` is the game's OWN code for the entry (a PONScripter system-call
+    * number), handed back untouched when the reader picks it, so the core never
+    * has to know what the codes mean.
+    *
+    * `id` 0 marks a submenu heading: not selectable itself, it opens its
+    * children. */
+   VNOVEL_EXPORT void vnovel_menu_begin_entries(void);
+   VNOVEL_EXPORT void vnovel_menu_add_entry(const char *label, int id, int depth);
+   VNOVEL_EXPORT void vnovel_menu_end_entries(void);
+
+   /* The code of the entry the reader last picked from that menu, or 0 when none
+    * is pending. A one-shot read, so a game acts on a pick exactly once; the
+    * engine polls it where it already polls the dev socket. */
+   VNOVEL_EXPORT int vnovel_menu_take_pick(void);
+
    /* --- choice labels: WHAT the choices are, not just that there are some ---
     *
     * A pause says the reader must act; it does not say what they are choosing

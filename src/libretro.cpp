@@ -407,9 +407,37 @@ static int16_t pointer_synth_input_state(unsigned port,
  * that closes the menu still suppresses, and the next frame no longer does. */
 static int menu_owns_input = 0;
 
+/* The bottom-right hot zone's synthesized right-click, in frames.
+ *
+ * A countdown rather than a flag: the engines' SDL shim synthesizes a whole
+ * press/release pair from what core_input_state_cb reports, so reporting the
+ * press for a few frames and then nothing is what makes it emit a complete
+ * click. Written on the frontend's thread, read from the engine's through
+ * core_input_state_cb -- the same funnel everything else uses. */
+static int hotzone_right_frames = 0;
+
 static int16_t
 core_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id)
 {
+   /* The hot zone's click, delivered as a RIGHT-click: this is what both engines
+    * already treat as "open my own menu", with the game's styling, its
+    * menuselectvoice sounds and its modal handling. Reporting it here rather than
+    * pushing an SDL event is deliberate: the engines' SDL shim polls this
+    * callback (PumpMouseEvents reads RETRO_DEVICE_ID_MOUSE_RIGHT) and calls
+    * SDL_PrivateMouseButton itself, so this is the channel that becomes a real
+    * engine menu, through the engine's own path.
+    *
+    * Left is explicitly suppressed: the shim prefers whichever button it sees,
+    * and the physical left click that opened the corner must not ALSO reach the
+    * game (it would satisfy whatever the script is waiting on). */
+   if (hotzone_right_frames > 0 && device == RETRO_DEVICE_MOUSE && index == 0)
+   {
+      if (id == RETRO_DEVICE_ID_MOUSE_RIGHT)
+         return 1;
+      if (id == RETRO_DEVICE_ID_MOUSE_LEFT)
+         return 0;
+   }
+
    /* While the menu owns the input the engine must see nothing, or a click on a
     * menu row also lands on whatever the game has under it. This is the single
     * funnel both engines pull from (ONScripter/PONScripter through their event
@@ -491,18 +519,40 @@ static void vnovel_publish_frame_size(int w, int h)
    }
 }
 
-/* Feed the menu the pointer, straight from the frontend - not through
- * core_input_state_cb, which now reports nothing while the menu is open.
+/* Whether a click at (x, y) lands in the "open the menu" hotspot, the
+ * bottom-right corner of the frame.
+ *
+ * A second way in besides the hotkey, for a pointer-only reader: a game's own
+ * menu is a menubar (resetmenu/insertmenu), and a bar is expected to be reachable
+ * without a keyboard. The zone is a fraction of the frame rather than a pixel
+ * count, because the frame the engines present varies (640x480 up to 1600x1200).
+ *
+ * Deliberately small and in the corner, where a visual novel's own clickable
+ * regions do not live: the text box and choice buttons are centred, and the
+ * corner would otherwise be dead space. */
+#define MENU_HOTSPOT_W 64
+#define MENU_HOTSPOT_H 32
+
+static int vnovel_menu_hotspot_hit(int x, int y)
+{
+   int w = MENU_HOTSPOT_W * vnovel_frame_w / 640;
+   int h = MENU_HOTSPOT_H * vnovel_frame_h / 480;
+   if (w < 16) w = 16;
+   if (h < 16) h = 16;
+   return x >= vnovel_frame_w - w && y >= vnovel_frame_h - h;
+}
+
+/* The pointer, as frame pixels plus a button edge.
+ *
+ * Split out because the corner hotspot needs the pointer while the menu is
+ * CLOSED, and the menu needs it while open: one read serves both.
  *
  * The menu takes the same absolute pointer the engines do, mapped from
- * libretro's [-32768..32767] onto the frame the menu was opened at. The button
- * edges matter: NP2kai's convention is 0 = move, 1 = down, 2 = up, and a click
- * outside the menu closes it on the *up* edge. */
-static void vnovel_menu_poll_input(void)
+ * libretro's [-32768..32767] onto the frame. The button edges matter: NP2kai's
+ * convention is 0 = move, 1 = down, 2 = up, and a click outside the menu closes
+ * it on the *up* edge. */
+static void vnovel_read_pointer(int *out_x, int *out_y, int *out_btn)
 {
-   if (!vnovel_menu_should_draw())
-      return;
-
    int16_t ax = frontend_input_state_cb(
          0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
    int16_t ay = frontend_input_state_cb(
@@ -519,8 +569,6 @@ static void vnovel_menu_poll_input(void)
       last_x = x;
       last_y = y;
    }
-   if (x < 0 || y < 0)
-      return;
 
    int16_t left = frontend_input_state_cb(
          0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT);
@@ -538,7 +586,54 @@ static void vnovel_menu_poll_input(void)
       btn = 2;
    last_left = left;
 
-   vnovel_menu_input(x, y, btn);
+   *out_x = x;
+   *out_y = y;
+   *out_btn = btn;
+}
+
+/* Feed the menu the pointer, straight from the frontend - not through
+ * core_input_state_cb, which now reports nothing while the menu is open. */
+static void vnovel_menu_poll_input(void)
+{
+   int x, y, btn;
+   vnovel_read_pointer(&x, &y, &btn);
+
+   if (vnovel_menu_should_draw())
+   {
+      if (x >= 0 && y >= 0)
+         vnovel_menu_input(x, y, btn);
+      return;
+   }
+
+   /* Closed: the bottom-right corner opens the GAME's own system menu, drawn by
+    * the ENGINE -- not the core's bar. The engine has the game's styling, its
+    * menuselectvoice sounds and its modal handling, so asking it is both more
+    * authentic and less code than re-drawing that menu here. F12 remains the way
+    * to the CORE's bar (the game's resetmenu/insertmenu tree).
+    *
+    * The request carries nothing and may be ignored: a game that declared no
+    * `rmenu` has no engine menu, and then the zone does nothing. Only the press
+    * edge, so holding the button in the corner does not keep re-asking. */
+   if (btn == 1 && x >= 0 && y >= 0 && vnovel_menu_hotspot_hit(x, y))
+   {
+      /* Convert the corner click into a RIGHT-click, which is what both engines
+       * already treat as "open my own menu" -- with the game's styling, its
+       * menuselectvoice sounds and its modal handling. So the hot zone needs no
+       * engine change at all.
+       *
+       * It is done through the input callback rather than by pushing an SDL
+       * event, because that is the channel the engines' SDL shim actually reads:
+       * its PumpMouseEvents() polls RETRO_DEVICE_ID_MOUSE_RIGHT every pump and
+       * calls SDL_PrivateMouseButton() itself, so reporting a press here becomes
+       * a real engine mouse event through the engine's own path. (Pushing
+       * SDL_PushEvent from this thread was the earlier attempt; it does not reach
+       * a queued event the shim owns.)
+       *
+       * Two polls: one press, then the callback reports nothing and the shim
+       * synthesizes the matching release -- a complete click. */
+      hotzone_right_frames = 2;
+      menu_owns_input = 1;
+   }
 }
 
 /* Feed the menu the keys it navigates with, as the inputmng.h bitmask.
@@ -4105,6 +4200,11 @@ void retro_run(void)
    menu_owns_input = vnovel_menu_should_draw();
    vnovel_menu_poll_input();
    vnovel_menu_poll_keys();
+   /* The hot zone's synthesized click lasts a couple of frames, so the engine's
+    * SDL shim sees a press and then a release (it synthesizes the pair from what
+    * core_input_state_cb reports). */
+   if (hotzone_right_frames > 0)
+      hotzone_right_frames--;
 
    /* The menu advances one frame whether or not it is drawn: it must process
     * input and its own timers while open, and doing it unconditionally keeps

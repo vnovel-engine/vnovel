@@ -38,6 +38,7 @@ extern "C" {
 #include "menu.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The core's own menu bar.
@@ -68,7 +69,12 @@ enum {
 	MENU_ID_CLOSE = 1,
 	/* Reserved for items whose action is dispatched from elsewhere, so a page
 	 * added later cannot collide with the ones above. */
-	MENU_ID_FIRST_DYNAMIC = 0x0100
+	MENU_ID_FIRST_DYNAMIC = 0x0100,
+	/* Game entries live high, well clear of the core's own ids and of
+	 * MENU_ID_FIRST_DYNAMIC + MENU_INFO_COUNT. The LOW 16 bits carry the game's
+	 * own code, so a code of 0 would collide with "no entry" -- engine codes are
+	 * nonzero by construction (PONScripter's system calls start at 1). */
+	MENU_GAME_ID_FIRST = 0x4000
 };
 
 /* Which live value a row displays, as a small index into menu_info. The table
@@ -106,12 +112,22 @@ static const MSYSITEM menu_items_session[] = {
 		{menu_info[MENU_INFO_COMPAT],	NULL,	MENU_INFO_FIRST + MENU_INFO_COMPAT,	MENU_GRAY},
 		{menu_info[MENU_INFO_VERSION],	NULL,	MENU_INFO_FIRST + MENU_INFO_VERSION,	MENU_GRAY},
 		{menu_info[MENU_INFO_SAVES],	NULL,	MENU_INFO_FIRST + MENU_INFO_SAVES,	MENU_GRAY},
-		{menu_info[MENU_INFO_OVERRIDES],	NULL,	MENU_INFO_FIRST + MENU_INFO_OVERRIDES,	MENU_GRAY},
-		{NULL, NULL, 0, MENU_DELETED}};
+		{menu_info[MENU_INFO_OVERRIDES],	NULL,	MENU_INFO_FIRST + MENU_INFO_OVERRIDES,	MENU_GRAY | MENU_DELETED}};
+/* The MENU_DELETED terminator is on the LAST of these, not a row after it:
+ * appends() appends an item and only then tests the flag, so a separate
+ * sentinel would be appended too and drawn as a blank row. Verified against a
+ * dump of the built tree. */
 
-static const MSYSITEM menu_items[] = {
-		{OEMTEXT("File"),		menu_items_file,	0,	MENU_DELETED},
-		{OEMTEXT("Session"),	menu_items_session,	0,	MENU_DELETED}};
+/* The root bar. MUTABLE, because the Game page's child pointer is filled in by
+ * vnovel_menu_end_entries once the game has declared its menu (the tree cannot
+ * be static: menusys_create keeps the pointer it is given, and a game's entries
+ * are not known until it has run). */
+static MSYSITEM menu_items[] = {
+		{OEMTEXT("File"),	menu_items_file,	0,	MENU_NOSEND},
+		{OEMTEXT("Game"),	NULL,			0,	MENU_NOSEND},
+		{OEMTEXT("Session"),	menu_items_session,	0,	MENU_NOSEND | MENU_DELETED}};
+/* MENU_DELETED on the last page, for the same reason as above: it is the
+ * terminator of the top-level run, and a row after it would be drawn. */
 
 /* The vendored headers declare their own extern "C" (see fontmng.h, menubase.h),
  * so nothing here may wrap them again - nesting the linkage makes the
@@ -253,6 +269,281 @@ void vnovel_menu_shutdown(void)
 	menu_created = 0;
 }
 
+
+/* --- the game's own menu entries -------------------------------------------
+ *
+ * Held HERE, in mutable storage, and turned into the menu's own tree on demand:
+ * menusys_create() takes a `const MSYSITEM *` and keeps it, so a tree that a game
+ * can add to cannot be the static one above -- the entries are collected first
+ * and the menu is rebuilt from them.
+ *
+ * Rebuilding is not free (it frees and re-creates the menu), so it happens at
+ * vnovel_menu_end_entries(), which is once per game, not once per entry.
+ *
+ * The title a game shows may contain the engine's text marker (PONScripter's
+ * '^' under UTF-8), which the renderer consumes and never draws. Stripped here
+ * because the marker is the ENGINE's dialect and this is the core's menu: a
+ * label arriving with it would show a stray '^' to the reader. */
+#define MENU_GAME_MAX_ENTRIES  128
+#define MENU_GAME_MAX_DEPTH    8
+
+typedef struct {
+	int  id;          /* the engine's code, or -1 for a heading */
+	int  depth;       /* 0 = top level; d belongs to the nearest shallower entry */
+} MENU_GAME_ENTRY;
+
+static MENU_GAME_ENTRY menu_game[MENU_GAME_MAX_ENTRIES];
+static int  menu_game_count = 0;
+static int  menu_game_building = 0;
+static char menu_game_labels[MENU_GAME_MAX_ENTRIES][96];
+/* The code of the game entry the reader picked, one-shot (see
+ * vnovel_menu_take_pick). Declared here because menu_cmd, above its reader,
+ * writes it. */
+static int menu_pick = 0;
+
+/* The engine's text marker, stripped from a label. PONScripter uses '^' for
+ * UTF-8 and '`' for CP932; the core sees only the label, so both are removed
+ * when they LEAD a line, which is the only place the marker is meaningful. */
+static const char *menu_clean_label(const char *in)
+{
+	if (in && (in[0] == '^' || in[0] == '`'))
+		return in + 1;
+	return in ? in : "";
+}
+
+void vnovel_menu_begin_entries(void)
+{
+	menu_game_count = 0;
+	menu_game_building = 1;
+}
+
+void vnovel_menu_add_entry(const char *label, int id, int depth)
+{
+	if (!menu_game_building || menu_game_count >= MENU_GAME_MAX_ENTRIES)
+		return;
+	MENU_GAME_ENTRY *e = &menu_game[menu_game_count];
+	snprintf(menu_game_labels[menu_game_count], sizeof(menu_game_labels[0]),
+	         "%s", menu_clean_label(label));
+	e->id = id;
+	e->depth = (depth < 0) ? 0 : (depth > MENU_GAME_MAX_DEPTH ? MENU_GAME_MAX_DEPTH : depth);
+	menu_game_count++;
+}
+
+/* The item pool the tree is emitted into.
+ *
+ * The vendored walker (appends(), menusys.c) advances with `item++` and chains
+ * siblings with `next` until it meets a MENU_DELETED flag -- so a run of
+ * siblings has to be its own CONTIGUOUS array, ended by a sentinel. A single
+ * flat array of all entries therefore cannot express this tree: pointing a
+ * parent's `child` at the next entry would make the walker swallow every entry
+ * after it, since `item++` only stops at a sentinel.
+ *
+ * So the pool holds one terminated block per run (one per parent, plus the
+ * top level), and a run's items are laid out before its children's runs. A run
+ * costs its children plus one sentinel, so entries + runs <= 2*entries + 1. */
+#define MENU_GAME_POOL  (MENU_GAME_MAX_ENTRIES * 2 + 2)
+
+static MSYSITEM menu_game_items[MENU_GAME_POOL];
+static int menu_game_pool_used = 0;
+/* The tree as indices into menu_game[], linked once and then emitted: the pool
+ * layout is written in two passes (run first, children after), so the links
+ * cannot be followed as the pool is filled. */
+static int menu_game_first_child[MENU_GAME_MAX_ENTRIES];
+static int menu_game_last_child[MENU_GAME_MAX_ENTRIES];
+static int menu_game_next_sib[MENU_GAME_MAX_ENTRIES];
+static int menu_game_top = -1;
+static int menu_game_last_top = -1;
+/* Where each entry's menu item ended up in the pool, so a parent can point its
+ * child at it after the child's run has been written. */
+static int menu_game_slot[MENU_GAME_MAX_ENTRIES];
+/* Shown on the Game page when the game declares no menu. One item, carrying the
+ * terminator itself (see menu_game_emit_run for why there is no row after it). */
+static const MSYSITEM menu_items_no_game[] = {
+		{OEMTEXT("(the game declares no menu)"),	NULL,	0,	MENU_GRAY | MENU_DELETED}};
+
+/* Dump a run of pool items as `menutree:` lines, two spaces per level.
+ *
+ * Headless-safe: it prints the tree the loader produced, without opening the menu,
+ * so a test fixture can assert the nesting. The library's own menusys_dump
+ * answers the different question of what appends() built from these arrays. */
+static void menu_dump_run(const MSYSITEM *run, int depth)
+{
+	/* The walk mirrors appends() in menusys.c, and the ORDER matters: an item's
+	 * subtree is visited BEFORE the terminator is tested. The last sibling carries
+	 * MENU_DELETED, so testing it at the top of the loop would stop at the last
+	 * entry and hide its whole subtree -- which is exactly what a first version
+	 * of this did (a dump that printed only the first two of twelve entries). */
+	for (const MSYSITEM *it = run; it; it++) {
+		fprintf(stderr, "menutree: %*s%s id=%u flag=0x%04x\n",
+		        depth * 2, "",
+		        (it->string && it->string[0]) ? it->string : "(no text)",
+		        (unsigned)it->id, (unsigned)it->flag);
+		if (it->child)
+			menu_dump_run(it->child, depth + 1);
+		if (it->flag & MENU_DELETED)
+			break;
+	}
+}
+
+/* Write one run -- `first` and its siblings -- into the pool, then the runs of
+ * each item's children. Returns the pool index of the run's first item, or -1.
+ *
+ * The order matters: a run is written whole before any child run, because the
+ * walker needs the siblings adjacent. Recursing first would interleave a child's
+ * subtree between two siblings and break the run. */
+static int menu_game_emit_run(int first)
+{
+	if (first < 0)
+		return -1;
+
+	int start = menu_game_pool_used;
+	int last = start;
+
+	for (int i = first; i != -1; i = menu_game_next_sib[i]) {
+		if (menu_game_pool_used >= MENU_GAME_POOL)
+			return -1;
+		MSYSITEM *it = &menu_game_items[menu_game_pool_used];
+		it->string = menu_game_labels[i];
+		it->child  = NULL;
+		/* The id is the entry's SLOT in menu_game[], not its code: a code is the
+		 * engine's own number and can be any int, while a MENUID is 16 bits, so
+		 * tagging the code directly would truncate a large one. The slot is
+		 * bounded by the entry count, and menu_cmd maps it back to the code. */
+		it->id   = (MENUID)(MENU_GAME_ID_FIRST + i);
+		/* Three cases, and the flag distinguishes them so the menu tells the
+		 * truth about what it can do:
+		 *
+		 *   a code        selectable, reports the code to the engine
+		 *   no code, children   a heading: opens its submenu, sends nothing
+		 *   no code, no children  inert: nothing to do, so drawn greyed rather
+		 *                         than pretending to be selectable
+		 *
+		 * MENU_NOSEND, not MENU_GRAY, for the heading: a greyed item never
+		 * opens its child (menusys.c gates childopn on that flag), so grey
+		 * there would make the submenu unreachable. */
+		it->flag = (menu_game[i].id >= 0) ? 0
+		         : (menu_game_first_child[i] >= 0) ? MENU_NOSEND
+		         : MENU_GRAY;
+		menu_game_slot[i] = menu_game_pool_used;
+		last = menu_game_pool_used;
+		menu_game_pool_used++;
+	}
+
+	/* The run's LAST item carries MENU_DELETED, because appends() appends an
+	 * item and only THEN tests the flag -- so the terminator has to be the last
+	 * real item, not a separate entry after it. A separate sentinel row gets
+	 * appended like any other and shows up as a blank menu row, which is exactly
+	 * what a dump of the built tree showed. append1() strips the bit from the
+	 * built item (`flag & ~MENU_DELETED`), so it costs nothing but the stop.
+	 *
+	 * This is also the idiom the library's own tables use: s_exit's last item is
+	 * `{str_sysc, NULL, SID_CLOSE, MENU_DELETED}`. */
+	menu_game_items[last].flag |= MENU_DELETED;
+
+	for (int i = first; i != -1; i = menu_game_next_sib[i]) {
+		if (menu_game_first_child[i] == -1)
+			continue;                    /* a leaf */
+		int cs = menu_game_emit_run(menu_game_first_child[i]);
+		menu_game_items[menu_game_slot[i]].child =
+			(cs >= 0) ? &menu_game_items[cs] : NULL;
+	}
+
+	return start;
+}
+
+/* Turn the collected entries into the menu's tree and rebuild the menu.
+ *
+ * Nesting: an entry at depth d belongs to the nearest entry before it at a
+ * smaller depth -- most often exactly d-1, but the levels need not be
+ * contiguous. That is the script's own rule for `insertmenu`'s third argument
+ * ("insertion into a submenu dug that many levels deep"), and it is what puts
+ * Wave's depth-2 options under the depth-1 Wave heading.
+ *
+ * A HEADING is signalled by a negative id (the engine has no code for it: it is
+ * the script's `SUB`, which only opens a submenu). See vnovel_menu_add_entry. */
+void vnovel_menu_end_entries(void)
+{
+	menu_game_building = 0;
+
+	if (menu_game_count == 0) {
+		menu_items[1].child = menu_items_no_game;
+		return;
+	}
+
+	/* Link the entries into a tree of indices. `open[d]` is the most recent
+	 * entry at depth d; it is the parent of the next entry deeper than d, and
+	 * anything deeper is closed once a shallower entry arrives. */
+	int open[MENU_GAME_MAX_DEPTH + 1];
+	for (int d = 0; d <= MENU_GAME_MAX_DEPTH; d++)
+		open[d] = -1;
+
+	for (int i = 0; i < menu_game_count; i++) {
+		menu_game_first_child[i] = -1;
+		menu_game_last_child[i]  = -1;
+		menu_game_next_sib[i]    = -1;
+
+		int d = menu_game[i].depth;
+		int p = (d > 0) ? open[d - 1] : -1;
+
+		if (p < 0) {
+			if (menu_game_top < 0)
+				menu_game_top = i;
+			else
+				menu_game_next_sib[menu_game_last_top] = i;
+			menu_game_last_top = i;
+		} else {
+			if (menu_game_first_child[p] < 0)
+				menu_game_first_child[p] = i;
+			else
+				menu_game_next_sib[menu_game_last_child[p]] = i;
+			menu_game_last_child[p] = i;
+		}
+
+		open[d] = i;
+		for (int k = d + 1; k <= MENU_GAME_MAX_DEPTH; k++)
+			open[k] = -1;                /* a shallower entry closes the deeper run */
+	}
+
+	menu_game_pool_used = 0;
+	int top = menu_game_emit_run(menu_game_top);
+	if (top < 0) {
+		fprintf(stderr, "menu: the game's menu did not fit (%d entries)\n",
+		        menu_game_count);
+		menu_items[1].child = menu_items_no_game;
+		return;
+	}
+
+	/* The page points STRAIGHT at the top run. No wrapper item: a `Game` page
+	 * whose only child was another `Game` was what a dump of the built tree
+	 * showed, and the extra level made the reader open two submenus to reach the
+	 * game's own entries. */
+	menu_items[1].child = &menu_game_items[top];
+
+	/* A dump of the tree as handed over, so a test fixture can assert it without
+	 * opening the menu (which the headless harness never does). It answers "what
+	 * did the loader make of the script's depths"; the library's own
+	 * menusys_dump answers the separate question "what did appends() build from
+	 * it". Off unless VNOVEL_MENU_DUMP=1. */
+	if (getenv("VNOVEL_MENU_DUMP"))
+		menu_dump_run(&menu_game_items[top], 0);
+
+	/* Rebuild, because menusys_create keeps the pointer it was given and the
+	 * tree above has changed. Only when the menu already exists: before that,
+	 * the next open builds from the page's child anyway. */
+	if (menu_sys_created) {
+		if (menu_open) { menusys_close(); menu_open = 0; }
+		menusys_destroy();
+		menu_sys_created = 0;
+	}
+}
+
+int vnovel_menu_take_pick(void)
+{
+	int p = menu_pick;
+	menu_pick = 0;
+	return p;
+}
+
 /* Called when the user activates an item.
  *
  * A MENU_GRAY row is inert - the menu will not invoke its command - so the
@@ -262,6 +553,22 @@ static void menu_cmd(MENUID id)
 {
 	if (id == MENU_ID_CLOSE)
 	{
+		vnovel_menu_close();
+		return;
+	}
+	/* A GAME entry: the id is the engine's own code for it, and what it means is
+	 * the engine's business -- the core reports the pick and the engine acts. So
+	 * there is deliberately no knowledge of "save" or "load" here. The menu
+	 * closes first, because the game is about to draw over the frame. */
+	if ((int)id >= MENU_GAME_ID_FIRST)
+	{
+		/* The id is the entry's slot (see menu_game_emit_run); the CODE is what
+		 * the engine published and what it will act on, so that is what is
+		 * reported. A heading has no code and reached here only if it was somehow
+		 * activated, so it reports nothing. */
+		int slot = (int)id - MENU_GAME_ID_FIRST;
+		if (slot >= 0 && slot < menu_game_count && menu_game[slot].id >= 0)
+			menu_pick = menu_game[slot].id;
 		vnovel_menu_close();
 		return;
 	}
@@ -327,6 +634,8 @@ int vnovel_menu_open(int w, int h)
 			return 0;
 		}
 		menu_sys_created = 1;
+		/* What the library BUILT, not what was handed to it. */
+		menusys_dump();
 	}
 
 	if (menusys_open(0, 0) != SUCCESS)

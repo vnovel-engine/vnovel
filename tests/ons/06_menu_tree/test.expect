@@ -1,0 +1,11 @@
+Using ONScripter-EN engine
+menutree: Quit id=16384 flag=0x0000
+menutree: Skip id=16385 flag=0x0000
+menutree: Settings id=16386 flag=0xa000
+menutree:   Wave id=16387 flag=0x2000
+menutree:     On id=16388 flag=0x0000
+menutree:     Off id=16389 flag=0x8000
+menutree:   Text id=16390 flag=0xa000
+menutree:     Slow id=16391 flag=0x0000
+menutree:     Normal id=16392 flag=0x0000
+menutree:     Fast id=16393 flag=0x8000

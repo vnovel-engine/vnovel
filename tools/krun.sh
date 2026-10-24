@@ -24,7 +24,7 @@ log=/tmp/$tag.log
 : > "$log"
 cd /home/matcha/Fate-Eng-Install || exit 1
 setsid env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET DISPLAY=:97 \
-  "$@" retroarch -L /home/matcha/dev/vnovel-libretro/vnovel_libretro.so \
+  "$@" retroarch -L "${CORE:-/home/matcha/dev/vnovel-libretro/vnovel_libretro-devwire.so}" \
   data.xp3 >> "$log" 2>&1 </dev/null &
 disown
 sleep "$secs"

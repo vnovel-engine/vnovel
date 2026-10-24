@@ -69,6 +69,58 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
   engine's first press during its own text-out only fast-forwards the typewriter
   (ONScripter sets `SKIP_TO_WAIT|SKIP_TO_EOL` in `keyPressEvent`) — so sending one
   and assuming the wait passed is exactly the mistake this guards against.
+- **`resetmenu`/`insertmenu` build the flavour's MENUBAR, as a tree -- and it is
+  NOT the right-click menu.** The two systems share a vocabulary and nothing else,
+  and conflating them was a real bug: `resetmenu` used to clear `rmenu`, so Le
+  sanglot's six right-click entries (save/load/skip/windowerase/lookback/reset,
+  declared at `pscript.dat:90`) were deleted and replaced by its 23 options
+  entries, flattened and reversed.
+
+  What the commands are, per the reference: `rmenu` declares the right-click menu;
+  `resetmenu` announces that a custom menubar is being built; `insertmenu` adds
+  one item, and its optional third argument is "how many submenus deep" the item
+  goes. So the depth is honoured now, by the core's bar (`src/menu.cpp`), because
+  the engine's own list cannot nest -- `RMenuElt` is a flat
+  `{label, system_call_no}` -- while the vendored NP2kai menu nests natively
+  (`MSYSITEM` carries a child pointer). `SUB` is what opens a submenu: the
+  entries after it at a deeper level belong to IT, not to the entry before it
+  (Wave's depth-2 options have no depth-1 parent other than `SUB`).
+
+  The core hands a pick back as the GAME's own system-call number and never
+  interprets it, so the core does not need to know what "save" means. Verified
+  with a dump of the tree the menu library BUILT (`VNOVEL_MENU_DUMP=1` prints it,
+  and `menusys_dump` in the vendored library prints its own), plus the new
+  `tests/ons/06_menu_tree` fixture, which asserts the nesting line by line.
+
+  Reading that dump also fixed three defects it exposed: the run terminator was a
+  SEPARATE row, which `appends()` appends like any other and draws as a blank menu
+  row (the last real item must carry `MENU_DELETED`); a heading was marked
+  `MENU_GRAY`, which PREVENTS its submenu from opening (`menusys.c` gates
+  `childopn` on that flag), so headings are `MENU_NOSEND`; and the root bar's
+  entries all carried `MENU_DELETED`, which ended the top-level run after "File"
+  -- so the bar had only ever shown one page.
+
+  Codes: `insertmenu`'s vocabulary is the game's, and the engine resolves it
+  CASE-INSENSITIVELY (a script writes `END`/`SKIP`/`AUTO`, the engine's table is
+  lower case; the literal comparison made playable entries dead). A code the
+  engine has no command for is left inert and drawn greyed rather than wired to
+  nothing, so the menu does not offer an action that would not happen. Wired to
+  real engine features: the three text speeds (the same field the 1/2/3 keys
+  write, so the two cannot disagree) and, in ONScripter-EN, `WAVEON`/`WAVEOFF` and
+  `CLICKDEF`/`CLICKPAGE`. Deliberately NOT wired: `FULL`/`WINDOW` (the command
+  calls raw `SDL_SetVideoMode`, which would fight the frontend in a libretro
+  core), `FONT` (a game's menu must not reconfigure rendering), and
+  `WAVEON`/`WAVEOFF` under PONScripter (`volume_on_flag` has no consumer there --
+  its only use is commented out -- so it would be a silently dead entry).
+
+  The core takes a pick and reports it; the ENGINE acts on its own codes. A pick
+  is delivered as the same `system_menu_mode` a real menu selection produces, so
+  it routes through the engine's own `executeSystemCall` and cannot drift from it.
+
+  Two ways in: **F12** (now the default binding; it was unbound) and a click in
+  the **bottom-right corner** of the frame, for a pointer-only reader. The corner
+  click opens the menu and does NOT also reach the game underneath, which needs
+  the "menu owns input" decision re-read after the poll.
 - **The two protocols are now ONE vocabulary, with the client's as the
   superset.** The engine ABI and the client protocol used to be two lists that
   had to be kept in step by hand, and they had already drifted where it hurt

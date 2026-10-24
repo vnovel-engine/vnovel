@@ -52,7 +52,34 @@ CC            ?= cc
 CXX           ?= c++
 fpic          :=
 SHARED        :=
-TARGET        := $(TARGET_NAME)_libretro.so
+# The output name carries the DEVWIRE tag for the same reason BUILD_DIR does: the
+# objects for the two flavours must never be shared, and a single output path let
+# one build overwrite the other -- so a client that had been connecting fine
+# suddenly got "connection refused", with nothing in the build to say the binary
+# had been replaced.
+#   make                 -> vnovel_libretro-devwire.so  (socket; the default)
+#   make DEVWIRE=0       -> vnovel_libretro.so          (ships; no socket)
+#
+# DEVWIRE is ON by default: the socket is what every harness, client and test in
+# this repo talks to, and a build that silently lacks it costs a debugging
+# session every time. Turn it OFF for a build meant to ship -- `make DEVWIRE=0`
+# (or NO_DEVWIRE=1) -- and the output name changes with it so the two can never
+# be confused or overwrite one another.
+# Two ways to say "no wire protocol": DEVWIRE=0 is the symmetrical spelling,
+# NO_DEVWIRE=1 reads better in a release script. Both set the same marker, which
+# is what every use below tests -- so there is one condition, not three.
+ifeq ($(DEVWIRE),0)
+   DEVWIRE_OFF := 1
+endif
+ifneq ($(NO_DEVWIRE),)
+   DEVWIRE_OFF := 1
+endif
+ifeq ($(DEVWIRE_OFF),1)
+   DEVWIRE_TAG :=
+else
+   DEVWIRE_TAG := -devwire
+endif
+TARGET_EXT    := .so
 PLATFLAGS     :=
 SDL_SYSTIMER  ?= unix/SDL_systimer.c
 
@@ -94,7 +121,7 @@ RPATH_ORIGIN := -Wl,-rpath,'$$ORIGIN'
 PKG_CONFIG ?= pkg-config
 
 ifeq ($(platform), unix)
-   TARGET   := $(TARGET_NAME)_libretro.so
+   TARGET_EXT := .so
    fpic    := -fPIC
    CXXFLAGS += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
    CFLAGS   += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
@@ -104,7 +131,7 @@ ifeq ($(platform), unix)
 
 else ifeq ($(platform), aarch64)
    CROSS   := aarch64-linux-gnu-
-   TARGET   := $(TARGET_NAME)_libretro.so
+   TARGET_EXT := .so
    fpic    := -fPIC
    SHARED  := -shared -Wl,--no-undefined
    LINK_EXTRA := $(LINK_EXTRA_unix)
@@ -128,7 +155,7 @@ else ifeq ($(platform), mingw)
    # Overridable so the same block builds x86_64 and i686 (win32):
    #   make platform=mingw CROSS=i686-w64-mingw32-
    CROSS    ?= x86_64-w64-mingw32-
-   TARGET    := $(TARGET_NAME)_libretro.dll
+   TARGET_EXT := .dll
    MOD_EXT   := .dll
    MOD_RPATH :=
    # No --version-script: PE/COFF does not support it. It is not needed either —
@@ -239,25 +266,26 @@ else ifeq ($(platform), mingw)
 
 else ifeq ($(platform), win)
    # Native Windows (MSVC not supported; use mingw platform for cross-compile)
-   TARGET    := $(TARGET_NAME)_libretro.dll
+   TARGET_EXT := .dll
    SHARED    := -shared -static-libgcc -static-libstdc++ -s -Wl,--no-undefined
    PLATFLAGS := -DWIN32 -DFAKE_RECURSIVE_MUTEX=0 -Wno-narrowing
    SDL_SYSTIMER := win32/SDL_systimer.c
    LDFLAGS   += -lwinmm -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
 
 else ifneq (,$(findstring osx,$(platform)))
-   TARGET   := $(TARGET_NAME)_libretro.dylib
+   TARGET_EXT := .dylib
    fpic    := -fPIC
    SHARED  := -dynamiclib
 
 else ifeq ($(platform), emscripten)
-   TARGET   := $(TARGET_NAME)_libretro_emscripten.bc
+   TARGET_EXT := .bc
+   TARGET_STEM_EXTRA := _emscripten
    fpic    := -fPIC
    SHARED  := -shared -Wl,--no-undefined
 
 else
    # Fallback: treat as unix-like
-   TARGET   := $(TARGET_NAME)_libretro.so
+   TARGET_EXT := .so
    fpic    := -fPIC
    SHARED  := -shared -Wl,--no-undefined
 endif
@@ -302,7 +330,7 @@ ifeq ($(PROBES), 1)
 endif
 
 # The development wire protocol (the text stream out, navigation intents in).
-# `make DEVWIRE=1` to compile it in.
+# On by DEFAULT; `make DEVWIRE=0` (or NO_DEVWIRE=1) compiles it out.
 #
 # Gated at the SOURCE level, not only at runtime: the socket, its records and the
 # engine-side publishers are all development surface, and a build that ships a
@@ -311,7 +339,7 @@ endif
 # engines' publish calls compile to nothing rather than to a call that inspects a
 # flag (see the ifdef in engine_bridge.h), because a caller that must check
 # first is a caller that can forget to.
-ifeq ($(DEVWIRE), 1)
+ifeq ($(DEVWIRE_OFF),)
    DEFINES += -DVNOVEL_DEVWIRE
 endif
 
@@ -360,7 +388,7 @@ endif
 # compiled first -- which is how an engine shim built WITH the protocol ended up
 # linked against a core built without it, and the link failed on symbols that
 # only one side had.
-ifeq ($(DEVWIRE),1)
+ifeq ($(DEVWIRE_OFF),)
    BUILD_TAG := $(BUILD_TAG)-devwire
 endif
 BUILD_DIR := build/$(platform)$(ENGINE_TAG)$(BUILD_TAG)
@@ -371,6 +399,17 @@ NM      ?= nm
 
 CXXFLAGS += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) $(VISIBILITY)
 CFLAGS   += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall $(fpic) $(VISIBILITY)
+
+# --- The output name ---------------------------------------------------------
+# Composed HERE, after every platform block has had its say, because those blocks
+# set the extension and this adds the DEVWIRE tag -- and a platform block that
+# wrote `TARGET` wholesale (which is what they used to do) silently discarded the
+# tag, so `make DEVWIRE=1` produced a file with no socket in it under the name of
+# the build that has none.
+#
+#   make            -> vnovel_libretro-devwire.so   (socket; the default)
+#   make DEVWIRE=0  -> vnovel_libretro.so           (ships; no socket)
+TARGET := $(TARGET_NAME)_libretro$(TARGET_STEM_EXTRA)$(DEVWIRE_TAG)$(TARGET_EXT)
 
 # --- Source files and includes ---
 include Makefile.common
@@ -535,13 +574,13 @@ debug:
 # change to the shipped engine, so the value is pinned here; an explicit
 # KRKR_CMAKE_EXTRA still wins because it is passed last.
 # VNOVEL_DEVWIRE must reach the ENGINE's own CMake build too, or the shim that
-# publishes the flow and edge records compiles its calls to no-ops and the wire
-# protocol is silently half-present (the core would listen and nothing would ever
-# arrive). The engines are a separate project with their own compiler
-# invocations, so a -D in this Makefile's DEFINES does not reach them.
+# publishes the records compiles its calls to no-ops and the wire protocol is
+# silently half-present (the core would listen and nothing would ever arrive).
+# The engines are a separate project with their own compiler invocations, so a -D
+# in this Makefile's DEFINES does not reach them.
 KRKR_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release -DKRKRSDL2_LIBRETRO=ON \
                     -DOPTION_DEBUG_PROBES=OFF \
-                    $(if $(filter 1,$(DEVWIRE)),-DVNOVEL_DEVWIRE=ON) \
+                    $(if $(DEVWIRE_OFF),,-DVNOVEL_DEVWIRE=ON) \
                     -DKRKRSDL2_BUILTIN_SHIMS=ON -DOPTION_BUILD_MACOS_BUNDLE=OFF \
                     -DCMAKE_C_FLAGS="-fvisibility=hidden" \
                     -DCMAKE_CXX_FLAGS:STRING="$(KRKR_CXX_BASE) $(KRKR_CXX_EXTRA)" \

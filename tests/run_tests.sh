@@ -9,6 +9,10 @@
 #   ./run_tests.sh --golden     # create/update golden references
 #   NO_XVFB=1 ./run_tests.sh    # run with visible window (debugging)
 
+# The RELEASE core by default: the suite checks what ships, and the DEVWIRE
+# build has a socket the tests do not use. (A plain `make` now produces the
+# devwire output, so this name is the no-wire one -- see the Makefile's note on
+# why the two flavours have different output names.)
 CORE="${CORE:-$(realpath "$(dirname "$0")/../vnovel_libretro.so")}"
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 RA="${RA:-retroarch}"
@@ -61,7 +65,11 @@ run_test() {
 
     rm -f "$RA_SAVE_DIR"/*.bmp "$RA_SAVE_DIR"/*.txt 2>/dev/null
     
-    ONS_TEST_WIDTH="$TEST_WIDTH" ONS_TEST_HEIGHT="$TEST_HEIGHT" \
+    # VNOVEL_MENU_DUMP makes the core print the menu tree it built from a game's
+    # resetmenu/insertmenu entries (src/menu.cpp). Silent unless a test declares
+    # a menu, so it costs the others nothing, and it is the only way to assert
+    # menu STRUCTURE headless -- the harness never opens the menu.
+    ONS_TEST_WIDTH="$TEST_WIDTH" ONS_TEST_HEIGHT="$TEST_HEIGHT" VNOVEL_MENU_DUMP=1 \
     timeout 10 "$RA" -L "$CORE" "$game" --verbose \
         --max-frames="$MAX_FRAMES" 2>/tmp/nova_test.log || true
     
