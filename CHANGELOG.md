@@ -3,7 +3,11 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
-## Unreleased
+## 0.4.0 — 2026-10-24
+
+A text look-ahead on all three engines, a development socket for the text
+stream, and a game's own menubar in the core. Per-engine detail is in each
+engine fork's own `CHANGELOG.md`.
 
 ### Added
 
@@ -262,7 +266,6 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
   symptom ("engine never reached KAG") that named the scenario rather than the
   cause. It now reports `has no KiriKiri engine — rebuild with KRKR_ENABLE=1`.
 
-### Added
 
 - **Per-game text drivers for the look-ahead.** The greedy walk reads text from
   `ch`/`r`, which is right for a title that writes dialogue inline and is why
@@ -281,7 +284,6 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
   token still parses the page and loses only the name. Fata Morgana is the first
   producer.
 
-### Added
 
 - **KiriKiri games that ship as ONE executable with the archive embedded.** A
   title may distribute as a single .exe with the XP3 appended after its last
@@ -450,7 +452,6 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 Runs pre-2.23-era KiriKiri titles (Fate/stay night first) and adds the
 text-plane seam. Per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
-### Added
 
 - **Text-plane rendering.** A game's text is now captured into a surface of its
   own and published alongside the frame, instead of existing only inside the
@@ -531,7 +532,6 @@ First release under the **VNovel** name. The core was called
 `onscripter-en-libretro` when it covered ONScripter-EN alone; it now covers the
 three engines most visual novels are built with, so the name follows.
 
-### Added
 
 - **Game identification.** The core ships a libretro database (`vnovel.rdb`)
   that names known games by the hash of the script file it already uses for

@@ -1,6 +1,6 @@
 # Software Information
 display_name = "VNovel"
-display_version = "0.3"
+display_version = "0.4"
 authors = "Ogapee; Seung Park (lightbinder); Haeleth; krkrsdl2; Matcha & Nova"
 categories = "Game engine"
 license = "GPLv2"
