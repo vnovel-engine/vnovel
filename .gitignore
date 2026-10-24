@@ -43,3 +43,4 @@ tests/wrap/wrap_harness
 
 # Text-plane bridge contract test: same rule, binary is a build product.
 tests/textplane/textplane_test
+tests/devsock/devsock_test

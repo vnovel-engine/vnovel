@@ -1096,6 +1096,55 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
  * two producers of these lines would drift. */
 static FILE *text_run_log = NULL;
 
+/* Write one record to the log, opening it on first use.
+ *
+ * EVERY producer of these lines goes through here or through the equivalent
+ * check in the run sink, so the log and the socket carry the SAME records. The
+ * event and choice publishers used to write the log only when it was ALREADY
+ * open, which meant the first records of a run - the page-boundary and wait
+ * events that precede any text - reached the socket and never the log, leaving
+ * the two channels disagreeing about a stream that matched on every later line.
+ *
+ * One open attempt, not one per record: this path runs per GLYPH on KiriKiri. */
+static const char *text_run_log_path = NULL;   /* resolved once from the env */
+static int text_run_log_checked = 0;
+static int text_run_log_tried = 0;
+
+static void text_run_log_line(const char *line)
+{
+   if (!text_run_log)
+   {
+      /* getenv once, not per record: this runs for every drawn glyph. */
+      if (!text_run_log_checked)
+      {
+         text_run_log_checked = 1;
+         text_run_log_path = getenv("VNOVEL_TEXT_RUN_LOG");
+      }
+      if (text_run_log_tried || !text_run_log_path)
+         return;
+      text_run_log_tried = 1;
+      text_run_log = fopen(text_run_log_path, "w");
+      if (!text_run_log)
+         return;
+   }
+   fputs(line, text_run_log);
+   fputc('\n', text_run_log);
+   fflush(text_run_log);
+}
+
+/* True when a log was asked for, whether or not it has been opened yet. */
+static int text_run_log_wanted(void)
+{
+   if (text_run_log)
+      return 1;
+   if (!text_run_log_checked)
+   {
+      text_run_log_checked = 1;
+      text_run_log_path = getenv("VNOVEL_TEXT_RUN_LOG");
+   }
+   return text_run_log_path != NULL;
+}
+
 /* Decode the run's UTF-16 into `utf8`, which must have room for
  * text_length * 4 + 1 bytes. Returns the byte count.
  *
@@ -1154,20 +1203,22 @@ static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
    if (!run || !run->text || run->text_length <= 0)
       return;
 
-   /* The socket, or the log: either one means the record is wanted. Listening
-    * rather than connected, because records published before a client attaches
-    * are buffered and released to it - the walk's opening pages would otherwise
-    * be lost to a consumer started a moment too late. */
+   /* The socket and the log are INDEPENDENT sinks: either, both, or neither.
+    *
+    * Listening rather than connected, because records published before a client
+    * attaches are buffered and released to it - the walk's opening pages would
+    * otherwise be lost to a consumer started a moment too late.
+    *
+    * The log must NOT be gated on the socket. It used to be ("the socket, or
+    * the log"), so a run with BOTH VNOVEL_DEV_PORT and VNOVEL_TEXT_RUN_LOG set
+    * wrote no PAGE records at all: the log was never opened, and the file left
+    * behind was whatever an earlier socket-less run had written. That is exactly
+    * the combination you want when diagnosing the socket - the two are the same
+    * records over different transports, so a discrepancy between them IS the
+    * bug - and it was the one combination that produced nothing to compare. */
    const int socked = vnovel_dev_socket_listening();
-   if (!text_run_log && !socked)
-   {
-      const char *p = getenv("VNOVEL_TEXT_RUN_LOG");
-      if (!p)
-         return; /* not asked for: observe nothing */
-      text_run_log = fopen(p, "w");
-      if (!text_run_log && !socked)
-         return;
-   }
+   if (!socked && !text_run_log_wanted())
+      return; /* observed by nobody: do no work at all */
 
    const size_t cap = (size_t)run->text_length * 4u + 1u;
    char *utf8 = (char *)malloc(cap);
@@ -1224,12 +1275,7 @@ static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
          len = (int)sizeof(line) - 1;
    }
 
-   if (text_run_log)
-   {
-      fputs(line, text_run_log);
-      fputc('\n', text_run_log);
-      fflush(text_run_log);
-   }
+   text_run_log_line(line);   /* opens the log on first use, if asked for */
    if (socked)
       vnovel_dev_socket_send(line, (size_t)len);
 
@@ -1407,12 +1453,7 @@ static void vnovel_page_event(int event)
       case VNOVEL_EV_RESUME:     line = VNOVEL_REC_RESUME;     break;
       default:                   line = VNOVEL_REC_PAGE_START; break;
    }
-   if (text_run_log)
-   {
-      fputs(line, text_run_log);
-      fputc('\n', text_run_log);
-      fflush(text_run_log);
-   }
+   text_run_log_line(line);
    if (vnovel_dev_socket_listening())
       vnovel_dev_socket_send(line, strlen(line));
 }
@@ -1425,12 +1466,7 @@ static void vnovel_choice_label(int ordinal, const char *label)
                           ordinal, label ? label : "");
    if (n <= 0 || n >= (int)sizeof(line))
       return;
-   if (text_run_log)
-   {
-      fputs(line, text_run_log);
-      fputc('\n', text_run_log);
-      fflush(text_run_log);
-   }
+   text_run_log_line(line);
    if (vnovel_dev_socket_listening())
       vnovel_dev_socket_send(line, (size_t)n);
 }

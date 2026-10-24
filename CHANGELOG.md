@@ -294,6 +294,47 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
 ### Fixed
 
+- **The text stream no longer desynchronizes from the text that is playing.**
+  Three separate causes, each measured on Fate (KiriKiri) before and after:
+  - **KiriKiri pages carried no markup sentinel.** The client's tokenizer reads a
+    markup token only when the `0x01` sentinel precedes it (`LA_MARK`, the ONS walk
+    emits it), and the TJS walk did not — so every Fate page arrived with bare
+    `<pause>`/`<clear>`/`<<choice>>`, which a conforming consumer reads as PROSE:
+    the literal characters rendered mid-sentence and no page's waits recognized.
+    Measured: Fate's pages carried 0 sentinel bytes against 4–6 marks each. The
+    walk now routes every token through one `mark()` helper, so a site cannot
+    forget the byte again.
+  - **A page with no visible character was published as a page.** A run of
+    newlines or a stretch of indentation is structure, not content — but both
+    walks counted it as text, so Fate emitted pages like `\n\n\n\n\n<<flow>>` and
+    `      `. A consumer shows one page per engine pause, so each such page
+    consumed a pause slot and shifted every page after it. Both walks now require
+    one visible character (ONS/PON already had the rule for a bare newline; the
+    space case and the whole KiriKiri side were missing it). Measured: with the
+    residue pages dropped, the published pages and the pages the engine actually
+    DREW align 1:1 in order — 21 of 21, against 4 of 20 before.
+  - **The outbound ring could drop a page while keeping its glyphs.** The KiriKiri
+    stream is dominated by per-glyph `run` records (~65× the PAGE bytes in one
+    measured run, 242 KB against 3.7 KB), and the 64 KiB backlog ring evicted
+    oldest-first, so an overflow — which is exactly what a briefly-stalled client
+    causes — could take the sparse PAGE/flow/CHOICE records that pair a page with
+    its pause, while the glyphs that cannot be paired without them stayed. The
+    ring now sheds `run` bulk first and touches the rest only when nothing bulk is
+    left. Covered by a unit harness, `make devsock-test`, which fills the ring
+    with no consumer attached — a live run cannot force the overflow, because the
+    kernel's own buffer swallows the data first — and asserts that every PAGE
+    survives AND that glyph bulk was dropped; it fails (10/400 pages) against the
+    old rule.
+  - **`VNOVEL_TEXT_RUN_LOG` was ignored whenever the socket was listening.** The
+    sink opened the log only when no listener existed, so a run with BOTH sinks
+    configured wrote no records to the log at all — the one combination that lets
+    you compare the two transports, and therefore the one that produced nothing to
+    compare. The two are now independent: either, both, or neither, with the same
+    records on each. (The event and choice publishers had the mirror of the same
+    bug: they wrote the log only when it happened to be already open, so a run's
+    opening page events reached the socket and never the log.)
+
+
 - **The look-ahead published the engine's own text markup.** ONScripter's
   `readToken` replaces a leading `>` with `TXTBTN_END` (0x04), a `<` with
   `TXTBTN_START` (0x01), and a ruby-free `(`/`)` with `LEFT_PAREN`/`RIGHT_PAREN`

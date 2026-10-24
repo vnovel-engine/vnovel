@@ -907,6 +907,37 @@ textplane-test: $(TEXTPLANE_TEST)
 
 .PHONY: textplane-test
 
+# Unit harness for the development socket's outbound backlog (src/devsock.c).
+#
+# Links the socket and nothing else -- no engine, no SDL, no frontend -- because
+# the property under test is the ring's eviction rule, and that is reachable with
+# the socket API alone (see the header of tests/devsock/devsock_test.cpp for why
+# a live run cannot exercise it). VNOVEL_DEVWIRE has to be defined HERE as well:
+# without it src/devsock.c is an empty translation unit and this harness would
+# link the inline no-ops from devsock.h instead, passing for the wrong reason.
+DEVWIRE_TEST := tests/devsock/devsock_test
+DEVWIRE_TEST_OBJ := $(BUILD_DIR)/tests/devsock/devsock_test.o
+DEVWIRE_SOCK_OBJ := $(BUILD_DIR)/tests/devsock/devsock.o
+
+$(DEVWIRE_TEST_OBJ): tests/devsock/devsock_test.cpp
+	@echo "CXX(devsock) $<"
+	@mkdir -p $(dir $@)
+	$(Q)$(CXX) $(CXXFLAGS) -DVNOVEL_DEVWIRE $(DEPFLAGS) -c -o $@ $<
+
+$(DEVWIRE_SOCK_OBJ): $(SRC_DIR)/devsock.c
+	@echo "CC(devsock) $<"
+	@mkdir -p $(dir $@)
+	$(Q)$(CC) $(CFLAGS) -DVNOVEL_DEVWIRE $(DEPFLAGS) -c -o $@ $<
+
+$(DEVWIRE_TEST): $(DEVWIRE_TEST_OBJ) $(DEVWIRE_SOCK_OBJ)
+	@$(if $(Q),echo "LD $@",)
+	$(Q)$(CXX) $(CXXFLAGS) -o $@ $(DEVWIRE_TEST_OBJ) $(DEVWIRE_SOCK_OBJ) -lpthread
+
+devsock-test: $(DEVWIRE_TEST)
+	@$(DEVWIRE_TEST)
+
+.PHONY: devsock-test
+
 clean:
 	rm -rf build
 	rm -f $(TARGET) $(WRAP_HARNESS)

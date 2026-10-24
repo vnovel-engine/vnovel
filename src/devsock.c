@@ -2,9 +2,14 @@
 //
 // One listener on loopback, at most one accepted consumer, two buffers: what
 // the game produced but the peer has not read yet, and what the peer sent but
-// the game has not consumed yet. Both are droppable. No threads are created and
-// nothing blocks: the shell polls the consumer, and a sender (which is an
-// engine's own script thread on KiriKiri) appends from wherever it is.
+// the game has not consumed yet. Both are droppable -- but not equally: the
+// outbound ring sheds `run` GLYPH lines before it touches the sparse records a
+// consumer cannot do without (PAGE, the flow events, CHOICE), because those are
+// what pair a page with the pause it belongs to. See ds_make_room.
+//
+// No threads are created and nothing blocks: the shell polls the consumer, and
+// a sender (which is an engine's own script thread on KiriKiri) appends from
+// wherever it is.
 //
 // One mutex, because those two really are different threads: the peer, the
 // buffers and the listener are all behind it, so "send while the poll side is
@@ -55,9 +60,11 @@ static dsock_t ds_peer   = DSOCK_BAD;
  * already published its opening pages, and the first page is usually the one
  * being worked on. The backlog is released on accept.
  *
- * When the buffer is full the OLDEST lines go, for the same reason the audio
- * buffer drops its oldest half: a stalled consumer must not grow this without
- * bound, and the newest text is the text the client is looking at. */
+ * When the buffer is full, GLYPH lines (`run …`) go first and the rest only
+ * after -- see ds_make_room. The intent is the audio buffer's (a stalled
+ * consumer must not grow this without bound, and the newest text is the text
+ * the client is looking at), with one refinement: the sparse records that pair
+ * a page with its pause survive the glyph bulk that is useless without them. */
 #define DS_OUT_CAP 65536
 static char   ds_out[DS_OUT_CAP];
 static size_t ds_out_len = 0;
@@ -198,8 +205,66 @@ int vnovel_dev_socket_listening(void)
    return up;
 }
 
-/* Drop the oldest whole lines until `need` bytes of room exist, so the newest
- * records are the ones that survive. Callers hold ds_lock. */
+/* Drop whole lines until `need` bytes of room exist.
+ *
+ * WHICH lines: the `run …` bulk first, oldest first, and only then the rest
+ * oldest-first. The dialect is deliberately uneven: on KiriKiri the per-glyph
+ * `run` records are ~65x the PAGE bytes in one measured run (242 KB against
+ * 3.7 KB), so when the 64 KiB ring overflows it is almost always glyph lines
+ * filling it -- and the records a consumer CANNOT do without are the sparse
+ * ones (PAGE, the flow events, CHOICE) that pair a page with the pause it
+ * belongs to. Dropping a PAGE while keeping its glyphs breaks the page/pause
+ * pairing the whole protocol rests on; dropping glyphs costs a re-render.
+ *
+ * The newest records still win within a class: this only reorders WHICH
+ * eviction happens first, not the "keep the newest" rule.
+ *
+ * ponytail: O(backlog) per eviction and a full memmove; tuned for a dev socket
+ * with a 64 KiB ring, not a long-lived stream. If this ever needs to carry a
+ * real transcript, replace the byte ring with a line index. */
+static int ds_is_bulk(const char *line, size_t len)
+{
+   /* The `run ` record: three bytes of prefix, then a serial. */
+   return len >= 4 && line[0] == 'r' && line[1] == 'u' && line[2] == 'n' &&
+          line[3] == ' ';
+}
+
+/* Cut ONE line from ds_out: the oldest bulk line when `bulk_first`, else the
+ * oldest line of any kind. Returns its length including the '\n', or 0 when
+ * there is nothing to cut. Callers hold ds_lock. */
+static size_t ds_cut_one(int bulk_first)
+{
+   if (ds_out_len == 0)
+      return 0;
+
+   size_t scan = 0;
+   size_t chosen = (size_t)-1;
+   while (scan < ds_out_len)
+   {
+      const char *nl = (const char *)memchr(ds_out + scan, '\n', ds_out_len - scan);
+      const size_t end = nl ? (size_t)(nl - ds_out) + 1 : ds_out_len;
+      if (bulk_first && ds_is_bulk(ds_out + scan, end - scan))
+      {
+         chosen = scan;
+         break;
+      }
+      if (chosen == (size_t)-1)
+         chosen = scan;          /* remember the oldest non-bulk line */
+      scan = end;
+   }
+   if (chosen == (size_t)-1)
+      return 0;
+
+   const char *nl = (const char *)memchr(ds_out + chosen, '\n',
+                                         ds_out_len - chosen);
+   const size_t len = nl ? (size_t)(nl - ds_out) + 1 - chosen
+                         : ds_out_len - chosen;
+   memmove(ds_out + chosen, ds_out + chosen + len,
+           ds_out_len - chosen - len);
+   ds_out_len -= len;
+   return len;
+}
+
 static void ds_make_room(size_t need)
 {
    if (need >= DS_OUT_CAP)
@@ -207,23 +272,13 @@ static void ds_make_room(size_t need)
       ds_out_len = 0; /* one record larger than the buffer: keep nothing */
       return;
    }
-   if (ds_out_len + need <= DS_OUT_CAP)
-      return;
 
-   const size_t excess = ds_out_len + need - DS_OUT_CAP;
-   size_t cut = 0;
-   while (cut < excess && cut < ds_out_len)
-   {
-      const char *nl = (const char *)memchr(ds_out + cut, '\n', ds_out_len - cut);
-      if (!nl)
-      {
-         cut = ds_out_len; /* no line boundary left: drop everything */
-         break;
-      }
-      cut = (size_t)(nl - ds_out) + 1;
-   }
-   memmove(ds_out, ds_out + cut, ds_out_len - cut);
-   ds_out_len -= cut;
+   /* Pass one: shed glyph bulk while the newer records survive. */
+   while (ds_out_len + need > DS_OUT_CAP && ds_cut_one(1) != 0)
+      ;
+   /* Pass two: nothing bulk is left, so the oldest of whatever remains goes. */
+   while (ds_out_len + need > DS_OUT_CAP && ds_cut_one(0) != 0)
+      ;
 }
 
 /* Push as much of ds_out as the peer will take without blocking, keeping

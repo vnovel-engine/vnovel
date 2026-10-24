@@ -42,9 +42,11 @@ extern "C"
     *
     * One record per line, and the WHICH is the leading token:
     *
-    *   PAGE(<bytes>) <text>   one page from the look-ahead walk. Newlines inside
-    *                          the text are escaped as `\n`, so a page is always
-    *                          one line.
+    *   PAGE(<n>) <text>      one page from the look-ahead walk, numbered from 1
+    *                          in publication order. Newlines inside the text are
+    *                          escaped as `\n`, so a page is always one line. The
+    *                          number is STRUCTURE: it ties the events and choices
+    *                          that belong to a page to that page.
     *   run <n> draw ...       one drawn glyph (position and style).
     *   CHOICE(<n>) <label>    WHAT choice <n> IS, for a menu the page text
     *                          cannot describe (a sprite-button menu has no
