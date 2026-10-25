@@ -54,7 +54,7 @@ int vnovel_menu_should_draw(void);
  * matches the running game rather than a hardcoded size. */
 void vnovel_menu_set_pref_geometry(int w, int h);
 
-/* --- the game's own menu, as entries ---------------------------------------
+/* the game's own menu, as entries
  *
  * A script declares its right-click menu and this is where those entries are
  * offered to the core's menu bar, so the game's options appear in the menu the

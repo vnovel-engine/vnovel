@@ -1,4 +1,3 @@
-; ===========================================================================
 ; KiriKiri / KAG3 — text/choice layout probe.
 ;
 ; ENGINE IDENTIFIER: every line of text is prefixed "KRKR", and every page is a
@@ -62,12 +61,11 @@
 ;   - there is no colour form of [bg] — a plain colour page is a TJS fill via
 ;     `@eval exp="....fillRect(...)"`, which is how the game's own
 ;     CinemaScopePlugin.ks does it.
-; ===========================================================================
 
 *start|スタート
 [wait time=100]
 
-; ---- case 1: text, then a choice leading to one of two pages -------------
+; case 1: text, then a choice leading to one of two pages
 @eval exp="kag.fore.base.fillRect(0, 0, kag.fore.base.width, kag.fore.base.height, 0xFF440000)"
 KRKR CASE-1 line A: message text on a red page[r]
 KRKR CASE-1 line B: then a choice follows[r]
@@ -86,7 +84,7 @@ KRKR PAGE-2A: the left branch of case 1[r]
 KRKR PAGE-2B: the right branch of case 1[r]
 [link target=*case2]KRKR CASE-1 result: continue to case 2[endlink][s]
 
-; ---- case 2: text, a choice, then more text ------------------------------
+; case 2: text, a choice, then more text
 *case2
 [cm]
 @eval exp="kag.fore.base.fillRect(0, 0, kag.fore.base.width, kag.fore.base.height, 0xFFCC0000)"
@@ -100,7 +98,7 @@ KRKR CASE-2 after: did the choice end the page?[r]
 KRKR CASE-2 after B: or does text continue below the choice?[r]
 [link target=*case3]KRKR CASE-2 result: continue to case 3[endlink][s]
 
-; ---- case 3: a page that is only a choice --------------------------------
+; case 3: a page that is only a choice
 *case3
 [cm]
 @eval exp="kag.fore.base.fillRect(0, 0, kag.fore.base.width, kag.fore.base.height, 0xFF330000)"
@@ -114,7 +112,7 @@ KRKR CASE-2 after B: or does text continue below the choice?[r]
 [cm]
 [link target=*case4]KRKR CASE-3 result: from choice B, continue to case 4[endlink][s]
 
-; ---- case 4: a choice, then text -----------------------------------------
+; case 4: a choice, then text
 *case4
 [cm]
 @eval exp="kag.fore.base.fillRect(0, 0, kag.fore.base.width, kag.fore.base.height, 0xFF550000)"

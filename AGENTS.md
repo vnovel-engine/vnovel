@@ -7,14 +7,13 @@ running process with gdb. Probes are a fallback, not the first tool.
 
 ```
 make debug              # -g -O0 -fno-inline, engine probes OFF (OPTION_DEBUG_PROBES)
-make debug PROBES=1     # additionally compiles the core's ad-hoc input probes
 ```
 
-The engine's own probes are `OPTION_DEBUG_PROBES` (pinned OFF in the Makefile's
-CMake flags; `KRKR_CMAKE_EXTRA` can turn them back on). An older convention here
-used `KRKR_DEBUG_PROBES=ALPHA SURFACE` / `=HITTEST`; those names belonged to the
-KiriKiri 2 experiment (`deps/kirikiri2`), which was removed from the tree and
-archived beside this repo, and no build reads them now.
+Runtime diagnostics are not a build option: they are the debug mask, one
+`VNOVEL_DEBUG` word sliced by module (see `src/vnovel_debug.h` and the
+`Diagnostics` section of CONTROLS.md). The engine's own compile-time probes are
+`OPTION_DEBUG_PROBES` (pinned OFF in the Makefile's CMake flags;
+`KRKR_CMAKE_EXTRA` can turn them back on).
 
 `-fno-inline` is part of it deliberately: without it, small accessors and
 one-line methods (`SetFace`, `GetPoint`, `rect.get_width()`, …) are inlined and
@@ -38,7 +37,10 @@ Reasons, each learned the hard way in this repo:
 
 Notes on making gdb work here:
 
-- `set breakpoint pending on` is required — the engine is a dlopen'd `.so`.
+- `set breakpoint pending on` is still needed, but the reason is not a dlopen'd
+  engine: the engine is linked into `vnovel_libretro.so`, and its symbols do not
+  exist until that shared object is loaded. There is no second `.so` to attach
+  to. See tools/gdb.md.
 - A breakpoint on a hot path (anything called per frame or per input poll, e.g.
   `tTJSNI_BaseLayer::GetProvincePixel`, `OnMouseMove`) **stalls the VM** and
   the screen goes black. For per-poll values use a *conditional* breakpoint
@@ -133,5 +135,5 @@ Two intents, and the order a reader would use them in:
 
 A page reaches the socket when the look-ahead PARSES it, which on KiriKiri is
 before the typewriter has built the message layer's link set: `select` then is
-refused (correctly) and needs a few `continue`s first. `KRKR_SELECT_DEBUG=1`
+refused (correctly) and needs a few `continue`s first. `VNOVEL_DEBUG=krkr:select`
 reports which guard refused on the KiriKiri side.

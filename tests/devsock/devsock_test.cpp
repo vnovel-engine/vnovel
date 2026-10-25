@@ -165,7 +165,7 @@ int main(void)
    const bool connected = vnovel_dev_socket_connected() != 0;
    check(connected, "the consumer is accepted");
 
-   /* --- the assertions ---------------------------------------------------- */
+   /* the assertions */
 
    int pages = 0, runs = 0, last_ordinal = 0, gaps = 0, dup = 0;
    bool seen[PAGES + 2];

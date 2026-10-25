@@ -116,11 +116,47 @@ the loaded archive and its identity, the engine, the era option as set, the
 build string, where saves land, and the override directory with whether it is
 even present.
 
-### Seeing the menu tree (`VNOVEL_MENU_DUMP`)
+### Diagnostics (`VNOVEL_DEBUG`)
 
-`VNOVEL_MENU_DUMP=1` makes the core print the menu tree it built, to stderr: one
-`menutree:` line per item with two spaces of indent per level, its id, and its raw
-flag. Off unless set. It exists because the vendored menu walker (`appends()` in
+All diagnostics are behind one environment variable, a 64-bit mask divided into
+one slice per module:
+
+| Bits | Module | Names |
+|------|--------|-------|
+| 0–7 | core | `clock`, `input`, `present`, `menu` |
+| 8–15 | ONScripter-EN | `avi` |
+| 16–23 | PONScripter | `avi` |
+| 24–39 | KiriKiri | `province`, `fill`, `script`, `input`, `select`, `split` |
+| 40–63 | spare | — |
+
+The value is a raw word (hex or decimal), a comma-separated list of names, or a
+mix. A name is looked up in the reading module's own slice, so it may be
+qualified to say which module is meant:
+
+```
+VNOVEL_DEBUG=core:menu                    the core's menu tree dump
+VNOVEL_DEBUG=clock,ons:avi                two modules in one run
+VNOVEL_DEBUG=krkr:province,core:clock      a name each from two modules
+VNOVEL_DEBUG=all                          every bit of every module
+VNOVEL_DEBUG=0x0000000000010002           a raw word (krkr bit 0, core bit 1)
+```
+
+`none` (or `off`, or empty) is silent. A starting run prints the resolved word
+and the bits it turned on, so a run's log states which diagnostics were live.
+
+Diagnostics that carry a **value** rather than a yes/no are not bits and keep
+their own variable, read once at start-up: `VNOVEL_TEXT_RUN_LOG=<path>` (write
+the text stream to a file), `VNOVEL_PRESENT_STRIPES=<height>:<alpha>` (stripe
+geometry, with the core's `present` bit), `VNOVEL_DEV_PORT=<port>` (open the
+development socket), and the test hooks `ONS_TEST_WIDTH` / `ONS_TEST_HEIGHT` /
+`ONS_TEST_AUTODVANCE` / `VNOVEL_MENU_TEST` / `KRKRSDL2_TEXT_PAGE`.
+
+### Seeing the menu tree (`VNOVEL_DEBUG=core:menu`)
+
+`VNOVEL_DEBUG=core:menu` (or the bare `menu` when only the core is being asked)
+makes the core print the menu tree it built, to stderr: one `menutree:` line per
+item with two spaces of indent per level, its id, and its raw flag. Off unless
+set. It exists because the vendored menu walker (`appends()` in
 `deps/np2kai-menu/embed/menubase/menusys.c`) re-walks the item array and can build
 a tree that differs from what was handed to it — the dump shows what was actually
 put in the menu. `tests/ons/06_menu_tree` asserts on it.

@@ -1,5 +1,4 @@
 @echo off
-REM ============================================================================
 REM  run-vnovel.cmd - launch a KiriKiri game with the vnovel core.
 REM
 REM  The core is ONE self-contained DLL. Its only imports are Windows' own
@@ -24,7 +23,6 @@ REM          run-vnovel.cmd "K:\Software\Fate-Stay-Night-engpatch"
 REM
 REM  Everything the run prints is also written to vnovel.log beside this script,
 REM  so a launch that fails can be read after the console closes.
-REM ============================================================================
 
 setlocal enableextensions
 
@@ -43,7 +41,7 @@ if "%GAME%"=="" (
 
 > "%LOG%" echo === vnovel launch  %DATE% %TIME% ===
 
-REM --- preflight -------------------------------------------------------------
+REM preflight
 if not exist "%COREDIR%\vnovel_libretro.dll" (
   echo ERROR: vnovel_libretro.dll missing next to this script.
   >>"%LOG%" echo ERROR: vnovel_libretro.dll missing.
@@ -55,7 +53,7 @@ if not exist "%GAME%" (
   goto :fail
 )
 
-REM --- engine data -----------------------------------------------------------
+REM engine data
 REM The core resolves this itself: at startup it asks the frontend for its
 REM system ("BIOS") directory and, if <system dir>\vnovel\system_polyfill\
 REM exists, loads the polyfill from there. So the normal setup needs nothing
@@ -88,23 +86,21 @@ if defined KRKRSDL2_DATA_PATH (
   )
 )
 
-REM --- diagnostics -----------------------------------------------------------
-REM All of these write to stderr, which is captured below.
+REM diagnostics
+REM VNOVEL_DEBUG is one 64-bit mask, 8 bits per module (16 for krkr); the
+REM engine-side names are in deps/krkrsdl2/src/core/base/sdl2/DebugFlags.h and
+REM the core's in src/core_debug.h. Names may be qualified by module.
 REM
-REM   KRKR_SCRIPT_DEBUG=1  every scenario tag as it is executed
-REM   KRKR_PROBE_FILL=1    every rect filled, with its resolved draw face
-REM   KRKR_PROBE_DRAW=1    every glyph drawn, with position
-REM   KRKR_INPUT_DEBUG=1   every input event the engine receives
+REM   VNOVEL_DEBUG=krkr:script,core:input   tags, and input as the engine sees it
+REM   VNOVEL_DEBUG=krkr:fill                every rect filled, with its face
+REM   VNOVEL_DEBUG=krkr:draw                every composited draw's branch
 REM
-REM The two probes fire once per glyph / per rect, so they are off by default:
-REM on a busy screen they bury everything else. The engine's own log needs no
-REM switch - it always goes to stderr.
-set "KRKR_SCRIPT_DEBUG=1"
-REM set "KRKR_PROBE_FILL=1"
-REM set "KRKR_PROBE_DRAW=1"
-REM set "KRKR_INPUT_DEBUG=1"
+REM The per-glyph / per-rect probes bury everything else on a busy screen, so
+REM they are off by default. The engine's own log needs no switch - it always
+REM goes to stderr.
+set "VNOVEL_DEBUG=krkr:script,core:input"
 
-REM --- module directory on PATH ----------------------------------------------
+REM module directory on PATH
 REM Windows resolves a DLL's imports via the *executable's* directory and PATH,
 REM not the DLL's own. Prepend rather than replace, so the user's PATH survives.
 set "PATH=%COREDIR%;%PATH%"

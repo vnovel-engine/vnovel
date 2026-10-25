@@ -14,11 +14,11 @@
 // silently splits — the core then reads values the engine never wrote. So ship
 // exactly one bridge binary, and never place a second copy under another name.
 //
-// On ELF the modules link -lvnovel_runtime, which contains this file. On
-// Windows the loader reuses the already-loaded DLL when the import library
-// names it, so the same single instance is shared. Either way nothing has to be
-// exported from the core (-fvisibility=hidden hides everything but what
-// RETRO_API and VNOVEL_EXPORT mark).
+// Everything is linked into one shared object, so there is one copy of this
+// file per process by construction. Keep it that way: two byte-identical copies
+// under different names would load as two independent instances and the state
+// would silently split. Nothing has to be exported from the core beyond what
+// RETRO_API and VNOVEL_EXPORT mark (-fvisibility=hidden hides the rest).
 //
 // These are plain globals rather than pointers allocated at load because a
 // pointer is only valid until its pointee is reallocated, and a stale pointer
@@ -30,7 +30,7 @@
 #include "engine_bridge.h"
 #include <setjmp.h>
 
-/* --- frontend callbacks ---------------------------------------------------- */
+/* frontend callbacks */
 
 /* Set once by retro_set_input_state before any engine module is loaded; the
  * glue then calls it to read RetroPad state. */
@@ -40,7 +40,7 @@ VNOVEL_EXPORT retro_input_state_t SDL_libretro_input_state_cb = 0;
  * events glue reads core options through it. */
 VNOVEL_EXPORT retro_environment_t environ_cb_global = 0;
 
-/* --- core options the glue consumes --------------------------------------- */
+/* core options the glue consumes */
 
 VNOVEL_EXPORT float opt_mouse_sensitivity = 1.0;
 
@@ -57,7 +57,7 @@ VNOVEL_EXPORT int vnovel_fallback_font_len                   = 0;
 VNOVEL_EXPORT const char *vnovel_override_dir                = 0;
 VNOVEL_EXPORT int vnovel_textbox_opacity                     = 100;
 
-/* --- text plane (see engine_bridge.h) --------------------------------------
+/* text plane (see engine_bridge.h)
  * Installed by the shell before any engine starts. An engine checks
  * vnovel_text_plane_wanted() before separating text from its frame, so with no
  * shell listening the feature costs nothing and behaviour is unchanged. */
@@ -88,7 +88,7 @@ VNOVEL_EXPORT void vnovel_request_text_plane_dump(const char *name)
    vnovel_text_plane_dump_cb(name, vnovel_text_plane_dump_userdata);
 }
 
-/* --- text runs (see engine_bridge.h) ---------------------------------------
+/* text runs (see engine_bridge.h)
  * The structured half of the text separation: the characters a draw call
  * carried, where, and in what style. Same install-before-start, no-listener-
  * no-cost discipline as the plane above. */
@@ -154,7 +154,7 @@ VNOVEL_EXPORT void vnovel_request_split_view(int enabled)
       vnovel_split_view_cb(split_request_wanted);
 }
 
-/* --- navigation results (engine -> shell) ---------------------------------
+/* navigation results (engine -> shell)
  *
  * The shell asks an engine to take the Nth choice a page offers; the engine
  * answers here, because only it knows whether that choice exists. See the
@@ -180,13 +180,12 @@ VNOVEL_EXPORT void vnovel_publish_nav_result(int ordinal, int accepted)
 VNOVEL_EXPORT vnovel_page_event_fn vnovel_page_event_cb = 0;
 VNOVEL_EXPORT vnovel_choice_label_fn vnovel_choice_label_cb = 0;
 
-/* --- page events (engine -> shell) ---------------------------------------
+/* page events (engine -> shell)
  *
  * The reader's place in the text, as one vocabulary shared with the client
  * (see engine_bridge.h). One-way and edge-only: an event describes something
  * that has just happened, so replaying it to a shell that registered later
  * would claim a page just began when the engine may be pages further on. */
-#ifdef VNOVEL_DEVWIRE
 VNOVEL_EXPORT void vnovel_publish_page_event(int event)
 {
    if (vnovel_page_event_cb)
@@ -201,7 +200,6 @@ VNOVEL_EXPORT void vnovel_publish_choice_label(int ordinal, const char *label)
    if (vnovel_choice_label_cb && label)
       vnovel_choice_label_cb(ordinal, label);
 }
-#endif /* VNOVEL_DEVWIRE */
 
 int remap_keys[REMAP_COUNT] = {
       [REMAP_ADVANCE]      = SDLK_RETURN,
@@ -214,7 +212,7 @@ int remap_keys[REMAP_COUNT] = {
       [REMAP_FULLSCREEN]   = SDLK_F11,
 };
 
-/* --- audio ---------------------------------------------------------------- */
+/* audio */
 
 /* The engine's SDL publishes its spec here when audio opens; the core reads it
  * to size the audio batch and re-emit AV geometry. NULL until audio is open.
@@ -223,7 +221,7 @@ int remap_keys[REMAP_COUNT] = {
  * expected to change as audio opens and closes. Read it fresh each time. */
 VNOVEL_EXPORT SDL_AudioSpec *SDL_libretro_audio_spec = 0;
 
-/* --- error unwinding ------------------------------------------------------ */
+/* error unwinding */
 
 /* Storage for the setjmp/longjmp pair the engines use to unwind out of exit().
  *

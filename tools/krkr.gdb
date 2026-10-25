@@ -41,12 +41,10 @@ set debuginfod enabled off
 # The engine runs on its own thread; this is where every engine frame lives.
 # Set automatically once the engine has started, so it is not needed here.
 
-# ---------------------------------------------------------------------------
 # Edit below. One question per session: a breakpoint answers "which instance,
 # which call path, how many times", so `silent` + a counter + `continue` is the
 # default shape, and a conditional breakpoint is used when the interesting
 # event is rare and unconditional logging would flood.
-# ---------------------------------------------------------------------------
 
 set $alc = 0
 set $gpp = 0

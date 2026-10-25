@@ -26,7 +26,7 @@ int main() {
     
     pid_t pid = fork();
     if (pid == 0) {
-        execl("./krkrsdl2", "krkrsdl2", "-debugwin", "-readencoding=UTF-8", NULL);
+        execl("./krkrsdl2", "krkrsdl2", "-readencoding=UTF-8", NULL);
         exit(1);
     }
     

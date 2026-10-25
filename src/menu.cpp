@@ -9,9 +9,9 @@
 // core's business, and it needs the core's input and video paths to answer.
 //
 // State of this file: the menu is created and can be opened, drawn and closed.
-// Nothing opens it automatically yet; `vnovel_menu_toggle()` is the entry point
-// a frontend action (or the future -debugwin) will call. See
-// private/notes/text-plane-design.md for the remaining wiring.
+// `vnovel_menu_toggle()` is the entry point a frontend action calls; nothing
+// opens it automatically. See private/notes/text-plane-design.md for the
+// remaining wiring.
 
 #include <compiler.h>
 
@@ -36,6 +36,7 @@ extern "C" {
 #include <host.h>
 
 #include "menu.h"
+#include "core_debug.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -270,7 +271,7 @@ void vnovel_menu_shutdown(void)
 }
 
 
-/* --- the game's own menu entries -------------------------------------------
+/* the game's own menu entries
  *
  * Held HERE, in mutable storage, and turned into the menu's own tree on demand:
  * menusys_create() takes a `const MSYSITEM *` and keeps it, so a tree that a game
@@ -523,8 +524,8 @@ void vnovel_menu_end_entries(void)
 	 * opening the menu (which the headless harness never does). It answers "what
 	 * did the loader make of the script's depths"; the library's own
 	 * menusys_dump answers the separate question "what did appends() build from
-	 * it". Off unless VNOVEL_MENU_DUMP=1. */
-	if (getenv("VNOVEL_MENU_DUMP"))
+	 * it". Off unless the core's `menu` debug bit is set. */
+	if (CORE_DEBUG_ON(DEBUG_FLAG_MENU))
 		menu_dump_run(&menu_game_items[top], 0);
 
 	/* Rebuild, because menusys_create keeps the pointer it was given and the

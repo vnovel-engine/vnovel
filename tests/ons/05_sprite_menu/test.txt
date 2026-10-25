@@ -3,7 +3,6 @@ mode_ext
 english
 game
 *start
-; ===========================================================================
 ; ONScripter-EN: SPRITE-BUTTON menu probe.
 ;
 ; The case a text stream cannot describe by itself. Every option here is an
@@ -21,7 +20,6 @@ game
 ;
 ; Engine identifier: every page is MAGENTA, so a capture cannot be confused with
 ; the ONS text/choice fixture (green) or the PON one (blue).
-; ===========================================================================
 bg #440044,0
 repaint
 

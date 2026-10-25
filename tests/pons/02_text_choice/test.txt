@@ -2,7 +2,6 @@
 mode_ext
 game
 *start
-; ===========================================================================
 ; PONScripter: text/choice layout probe.
 ;
 ; ENGINE IDENTIFIER: every line of text is prefixed "PON", and every page is a
@@ -27,9 +26,8 @@ game
 ;     '^' under UTF-8, '`' under CP932 (see deps/ponscripter/src/encoding.h,
 ;     UTF8Encoding('^') / CP932Encoding('`'));
 ;   - there is NO goto/jump, so `select` is the only branching verb.
-; ===========================================================================
 
-; ---- case 1: text, then a choice leading to one of two pages -------------
+; case 1: text, then a choice leading to one of two pages
 bg #000044,0
 repaint
 texton
@@ -67,7 +65,7 @@ repaint
 snapshotsave "pon_tc_2b_right_page"
 select "PON CASE-1 result: continue to case 2",*case2
 
-; ---- case 2: text, a choice, then more text ------------------------------
+; case 2: text, a choice, then more text
 *case2
 bg #0000CC,0
 repaint
@@ -91,7 +89,7 @@ repaint
 snapshotsave "pon_tc_4_case2_after_choice"
 select "PON CASE-2 result: continue to case 3",*case3
 
-; ---- case 3: a page that is only a choice --------------------------------
+; case 3: a page that is only a choice
 *case3
 bg #000033,0
 repaint
@@ -104,7 +102,7 @@ select "PON CASE-3 result: from choice A, continue to case 4",*case4
 mov %0,2
 select "PON CASE-3 result: from choice B, continue to case 4",*case4
 
-; ---- case 4: a choice, then text -----------------------------------------
+; case 4: a choice, then text
 *case4
 bg #000055,0
 repaint

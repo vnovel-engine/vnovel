@@ -62,7 +62,7 @@ extern "C"
      * Must be called before init(). */
       void (*setResolution)(EngineHandle, int w, int h);
 
-      /* --- runtime accessors -------------------------------------------------
+      /* runtime accessors
      * The core reaches SDL only through these: the engine owns its SDL, so the
      * core never links or includes it. Each is valid after init() has returned;
      * a NULL return or a zeroed surface means "not up yet" and the core skips

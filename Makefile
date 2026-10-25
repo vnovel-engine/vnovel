@@ -1,4 +1,3 @@
-# =============================================================================
 # vnovel Libretro Core — Makefile
 #
 # Build targets:
@@ -9,14 +8,13 @@
 #
 # Based on the standard libretro Makefile template used by bsnes, picodrive,
 # and other libretro cores. Compatible with the libretro-super buildbot.
-# =============================================================================
 
-# --- Quiet mode ---
+# Quiet mode
 ifneq ($(V),1)
    Q := @
 endif
 
-# --- Platform detection ---
+# Platform detection
 ifeq ($(platform),)
    platform = unix
    ifeq ($(shell uname -s 2>/dev/null),)
@@ -30,7 +28,7 @@ ifeq ($(platform),)
    endif
 endif
 
-# --- Core identity ---
+# Core identity
 # Pin the default goal: an earlier rule would otherwise become it, and the
 # KiriKiri archive rule is defined above `all`.
 .DEFAULT_GOAL := all
@@ -47,26 +45,16 @@ done)
 TARGET_NAME  := vnovel
 LIBM         := -lm
 
-# --- Defaults (overridden by platform blocks below) ---
+# Defaults (overridden by platform blocks below)
 CC            ?= cc
 CXX           ?= c++
 fpic          :=
 SHARED        :=
-# DEVWIRE is a compile flag, not a different artefact: the output is
-# vnovel_libretro.so either way. ON by default, because that is what every
-# harness, client and test in this repo talks to. `make DEVWIRE=0` (or
-# NO_DEVWIRE=1) turns the wire protocol off for a build meant to ship.
-ifeq ($(DEVWIRE),0)
-   DEVWIRE_OFF := 1
-endif
-ifneq ($(NO_DEVWIRE),)
-   DEVWIRE_OFF := 1
-endif
 TARGET_EXT    := .so
 PLATFLAGS     :=
 SDL_SYSTIMER  ?= unix/SDL_systimer.c
 
-# --- Platform configuration ---
+# Platform configuration
 # Link-time extras for ELF/POSIX targets. dlopen is still needed: the KiriKiri
 # engine's overrides table can name a plugin to load, and the frontend path is
 # resolved through it. -z muldefs is gone: it existed only because the
@@ -124,13 +112,50 @@ else ifeq ($(platform), aarch64)
    AR      := $(CROSS)ar
    OBJCOPY := $(CROSS)objcopy
    NM      := $(CROSS)nm
+   # pkg-config must answer for the TARGET, not the host. A bare pkg-config
+   # reports the host's paths, and the host's /usr/include puts its
+   # bits/wordsize.h ahead of the target's, making intptr_t a 32-bit type on a
+   # 64-bit target: the engine then rejects its own pointer casts with
+   #   cast from 'void*' to 'tjs_intptr_t' {aka 'int'} loses precision
+   # PKG_CONFIG_SYSROOT_DIR prefixes every reported path with the sysroot and
+   # PKG_CONFIG_LIBDIR replaces the search path, so both the include and the
+   # library flags name the target. CMake's FindPkgConfig and the $(shell)
+   # calls below inherit both from the environment.
+   #
+   # Two layouts exist, and they need different treatment:
+   #
+   #  * A self-contained cross toolchain (buildroot and friends) keeps its .pc
+   #    files inside the sysroot with paths relative to it. PKG_CONFIG_SYSROOT_DIR
+   #    is what prefixes every reported path so it names the target.
+   #  * A Debian/Ubuntu multiarch host keeps the arm64 .pc files outside the
+   #    sysroot at /usr/lib/<triplet>/pkgconfig, with already-absolute paths that
+   #    the cross compiler resolves correctly (it searches /usr/include/<triplet>
+   #    ahead of the shared /usr/include). A sysroot prefix there would double
+   #    every path, and /usr/lib/pkgconfig must not be searched: it holds the
+   #    host-arch .pc files whose paths are the problem in the first place.
+   #
+   # The sysroot's own pkgconfig directory decides which. Nothing is set when
+   # neither layout is present — a bare pkg-config is left to its defaults rather
+   # than pointed at a directory that cannot hold the packages. A pkg-config
+   # given by path is a caller's own and is never touched (buildroot passes one
+   # that already knows its sysroot, and its recipe documents that overriding
+   # these variables breaks it).
+   empty :=
+   space := $(empty) $(empty)
+   AARCH64_TRIPLET := $(patsubst %-,%,$(CROSS))
+   AARCH64_SYSROOT ?= $(shell $(CROSS)gcc -print-sysroot)
+   AARCH64_SYSROOT_PC := $(wildcard $(AARCH64_SYSROOT)/usr/lib/pkgconfig $(AARCH64_SYSROOT)/usr/share/pkgconfig)
+   AARCH64_MULTIARCH_PC := $(wildcard /usr/lib/$(AARCH64_TRIPLET)/pkgconfig)
+   AARCH64_PKG_DIRS := $(strip $(AARCH64_SYSROOT_PC) $(AARCH64_MULTIARCH_PC) $(if $(or $(AARCH64_SYSROOT_PC),$(AARCH64_MULTIARCH_PC)),/usr/share/pkgconfig))
+   AARCH64_PKG_LIBDIR := $(subst $(space),:,$(AARCH64_PKG_DIRS))
+   AARCH64_PKG_ENV ?= $(if $(findstring /,$(PKG_CONFIG)),,$(if $(AARCH64_PKG_LIBDIR),$(if $(AARCH64_SYSROOT_PC),PKG_CONFIG_SYSROOT_DIR=$(AARCH64_SYSROOT) )PKG_CONFIG_LIBDIR=$(AARCH64_PKG_LIBDIR)))
+   KRKR_CMAKE_ENV := $(AARCH64_PKG_ENV)
    # freetype must be the target's, not the host's: a bare -lfreetype links
    # whatever the linker finds first, which on a multiarch host is the amd64
    # library, and once the sysroot only carries arm64 the link fails with
-   # "cannot find -lfreetype". Ask pkg-config, which is multiarch-aware, for
-   # the flags and the link line; fall back to the plain name.
-   AARCH64_FT_CFLAGS := $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
-   AARCH64_FT_LIBS   := $(shell $(PKG_CONFIG) --libs freetype2 2>/dev/null)
+   # "cannot find -lfreetype".
+   AARCH64_FT_CFLAGS := $(shell $(AARCH64_PKG_ENV) $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+   AARCH64_FT_LIBS   := $(shell $(AARCH64_PKG_ENV) $(PKG_CONFIG) --libs freetype2 2>/dev/null)
    LDFLAGS  += $(if $(AARCH64_FT_LIBS),$(AARCH64_FT_LIBS),-lfreetype)
    CXXFLAGS += $(AARCH64_FT_CFLAGS)
    CFLAGS   += $(AARCH64_FT_CFLAGS)
@@ -198,6 +223,9 @@ else ifeq ($(platform), mingw)
                     -luser32 -lgdi32 -lwinmm -limm32 -lole32 -loleaut32 \
                     -lversion -ladvapi32 -lsetupapi -lshell32 -lm
    LDFLAGS   += -lwinmm -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
+   # The development socket (src/devsock.c) uses Winsock on Windows, and winsock
+   # is not in the default mingw link set.
+   LDFLAGS   += -lws2_32
    # Everything is linked dynamically on Windows: a mingw-w64 distribution ships
    # these as import libraries rather than static archives, so a static link
    # cannot be relied on to resolve. Only what is not already compiled into the
@@ -254,6 +282,8 @@ else ifeq ($(platform), win)
    PLATFLAGS := -DWIN32 -DFAKE_RECURSIVE_MUTEX=0 -Wno-narrowing
    SDL_SYSTIMER := win32/SDL_systimer.c
    LDFLAGS   += -lwinmm -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
+   # The development socket (src/devsock.c) uses Winsock on Windows.
+   LDFLAGS   += -lws2_32
 
 else ifneq (,$(findstring osx,$(platform)))
    TARGET_EXT := .dylib
@@ -273,14 +303,14 @@ else
    SHARED  := -shared -Wl,--no-undefined
 endif
 
-# --- Optimization / debug ---
+# Optimization / debug
 ifeq ($(DEBUG), 1)
    OPTFLAGS := -O0 -g3 -DDEBUG
 else
    OPTFLAGS := -O3
 endif
 
-# --- Global defines ---
+# Global defines
 DEFINES := -D__LIBRETRO__ -DUSE_OGG_VORBIS -D_FILE_OFFSET_BITS=64 -DLIBRETRO_FRAME_SYNC
 
 # Build stamp: the deployed .so carries this string, so `strings` identifies the
@@ -307,110 +337,55 @@ BUILD_VERSION ?= $(if $(_TREE_VERSION),$(_TREE_VERSION),dev)
 BUILD_VERSION := $(shell printf '%s' '$(BUILD_VERSION)' | cut -c1-15)
 DEFINES += -DBUILD_VERSION='"$(BUILD_VERSION)"'
 
-# Ad-hoc stderr probes (input diagnostics). `make PROBES=1` to compile them in.
-ifeq ($(PROBES), 1)
-   DEFINES += -DKRKR_DEBUG_PROBES
-endif
-
 # The development wire protocol (the text stream out, navigation intents in).
-# On by DEFAULT; `make DEVWIRE=0` (or NO_DEVWIRE=1) compiles it out.
-#
-# Gated at the SOURCE level, not only at runtime: the socket, its records and the
-# engine-side publishers are all development surface, and a build that ships a
-# game should not carry a listener, however politely it is disabled by default.
-# OFF unless asked for, so a default build has no socket code at all -- and the
-# engines' publish calls compile to nothing rather than to a call that inspects a
-# flag (see the ifdef in engine_bridge.h), because a caller that must check
-# first is a caller that can forget to.
-ifeq ($(DEVWIRE_OFF),)
-   DEFINES += -DVNOVEL_DEVWIRE
-endif
+# Always compiled in: it is what every harness, client and test drives the core
+# through.
+DEFINES += -DVNOVEL_DEVWIRE
 
 # There is one layout: every engine is linked into the core, so the KiriKiri
 # ABI wrapper resolves the engine's symbols by direct reference rather than
 # through a module handle. See krkr_sym in engine_kirikiri_cabi.cpp.
 DEFINES += -DKRKR_STATIC_ENGINE
 
-# KiriKiri is ON by default. The engine is statically linked into the core (no
-# runtime dlopen: see KRKR_STATIC_ENGINE below and engine_kirikiri_cabi.cpp), so
-# a build without it simply cannot run a .xp3 game.
-#
-# `make KRKR_ENABLE=0` turns it off, for a tree that cannot build the engine at
-# all (its CMake needs SDL2, fontconfig and vorbisfile). That is NOT a supported
-# release configuration.
-#
-# Normalised to 1/empty here, so every use below keeps its plain `ifeq (=1)`
-# test and there is one place that decides the default. Leaving this opt-in cost
-# a deploy: the buildroot recipe stages the engine's archives for linking and
-# lists libretro-krkrsdl2 as a dependency, but never passed the flag -- so the
-# image shipped a core with no KiriKiri in it, and every KiriKiri game sat on a
-# black screen.
-ifeq ($(KRKR_ENABLE),0)
-   KRKR_ENABLE :=
-else
-   KRKR_ENABLE := 1
-endif
-ifeq ($(KRKR_ENABLE),1)
-   DEFINES += -DVNOVEL_KIRIKIRI
-endif
+# KiriKiri is compiled in unconditionally: the engine is statically linked into
+# the core (no runtime dlopen; see engine_kirikiri_cabi.cpp), so a core without it
+# cannot run a .xp3 game.
+DEFINES += -DVNOVEL_KIRIKIRI
 
 # Frame synchronization: remove -DLIBRETRO_FRAME_SYNC to disable 1:1 frame sync.
 
-# --- Build directory (per-platform and per-engine to avoid object collisions) ---
+# Build directory (per-platform, per-build-type).
 #
-# Per-engine as well as per-platform: the engine flags above change DEFINES
-# (-DVNOVEL_KIRIKIRI, and which archive is linked), but a .o is a plain
-# timestamp dependency with no record of the flags that produced it. Building
-# `make platform=unix` and then `make platform=unix KRKR_ENABLE=1` would leave
-# every object that had already been compiled, so libretro.cpp kept the
-# ONScripter dispatch and the core silently ran the wrong engine - while still
-# linking the KiriKiri archive, so the symbol check passed and nothing looked
-# wrong. A separate directory makes the two builds independent by construction
-# rather than relying on the caller to remember `rm -rf build`.
-ENGINE_TAG := $(if $(filter 1,$(KRKR_ENABLE)),-kirikiri)
-# Debug and release must never share these directories either, for the same
-# reason the engine tag exists: cmake caches its configuration from the first
-# `cmake -S/-B` and ignored the flag change on later runs, so `make debug` then
-# `make` left the debug objects in place — -O0, and asserts live. That is not
-# theoretical: a stale assert in vendored FAudio aborted a routine call (a sound
-# during a save) in a build believed to be release. Keeping the whole build tree
-# separate by build type makes the two independent by construction.
+# Debug and release must not share a directory: cmake caches its configuration
+# from the first `cmake -S/-B` and ignores a later flag change, so `make debug`
+# then `make` would leave the debug objects in place — -O0, and asserts live. A
+# stale assert in vendored FAudio aborted a routine call (a sound during a save)
+# in a build believed to be release.
 ifeq ($(KRKR_DEBUG),1)
    BUILD_TAG := -debug
 else
    BUILD_TAG :=
 endif
-# The wire protocol belongs in the tag for the same reason the build type does:
-# flipping DEVWIRE changes what the objects must contain (the socket, the call
-# sites' no-ops), and one directory would then hold whichever flavour was
-# compiled first -- which is how an engine shim built WITH the protocol ended up
-# linked against a core built without it, and the link failed on symbols that
-# only one side had.
-ifeq ($(DEVWIRE_OFF),)
-   BUILD_TAG := $(BUILD_TAG)-devwire
-endif
-BUILD_DIR := build/$(platform)$(ENGINE_TAG)$(BUILD_TAG)
+BUILD_DIR := build/$(platform)$(BUILD_TAG)
 
-# --- Tool defaults (overridden by platform blocks above) ---
+# Tool defaults (overridden by platform blocks above)
 OBJCOPY ?= objcopy
 NM      ?= nm
 
 CXXFLAGS += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) $(VISIBILITY)
 CFLAGS   += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall $(fpic) $(VISIBILITY)
 
-# --- The output name ---------------------------------------------------------
-# Composed HERE, after every platform block has had its say, because those blocks
-# set the extension: a platform block that wrote `TARGET` wholesale (which is
-# what they used to do) silently discarded what this adds.
-#
-#   make            -> vnovel_libretro.so   (socket; the default)
-#   make DEVWIRE=0  -> vnovel_libretro.so   (no socket)
+# The output name
+# Composed after every platform block, because those blocks set the extension:
+# a platform block that assigns `TARGET` wholesale discards this suffix.
 TARGET := $(TARGET_NAME)_libretro$(TARGET_STEM_EXTRA)$(TARGET_EXT)
 
-# --- Source files and includes ---
+TARGET_BUILD := $(BUILD_DIR)/$(TARGET)
+
+# Source files and includes
 include Makefile.common
 
-# --- The KiriKiri engine -----------------------------------------------------
+# The KiriKiri engine
 #
 # The engine comes from deps/krkrsdl2 and is a CMake project, not part of this
 # Makefile's source lists. Its two static archives are what the core links:
@@ -428,12 +403,9 @@ include Makefile.common
 KRKR_DIR := $(DEPS_DIR)/krkrsdl2
 # The engine's host-facing presentation contract (visual/Present.h) is a pure-C
 # header with no engine types in it, which is why the core can include it
-# directly while declaring every other engine symbol by hand. Both engine trees
-# carry it now, so the path is added for either one; only a build with the
-# KiriKiri engine off skips it. Added here rather than in Makefile.common
-# because KRKR_DIR is not defined until this point, and an empty expansion there
-# put a bare "/src/core/visual" on the command line.
-CXXFLAGS += $(if $(KRKR_ENABLE),-I$(KRKR_DIR)/src/core/visual,)
+# directly while declaring every other engine symbol by hand. Added here rather
+# than in Makefile.common because KRKR_DIR is not defined until this point.
+CXXFLAGS += -I$(KRKR_DIR)/src/core/visual
 # Per-platform, like BUILD_DIR: a shared CMake tree would hand the linker the
 # previous platform's objects ("file in wrong format"), and cmake caches the
 # compiler from its first configure, so the platforms cannot share one.
@@ -474,6 +446,10 @@ KRKR_CMAKE_TOOLCHAIN ?=
 # Compilers are named only when no toolchain file provides them: $(CXX) can be
 # "g++ -std=c++11" here, which is not a compiler path, and cmake rejects it.
 KRKR_CMAKE_COMPILERS := $(if $(KRKR_CMAKE_TOOLCHAIN),,$(if $(CROSS),-DCMAKE_C_COMPILER=$(CROSS)gcc -DCMAKE_CXX_COMPILER=$(CROSS)g++))
+# Environment for the engine's configure and build, empty unless a platform
+# block sets it. A cross build puts PKG_CONFIG_SYSROOT_DIR/PKG_CONFIG_LIBDIR
+# here so CMake's FindPkgConfig reports target paths (see the aarch64 block).
+KRKR_CMAKE_ENV ?=
 # -fvisibility=hidden keeps the core's own symbols out of the dynamic table (see
 # the long note at the CMAKE flags below), and takes every vendored codec's with
 # it. `-fvisibility-inlines-hidden` is separate and is what makes small in-header
@@ -531,12 +507,9 @@ KRKR_C_RELEASE   ?= -O3 -DNDEBUG
 #
 # This builds krkrsdl2, the engine the core links.
 #
-# The KiriKiri 2 experiment (deps/kirikiri2, `make KRKR2=1`) was removed from
-# the tree; it is archived beside this repo as
-# vnovel-libretro-archive/kirikiri2-<date>, with its unpushed history. Its
-# `KRKR_DEBUG_PROBES` knob went with it: those probes were defined by that fork
-# alone. The engine's own probes are OPTION_DEBUG_PROBES, pinned OFF in
-# KRKR_CMAKE_FLAGS above; the core's ad-hoc input probes are `make PROBES=1`.
+# The engine's own compile-time probes are OPTION_DEBUG_PROBES, pinned OFF in
+# KRKR_CMAKE_FLAGS below; runtime diagnostics are the debug mask (VNOVEL_DEBUG,
+# see src/vnovel_debug.h).
 KRKR_DEBUG_FLAGS  ?= -g -O0 -fno-inline
 # A debug build drops -fvisibility-inlines-hidden, so in-header accessors keep
 # their symbols and can be called from gdb. Keeping only -fvisibility=hidden
@@ -545,7 +518,7 @@ KRKR_DEBUG_FLAGS  ?= -g -O0 -fno-inline
 KRKR_DEBUG_VIS    ?= -fvisibility=hidden
 debug:
 	@echo "==> debug build: $(KRKR_DEBUG_FLAGS), visibility '$(KRKR_DEBUG_VIS)'"
-	$(Q)$(MAKE) platform=unix KRKR_DEBUG=1 KRKR_ENABLE=1 \
+	$(Q)$(MAKE) platform=unix KRKR_DEBUG=1 \
 		KRKR_CXX_VIS="$(KRKR_DEBUG_VIS)" \
 		KRKR_CXX_RELEASE="$(KRKR_DEBUG_FLAGS)" KRKR_C_RELEASE="$(KRKR_DEBUG_FLAGS)" all
 
@@ -558,7 +531,7 @@ debug:
 # deliberate exports carry their own visibility attribute and survive.
 # Overridable so a cross build can point at its target sysroot. Extra CMake
 # arguments go in KRKR_CMAKE_EXTRA, e.g.
-#   make platform=unix KRKR_ENABLE=1 KRKR_CMAKE_EXTRA="-DOPTION_DEBUG_PROBES=ON"
+#   make platform=unix KRKR_CMAKE_EXTRA="-DOPTION_DEBUG_PROBES=ON"
 # Note it must be a real CMake option: appending a -D to CMAKE_CXX_FLAGS would
 # only define a preprocessor symbol, which is not how the engine's options
 # (OPTION_DEBUG_PROBES) are wired — those drive a generated header.
@@ -576,7 +549,7 @@ debug:
 # in this Makefile's DEFINES does not reach them.
 KRKR_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release -DKRKRSDL2_LIBRETRO=ON \
                     -DOPTION_DEBUG_PROBES=OFF \
-                    $(if $(DEVWIRE_OFF),,-DVNOVEL_DEVWIRE=ON) \
+                    -DVNOVEL_DEVWIRE=ON \
                     -DKRKRSDL2_BUILTIN_SHIMS=ON -DOPTION_BUILD_MACOS_BUNDLE=OFF \
                     -DCMAKE_C_FLAGS="-fvisibility=hidden" \
                     -DCMAKE_CXX_FLAGS:STRING="$(KRKR_CXX_BASE) $(KRKR_CXX_EXTRA)" \
@@ -652,16 +625,17 @@ $(KRKR_SIG_STAMP): FORCE
 
 $(KRKR_SRC_ARCHIVE): $(KRKR_SIG_STAMP) $(KRKR_DIR)/CMakeLists.txt $(KRKR_FLAGS_STAMP)
 	@$(if $(Q),echo "CMAKE $(KRKR_DIR)",)
-	$(Q)cmake -S $(KRKR_DIR) -B $(KRKR_BUILD_DIR) $(KRKR_CMAKE_FLAGS) $(KRKR_CMAKE_COMPILERS) >/dev/null
-	$(Q)cmake --build $(KRKR_BUILD_DIR) --target $(KRKR_CMAKE_TARGET) --parallel $(KRKR_JOBS) >/dev/null
+	$(Q)$(KRKR_CMAKE_ENV) cmake -S $(KRKR_DIR) -B $(KRKR_BUILD_DIR) $(KRKR_CMAKE_FLAGS) $(KRKR_CMAKE_COMPILERS) >/dev/null
+	$(Q)$(KRKR_CMAKE_ENV) cmake --build $(KRKR_BUILD_DIR) --target $(KRKR_CMAKE_TARGET) --parallel $(KRKR_JOBS) >/dev/null
 
 # Rewrite the stamp only when the flags actually change. `cmp` against the
 # existing contents keeps an unchanged build from reconfiguring, and touching
 # the file only on a real change makes it a genuine dependency for the archive
-# rule above.
+# rule above. KRKR_CMAKE_ENV is part of the stamp: it decides where CMake's
+# FindPkgConfig looks, and a cross build that changed sysroot must reconfigure.
 $(KRKR_FLAGS_STAMP): FORCE
 	@mkdir -p $(dir $@)
-	@printf '%s\n' '$(KRKR_CMAKE_FLAGS) $(KRKR_CMAKE_COMPILERS) $(KRKR_CMAKE_TARGET)' > $@.new
+	@printf '%s\n' '$(KRKR_CMAKE_ENV) $(KRKR_CMAKE_FLAGS) $(KRKR_CMAKE_COMPILERS) $(KRKR_CMAKE_TARGET)' > $@.new
 	@if ! cmp -s $@.new $@ 2>/dev/null; then \
 		mv $@.new $@; \
 		echo "note: KiriKiri cmake flags changed, reconfiguring the engine"; \
@@ -681,15 +655,11 @@ endif
 # Whole-archived at link time, because the engine reaches its own objects
 # through a registry rather than through references the linker can follow, so a
 # plain archive member would be dropped.
-KRKR_DEPS :=
-KRKR_LINK :=
-ifeq ($(KRKR_ENABLE),1)
-   KRKR_DEPS := $(KRKR_ARCHIVE) $(KRKR_FAUDIO)
-   ifeq ($(KRKR_FAUDIO),)
-   KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive
-   else
-   KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive $(KRKR_FAUDIO)
-   endif
+KRKR_DEPS := $(KRKR_ARCHIVE) $(KRKR_FAUDIO)
+ifeq ($(KRKR_FAUDIO),)
+KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive
+else
+KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive $(KRKR_FAUDIO)
 endif
 # What the engine needs beyond what the core already links. The core links only
 # the vendored SDL 1.2 (renamed to PrivateSDL_*) plus freetype; the engine needs
@@ -697,12 +667,8 @@ endif
 # link.txt, minus freetype which LDFLAGS already carries. Overridable so a cross
 # build can point at its target sysroot.
 KRKR_SYS_LIBS ?= -lSDL2 -lfontconfig -lvorbisfile -lvorbis
-ifneq ($(KRKR_ENABLE),1)
-   # KiriKiri off: the core links none of the engine's extra dependencies.
-   KRKR_SYS_LIBS :=
-endif
 
-# --- Object files (all in BUILD_DIR, preserving source subdirectory structure) ---
+# Object files (all in BUILD_DIR, preserving source subdirectory structure)
 # Per-module lists are defined in the "Shared modules" section below, after
 # Makefile.common has populated the source lists.
 
@@ -731,7 +697,7 @@ EXTRA_FALLBACK_FONT_HDR := resources/fonts/extra_fallback_font.h
 # and install.sh expect it ($(TARGET) resolves relative to $(CORE_DIR)).
 all: $(TARGET)
 
-# --- Embedded fallback fonts -------------------------------------------------
+# Embedded fallback fonts
 # Generate a C header from each vendored TTF at build time (the fonts stay
 # normal files in resources/fonts/, with their licences alongside).
 $(FALLBACK_FONT_HDR): $(FALLBACK_FONT)
@@ -752,18 +718,18 @@ $(BUILD_DIR)/./src/libretro.o: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR)
 # ignored via -include.
 -include $(shell find $(BUILD_DIR) -name '*.d' 2>/dev/null)
 
-# --- Dependency symlinks (deps-overlay provides vendored libs) ---
+# Dependency symlinks (deps-overlay provides vendored libs)
 DEPS_SYMLINKS := deps/bzip2 deps/libmad deps/libogg deps/libvorbis deps/sdl deps/sdl-mixer deps/libretro-common
 
 
-# --- libretro database -------------------------------------------------------
+# libretro database
 # Regenerates vnovel.rdb (the database the core's .info names) from the
 # clrmamepro DAT. `make rdb` after editing dat/vnovel.dat.
 DB_DAT := dat/vnovel.dat
 DB_RDB := vnovel.rdb
 
 
-# --- The core ---------------------------------------------------------------
+# The core
 #
 # One .so: the core, the runtime, both ONScripter engines and the KiriKiri
 # engine. This is the shape a distribution wants — libretro's buildbot copies
@@ -793,11 +759,22 @@ CORE_OBJS    := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(CORE_CXX))
 ONS_MOD_OBJS := $(ONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ONS_EXTRA_CXX))
 PONS_MOD_OBJS:= $(PONS_OBJS) $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(PONS_EXTRA_CXX))
 
-$(TARGET): $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR) $(CORE_OBJS) $(RUNTIME_OBJS) $(ONS_MOD_OBJS) $(PONS_MOD_OBJS) $(KRKR_DEPS)
+# The link is in the build directory and the result copied to the repository
+# root, which is the path the start-* scripts, tests, install.sh, ci/package.sh
+# and buildroot's recipe read. Linking every platform straight to the root copy
+# would make the last build of any platform the one that ships, so a stale
+# artifact from another platform would look current. The copy runs only after a
+# successful link, so a failed build leaves the previous artifact in place.
+$(TARGET_BUILD): $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR) $(CORE_OBJS) $(RUNTIME_OBJS) $(ONS_MOD_OBJS) $(PONS_MOD_OBJS) $(KRKR_DEPS)
 	@$(if $(Q),echo "LD $@",)
+	$(Q)mkdir -p $(dir $@)
 	$(Q)$(CXX) $(fpic) $(SHARED) $(LINK_EXTRA) -o $@ \
 		$(CORE_OBJS) $(RUNTIME_OBJS) $(ONS_MOD_OBJS) $(PONS_MOD_OBJS) \
 		$(KRKR_LINK) $(MOD_RPATH) $(SINGLE_LDFLAGS)
+
+$(TARGET): $(TARGET_BUILD)
+	@$(if $(Q),echo "CP $(TARGET)",)
+	$(Q)cp $(TARGET_BUILD) $@
 
 # Filter krkrsdl2's archive so its vendored libogg does not collide with ours.
 $(KRKR_ARCHIVE): $(KRKR_SRC_ARCHIVE) tools/filter-krkr-archive.sh
@@ -805,7 +782,7 @@ $(KRKR_ARCHIVE): $(KRKR_SRC_ARCHIVE) tools/filter-krkr-archive.sh
 	$(Q)mkdir -p $(dir $@)
 	$(Q)sh tools/filter-krkr-archive.sh $< $@
 
-# --- Generic compile rules (output to BUILD_DIR, preserving subdirs) ---
+# Generic compile rules (output to BUILD_DIR, preserving subdirs)
 # -MMD -MP emits a .d per object listing its included headers; those are
 # -included below, so editing any header rebuilds every object that uses it.
 DEPFLAGS := -MMD -MP
@@ -860,7 +837,7 @@ $(DB_RDB): $(DB_DAT) tools/make-rdb.py
 
 rdb: $(DB_RDB)
 
-# --- Wrap unit harness -------------------------------------------------------
+# Wrap unit harness
 #
 # Feeds a string straight into processBreaks/findNextBreak and prints the break
 # offsets. Not part of `all`: it links the engine objects, so it needs a normal
@@ -912,36 +889,35 @@ textplane-test: $(TEXTPLANE_TEST)
 # Links the socket and nothing else -- no engine, no SDL, no frontend -- because
 # the property under test is the ring's eviction rule, and that is reachable with
 # the socket API alone (see the header of tests/devsock/devsock_test.cpp for why
-# a live run cannot exercise it). VNOVEL_DEVWIRE has to be defined HERE as well:
-# without it src/devsock.c is an empty translation unit and this harness would
-# link the inline no-ops from devsock.h instead, passing for the wrong reason.
-DEVWIRE_TEST := tests/devsock/devsock_test
-DEVWIRE_TEST_OBJ := $(BUILD_DIR)/tests/devsock/devsock_test.o
-DEVWIRE_SOCK_OBJ := $(BUILD_DIR)/tests/devsock/devsock.o
+# a live run cannot exercise it). VNOVEL_DEVWIRE comes from the global DEFINES,
+# so src/devsock.c compiles its real bodies rather than the inline no-ops in
+# devsock.h.
+DEVSOCK_TEST := tests/devsock/devsock_test
+DEVSOCK_TEST_OBJ := $(BUILD_DIR)/tests/devsock/devsock_test.o
+DEVSOCK_SOCK_OBJ := $(BUILD_DIR)/tests/devsock/devsock.o
 
-$(DEVWIRE_TEST_OBJ): tests/devsock/devsock_test.cpp
+$(DEVSOCK_TEST_OBJ): tests/devsock/devsock_test.cpp
 	@echo "CXX(devsock) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CXX) $(CXXFLAGS) -DVNOVEL_DEVWIRE $(DEPFLAGS) -c -o $@ $<
+	$(Q)$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(DEVWIRE_SOCK_OBJ): $(SRC_DIR)/devsock.c
+$(DEVSOCK_SOCK_OBJ): $(SRC_DIR)/devsock.c
 	@echo "CC(devsock) $<"
 	@mkdir -p $(dir $@)
-	$(Q)$(CC) $(CFLAGS) -DVNOVEL_DEVWIRE $(DEPFLAGS) -c -o $@ $<
+	$(Q)$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-$(DEVWIRE_TEST): $(DEVWIRE_TEST_OBJ) $(DEVWIRE_SOCK_OBJ)
+$(DEVSOCK_TEST): $(DEVSOCK_TEST_OBJ) $(DEVSOCK_SOCK_OBJ)
 	@$(if $(Q),echo "LD $@",)
-	$(Q)$(CXX) $(CXXFLAGS) -o $@ $(DEVWIRE_TEST_OBJ) $(DEVWIRE_SOCK_OBJ) -lpthread
+	$(Q)$(CXX) $(CXXFLAGS) -o $@ $(DEVSOCK_TEST_OBJ) $(DEVSOCK_SOCK_OBJ) -lpthread
 
-devsock-test: $(DEVWIRE_TEST)
-	@$(DEVWIRE_TEST)
+devsock-test: $(DEVSOCK_TEST)
+	@$(DEVSOCK_TEST)
 
 .PHONY: devsock-test
 
 clean:
 	rm -rf build
 	rm -f $(TARGET) $(WRAP_HARNESS)
-
 install:
 	@test -n "$(DESTDIR)" || (echo "ERROR: set DESTDIR" && false)
 	cp -v $(TARGET) $(DESTDIR)/

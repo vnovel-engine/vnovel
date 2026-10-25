@@ -46,7 +46,7 @@ UINT_FIELDS = ("releaseyear", "releasemonth", "users", "rumble", "analog")
 HEX_FIELDS = {"crc": 4, "md5": 16, "sha1": 20}
 
 
-# --- MessagePack primitives (mirrors libretro-db/rmsgpack.c) --------------
+# MessagePack primitives (mirrors libretro-db/rmsgpack.c)
 def mp_uint(v):
     if v <= 0xFF:
         return struct.pack(">BB", 0xCC, v)
@@ -88,7 +88,7 @@ def mp_map(n):
     return struct.pack(">BI", 0xDF, n)
 
 
-# --- clrmamepro DAT parsing ----------------------------------------------
+# clrmamepro DAT parsing
 class DatParser:
     """A shallow clrmamepro scanner.
 

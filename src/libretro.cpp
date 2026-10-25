@@ -50,7 +50,7 @@
  * diagnostic path. */
 static char ons_crash_log_path[PATH_MAX_LENGTH] = "ons_crash.log";
 
-/* --- Path canonicalization -------------------------------------------------
+/* Path canonicalization
  * The core holds one internal path form: '/' separators, no trailing
  * separator. A frontend hands back native paths (on Windows, '\'), and the
  * engines open files and directories with whatever they are given, so a
@@ -107,7 +107,7 @@ static void ons_set_crash_log_path(const char *dir)
    }
 }
 
-/* --- Game identity ---------------------------------------------------------
+/* Game identity
  * The id a game is known by, everywhere in this project: the crc32 of the file
  * the core uses for engine detection (data.xp3 on the KiriKiri path), as eight
  * upper-case hex digits. That is exactly what tools/hash-game.py writes into a
@@ -217,8 +217,10 @@ static void ons_crash_handler(int sig)
 #include "libretro_core_options.h"
 #include "engine_cabi.h"
 #include "engine_bridge.h"
+#include "core_debug.h"
 
 #ifdef _WIN32
+#include <io.h> /* _access, for the portable realpath below */
 #define ons_mkdir(path) mkdir(path)
 #else
 #define ons_mkdir(path) mkdir(path, 0755)
@@ -367,17 +369,14 @@ static int16_t pointer_synth_input_state(unsigned port,
       /* The frontend's absolute pointer, when it actually carries a position.
        *
        * RetroArch with a mouse bound reports POINTER_COUNT > 0 but answers X/Y
-       * with 0,0 - it supplies mouse *deltas* and no absolute position at all.
-       * Handing that on is worse than useless: an engine reads 0,0 as the
-       * centre of the screen (libretro's encoding is raw int16, so 0 IS the
-       * middle), and either parks its cursor there or, guarded against that,
-       * ignores the pointer entirely and integrates deltas from an origin it
-       * cannot know. Measured, that put the cursor a constant (+240,-152) away
-       * from the physical pointer, which is why the game's links could not be
-       * clicked - the cursor could be moved but never aimed.
+       * with 0,0: it supplies mouse deltas and no absolute position. An engine
+       * reads 0,0 as the centre of the screen (libretro's encoding is raw
+       * int16, so 0 IS the middle), so forwarding that either parks the cursor
+       * at the centre or, if the engine guards against it, leaves it
+       * uninitialised and integrating deltas from an unknown origin.
        *
-       * So the frontend is believed only when it names a position, and the
-       * synthesized pointer otherwise. The two agree at rest (both are the
+       * The frontend is therefore believed only when it names a position, and
+       * the synthesized pointer otherwise. The two agree at rest (both are the
        * centre), so nothing moves until the stick is used. */
       int16_t fx = frontend_input_state_cb(
             0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
@@ -468,17 +467,71 @@ core_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id)
  *
  * Both present paths (ONScripter and KiriKiri) need this, hence one function:
  * the menu must behave identically in either engine. */
+
+/* A shadow framebuffer the overlays draw into, so the engine's own frame (and
+ * its dirty-rect tracking) is never written to. `size` holds the allocation in
+ * bytes and is grown as needed; NULL is returned when the size is not positive
+ * or the allocation failed, and the caller then presents the engine's frame
+ * unchanged. Shared by both present paths: the same buffer is indexed with the
+ * frame's row stride and handed to video_cb() with that same stride, so it must
+ * be sized by stride*height, never width*height*4. */
+static Uint32 *overlay_shadow(Uint32 **buf, int *size, const void *src, int bytes)
+{
+   if (bytes <= 0)
+      return NULL;
+   if (bytes > *size)
+   {
+      Uint32 *grown = (Uint32 *)realloc(*buf, (size_t)bytes);
+      if (!grown)
+         return NULL;
+      *buf  = grown;
+      *size = bytes;
+   }
+   memcpy(*buf, src, (size_t)bytes);
+   return *buf;
+}
+
+/* The auto/skip/fast-forward badges, top-right, drawn right to left. `flags`
+ * carries one bit per badge position (see BADGE_*); the colours match between
+ * engines so the same state reads the same way in either. */
+#define BADGE_AUTO 1
+#define BADGE_SKIP 2
+#define BADGE_FF   4
+static void draw_mode_badges(Uint32 *dst, int dst_pitch, int dst_w, int dst_h,
+                             int flags)
+{
+   int bx = dst_w - 12;
+   const int by = 4;
+   struct
+   {
+      int         bit;
+      Uint32      color;
+   } badges[] = {
+      {BADGE_AUTO, 0xCC22AA22},
+      {BADGE_SKIP, 0xCCAAAA22},
+      {BADGE_FF, 0xCC2266FF},
+   };
+   for (size_t i = 0; i < sizeof(badges) / sizeof(badges[0]); i++)
+   {
+      if (!(flags & badges[i].bit))
+         continue;
+      for (int dy = 0; dy < 8; dy++)
+         for (int dx = 0; dx < 8; dx++)
+            if (by + dy >= 0 && by + dy < dst_h && bx + dx >= 0 &&
+                bx + dx < dst_w)
+               dst[(by + dy) * dst_pitch + (bx + dx)] = badges[i].color;
+      bx -= 12;
+   }
+}
+
 static void composite_menu(Uint32 *dst, int dst_pitch, int dst_w, int dst_h)
 {
-   /* The gate belongs HERE, not only at the call sites.
+   /* Gate the compositing here, not only at the call sites.
     *
-    * The page stays cached while the menu is open, and the menu is opened on
-    * the game's `menu.visible` request - which, as of the bar being
-    * hotkey-only, no longer means the bar should be composited. Without this
-    * test the cached 640x480 NP2kai page was stamped over the top-left of the
-    * frame on every frame after the game asked for a menu, which is what put a
-    * silver bar reading "Hi" across Fata Morgana's artwork while the reference
-    * engine (whose own menu window is unmapped) showed none. */
+    * The page stays cached while the menu is open, but the menu being open no
+    * longer means its pixels should be stamped on the frame (the bar is
+    * hotkey-only). Without this test the cached page is blitted over the frame
+    * on every frame the game has the menu open, overwriting the artwork. */
    if (!vnovel_menu_should_draw())
       return;
 
@@ -527,9 +580,8 @@ static void vnovel_publish_frame_size(int w, int h)
  * without a keyboard. The zone is a fraction of the frame rather than a pixel
  * count, because the frame the engines present varies (640x480 up to 1600x1200).
  *
- * Deliberately small and in the corner, where a visual novel's own clickable
- * regions do not live: the text box and choice buttons are centred, and the
- * corner would otherwise be dead space. */
+ * Small and in the corner: a visual novel's own clickable regions (the text box
+ * and choice buttons) are centred, so the corner does not overlap them. */
 #define MENU_HOTSPOT_W 64
 #define MENU_HOTSPOT_H 32
 
@@ -616,18 +668,16 @@ static void vnovel_menu_poll_input(void)
     * edge, so holding the button in the corner does not keep re-asking. */
    if (btn == 1 && x >= 0 && y >= 0 && vnovel_menu_hotspot_hit(x, y))
    {
-      /* Convert the corner click into a RIGHT-click, which is what both engines
-       * already treat as "open my own menu" -- with the game's styling, its
-       * menuselectvoice sounds and its modal handling. So the hot zone needs no
-       * engine change at all.
+      /* Convert the corner click into a RIGHT-click, which both engines treat
+       * as "open my own menu" -- with the game's styling, sounds and modal
+       * handling, so the hot zone needs no engine change.
        *
-       * It is done through the input callback rather than by pushing an SDL
-       * event, because that is the channel the engines' SDL shim actually reads:
-       * its PumpMouseEvents() polls RETRO_DEVICE_ID_MOUSE_RIGHT every pump and
-       * calls SDL_PrivateMouseButton() itself, so reporting a press here becomes
-       * a real engine mouse event through the engine's own path. (Pushing
-       * SDL_PushEvent from this thread was the earlier attempt; it does not reach
-       * a queued event the shim owns.)
+       * Reported through the input callback, not by pushing an SDL event: the
+       * engines' SDL shim polls RETRO_DEVICE_ID_MOUSE_RIGHT on every
+       * PumpMouseEvents() and calls SDL_PrivateMouseButton() itself, so a press
+       * reported here becomes a real engine mouse event on the engine's own
+       * path. SDL_PushEvent from this (frontend) thread does not reach the queued
+       * event the shim owns.
        *
        * Two polls: one press, then the callback reports nothing and the shim
        * synthesizes the matching release -- a complete click. */
@@ -731,6 +781,11 @@ static double opt_ff_scale = 1.0;
 /* Rate currently installed in the clock; cached so retro_run only calls
  * ons_libretro_clock_set() when it actually changes. */
 static double clock_scale_applied = -1.0;
+
+/* Defined with the clock driver below; the KiriKiri branch above it traces the
+ * clock too. */
+static void clock_trace(const char *tag, int ff);
+
 /* opt_mouse_sensitivity and remap_keys are defined in the bridge module; the
  * core writes them from frontend options, the glue reads them. */
 /* Key remap state */
@@ -750,17 +805,15 @@ static const EngineVTable *vtable = nullptr;
  * audio-buffer-status callback. -1 until the first report. It is the only
  * feedback the core gets about the ring it feeds; the KiriKiri submit rate is
  * steered by it. */
-#ifdef VNOVEL_KIRIKIRI
 static volatile int krkr_ring_occupancy = -1;
 /* Frontend's forecast that the ring will run dry during the next frame. The
  * submit controller acts on this and on the occupancy above. */
 static volatile int krkr_underrun_likely = 0;
-#endif
 static uint32_t delta;
 static char last_archive_path[PATH_MAX_LENGTH];
 static char last_save_path[PATH_MAX_LENGTH];
 
-/* --- The captured text plane, engine-neutral -------------------------------
+/* The captured text plane, engine-neutral
  *
  * Engines publish their text separately from the frame through the bridge
  * (see VNovelTextPlane in engine_bridge.h); this is where the core keeps the
@@ -782,7 +835,7 @@ static int text_plane_splice   = 0;
 static int text_plane_restart  = 0;
 static unsigned long long text_plane_serial = 0;
 
-/* --- The accumulated page ---------------------------------------------------
+/* The accumulated page
  *
  * Some engines publish a page in one go (ONScripter/PONScripter: the plane IS
  * the screen), and one publishes it a LINE at a time (KiriKiri: each
@@ -887,8 +940,7 @@ static volatile int text_plane_dirty = 0;
 
 
 /* The sink the bridges call. Copied here so the consumer runs on the core's
- * thread with stable pixels, for the same reason the engine's surfaces are
- * copied: the engine rewrites its own in place. */
+ * thread with stable pixels: the engine rewrites its own surfaces in place. */
 static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
 {
    (void)userdata;
@@ -917,16 +969,11 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
    /* Copy ROW BY ROW using the stride, never as one block.
     *
     * The engine's bitmaps are bottom-up, and the pointer it hands over is
-    * `GetScanLineForWrite(0)`, which is `(Height-1)*Pitch + Bits` - that is,
-    * near the *end* of the allocation, with the following rows at lower
-    * addresses. A single `memcpy(dst, pixels, |pitch| * height)` therefore
-    * reads forward off the end of the buffer: for the 808x48 plane that is
-    * 155 KB starting at a pointer 152 KB into a 152 KB allocation. Small planes
-    * survived because the pages past the end happened to be mapped; Fate's
-    * prologue draws into a larger bitmap and it faulted in libc's memcpy
-    * (confirmed from the core dump: sink <- krkr_text_plane_cb <-
-    * TVPPresentTextPlane <- InternalDrawText). Walking the stride is what the
-    * plane's own contract requires, and the destination is packed. */
+    * `GetScanLineForWrite(0)` = `(Height-1)*Pitch + Bits`, near the *end* of the
+    * allocation with subsequent rows at lower addresses. A single
+    * `memcpy(dst, pixels, |pitch| * height)` therefore reads forward past the
+    * end of the buffer. Walking the stride is what the plane's contract requires,
+    * and the destination is packed. */
    if (needed > text_plane_capacity)
    {
       unsigned char *np = (unsigned char *)realloc(text_plane_pixels, needed);
@@ -963,30 +1010,18 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
     * the region that actually moved. */
    if (plane->splice)
    {
-      /* The page is the WINDOW, and the window's size comes from the frame the
-       * core presented - never from the publication itself.
+      /* The page is the WINDOW. Its size comes from the publication's reported
+       * window size when the engine supplies it; the core-learned frame size
+       * is only the fallback for a publication that carries none.
        *
-       * This was the bug that lost the start of every page: on the first
-       * publication the frame size was not yet known, so the fallback below
-       * used the FRAGMENT's width (616 for a KiriKiri line box against the
-       * window's 640), the page was created at 616, and the moment the real
-       * frame size appeared the size "changed", which cleared the page and
-       * threw away everything accumulated so far. Measured as "text before CDE
-       * is lost" - the page always started over once the frame arrived.
-       *
-       * So: if the window size is not known yet, DO NOT ACCUMULATE. A
-       * publication that arrives before the core has presented a frame cannot
-       * be placed anyway (it has no window coordinate), and dropping it is
-       * honest - the alternative is inventing a size and then discarding the
-       * result. The cost is the few publications of the opening burst, once,
-       * and on the engines that publish whole pages the page is the surface
-       * itself (splice off) so nothing is lost there. */
-      /* The page is the WINDOW. The size comes from the publication itself when
-       * the engine reports it, because the engine publishes text during
-       * start-up - before the core's present path has ever run - and sizing the
-       * page from the core thread alone dropped that whole opening burst (the
-       * start of the first page was missing on every run). The core-learned
-       * size stays as the fallback for a publication that carries none. */
+       * Sizing the page from the fragment instead would create it at the
+       * fragment's width, then "change" it to the real window size on the next
+       * publication, clearing everything accumulated so far. Using the window
+       * size from the publication is what lets start-up text (published before
+       * the core has presented a frame) accumulate. If neither size is known
+       * yet, do not accumulate: the publication has no window coordinate to
+       * place it at. Engines that publish whole pages have splice off, so this
+       * path does not run for them. */
       if (plane->window_w > 0 && plane->window_h > 0)
       {
          text_page_frame_w = plane->window_w;
@@ -1073,7 +1108,7 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
    }
 }
 
-/* --- Text runs: the core side of the structured stream ---------------------
+/* Text runs: the core side of the structured stream
  *
  * The engine hands over each draw call's characters, position and style (see
  * VNovelTextRun). At this stage the sink only OBSERVES: it writes the stream to
@@ -1086,9 +1121,9 @@ static void vnovel_text_plane_sink(const VNovelTextPlane *plane, void *userdata)
  * premise is only worth building on if the stream is actually complete and
  * correctly placed, and the way to know is to read it.
  *
- * The file is fixed and in tmpfs, for the same reason the audio diagnostic is:
- * the launcher buffers the core's stderr and only flushes it when the game
- * exits, so anything written there is invisible while a run is alive.
+ * The file is fixed and in tmpfs: the launcher buffers the core's stderr and
+ * only flushes it when the game exits, so anything written to stderr is
+ * invisible while a run is alive.
  *
  * The SAME records go to the development socket (devsock.h) when one is open,
  * which is the live form of this log: same shape, same decoder, no launcher
@@ -1098,12 +1133,9 @@ static FILE *text_run_log = NULL;
 
 /* Write one record to the log, opening it on first use.
  *
- * EVERY producer of these lines goes through here or through the equivalent
- * check in the run sink, so the log and the socket carry the SAME records. The
- * event and choice publishers used to write the log only when it was ALREADY
- * open, which meant the first records of a run - the page-boundary and wait
- * events that precede any text - reached the socket and never the log, leaving
- * the two channels disagreeing about a stream that matched on every later line.
+ * Every producer of these lines goes through here, so the log and the socket
+ * carry the SAME records: the page-boundary and wait events that precede any
+ * text must reach both channels, not just the socket.
  *
  * One open attempt, not one per record: this path runs per GLYPH on KiriKiri. */
 static const char *text_run_log_path = NULL;   /* resolved once from the env */
@@ -1148,11 +1180,9 @@ static int text_run_log_wanted(void)
 /* Decode the run's UTF-16 into `utf8`, which must have room for
  * text_length * 4 + 1 bytes. Returns the byte count.
  *
- * The buffer is sized from the run rather than being a fixed 256 bytes: a
- * page-level run is a WHOLE PAGE, and a fixed small buffer silently dropped
- * the tail of every page longer than ~255 characters. That is exactly what
- * made the Disclaimer's choice labels ("Yes," / "No,") appear to be missing
- * from the look-ahead when the walk had in fact collected them.
+ * The buffer is sized from the run, not a fixed 256 bytes: a page-level run is
+ * a WHOLE PAGE, so a fixed buffer would silently drop the tail of every page
+ * longer than ~255 characters.
  *
  * Written as UTF-8 so the result is readable and greppable; surrogates are
  * passed through, which is correct for anything that later decodes the text as
@@ -1205,17 +1235,15 @@ static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
 
    /* The socket and the log are INDEPENDENT sinks: either, both, or neither.
     *
-    * Listening rather than connected, because records published before a client
-    * attaches are buffered and released to it - the walk's opening pages would
-    * otherwise be lost to a consumer started a moment too late.
+    * The socket listens rather than connects, so records published before a
+    * client attaches are buffered and released to it - the walk's opening
+    * pages would otherwise be lost to a consumer started a moment too late.
     *
-    * The log must NOT be gated on the socket. It used to be ("the socket, or
-    * the log"), so a run with BOTH VNOVEL_DEV_PORT and VNOVEL_TEXT_RUN_LOG set
-    * wrote no PAGE records at all: the log was never opened, and the file left
-    * behind was whatever an earlier socket-less run had written. That is exactly
-    * the combination you want when diagnosing the socket - the two are the same
-    * records over different transports, so a discrepancy between them IS the
-    * bug - and it was the one combination that produced nothing to compare. */
+    * The log is not gated on the socket (and vice versa): with both
+    * VNOVEL_DEV_PORT and VNOVEL_TEXT_RUN_LOG set, the two carry the same
+    * records over different transports, so a discrepancy between them is the
+    * signal being looked for. Gating one on the other would produce nothing to
+    * compare. */
    const int socked = vnovel_dev_socket_listening();
    if (!socked && !text_run_log_wanted())
       return; /* observed by nobody: do no work at all */
@@ -1282,7 +1310,7 @@ static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
    free(utf8);
 }
 
-/* --- The development socket: navigation in --------------------------------
+/* The development socket: navigation in
  *
  * The outbound half needs no code of its own: the text-run sink above writes its
  * records to the socket when one is connected (see devsock.h). This is the
@@ -1316,14 +1344,13 @@ static void vnovel_text_run_sink(const VNovelTextRun *run, void *userdata)
  * through its vtable (pushSelect), which mirrors the state change a click makes.
  * No synthetic mouse event, no coordinate, no hover state.
  *
- * Deliberately not a protocol with a future: unknown lines are logged and
- * ignored, and there is no ack, no sequence number and no framing beyond '\n'. */
+ * Not a protocol with a future: unknown lines are logged and ignored, and
+ * there is no ack, no sequence number and no framing beyond '\n'. */
 
 /* Which engine takes a selection, and how. One place, because the two engine
  * families are driven differently: ONScripter/PONScripter hand it to the vtable
  * slot, while KiriKiri has no vtable at all (it is driven by direct krkr_* calls
  * and owns its own thread) and queues it for its own loop to apply. */
-#ifdef VNOVEL_KIRIKIRI
 /* Defined in engine_kirikiri_cabi.cpp, which is the other side of the same
  * hand-off krkr_push_key is: this file's socket poll runs on the frontend's
  * thread, so it hands the ordinal over rather than touching the message layer. */
@@ -1331,18 +1358,15 @@ extern "C" void krkr_push_select(int ordinal);
 /* The key entry point, declared here too: the socket's `continue` intent uses
  * the same advance key the frontend does, and it is defined in the same file. */
 extern "C" void krkr_push_key(int sym, int down);
-#endif
 static int vnovel_dispatch_select(int ordinal)
 {
    if (!engine)
       return 0;
-#ifdef VNOVEL_KIRIKIRI
    if (!vtable)
    {
       krkr_push_select(ordinal);
       return 1;
    }
-#endif
    if (vtable->pushSelect)
    {
       vtable->pushSelect(engine, ordinal);
@@ -1395,14 +1419,12 @@ static void vnovel_dev_line(const char *line, void *userdata)
    if (strcmp(p, "continue") == 0 || strcmp(p, "c") == 0 ||
        strcmp(p, "next") == 0)
    {
-#ifdef VNOVEL_KIRIKIRI
       if (!vtable)
       {
          krkr_push_key(SDLK_SPACE, 1);
          krkr_push_key(SDLK_SPACE, 0);
          return;
       }
-#endif
       if (vtable && vtable->pushKey)
       {
          vtable->pushKey(engine, SDLK_SPACE, 1);
@@ -1426,7 +1448,7 @@ static void vnovel_nav_result(int ordinal, int accepted)
            ordinal, accepted ? "accepted" : "no such choice");
 }
 
-/* --- Page flow out: the engine's own "paused" / "running" edge -------------
+/* Page flow out: the engine's own "paused" / "running" edge
  *
  * The text-run stream is produced by a look-ahead walk, so pages arrive while
  * the engine is still several pages behind. This is the engine's own signal of
@@ -1435,10 +1457,9 @@ static void vnovel_nav_result(int ordinal, int accepted)
  * with the Nth pause it sees, which is what stops a transcript running ahead of
  * the game. See engine_bridge.h for the contract.
  *
- * Published to the socket (and the run log, when one is open) as two bare words.
- * Deliberately no page number: the page's identity is its order, which both
- * sides already have, and a number here would be a second source of truth for
- * something the ordering already decides. */
+ * Published to the socket (and the run log, when one is open) as two bare
+ * words, with no page number: the page's identity is its order, which both
+ * sides already have, so a number here would be a second source of truth. */
 static void vnovel_page_event(int event)
 {
    /* The event's token, from the ONE list (devsock.h). A boundary and a wait are
@@ -1471,13 +1492,11 @@ static void vnovel_choice_label(int ordinal, const char *label)
       vnovel_dev_socket_send(line, (size_t)n);
 }
 
-/* --- Step 0: a regression signal for the captured plane ---------------------
+/* A regression signal for the captured plane
  *
- * The suite asserted nothing about the plane, so it passed with capture
- * entirely broken - which is how the pitch-sign rejection and the memcpy
- * overrun shipped. `snapshotsave` dumps the engine's own frame, not the core's
- * copy of the plane; this writes the copy, so a test can compare the pixels the
- * seam actually produced.
+ * `snapshotsave` dumps the engine's own frame, not the core's copy of the
+ * plane; this writes the copy, so a test can compare the pixels the seam
+ * actually produced rather than asserting nothing about capture.
  *
  * Bottom-up 32bpp BMP, matching what the engines' own SDL_SaveBMP writes, so a
  * golden from here sits beside the frame goldens with no special handling. The
@@ -1552,7 +1571,7 @@ static void vnovel_text_plane_dump_cb_impl(const char *name, void *userdata)
    text_plane_dump(name);
 }
 
-/* --- Text debug view (core option `vnovel_text_debug_view`) -----------------
+/* Text debug view (core option `vnovel_text_debug_view`)
  *
  * A development aid: show the text the core has captured, so it can be judged
  * against the frame it was peeled out of.
@@ -1639,7 +1658,7 @@ static void text_debug_view_apply(Uint32 *dst, int pitch, int w, int h)
    }
 }
 
-/* --- Split view (`vnovel_split_view`) ---------------------------------------
+/* Split view (`vnovel_split_view`)
  *
  * Present the two surfaces side by side, at the game's own size each: artwork
  * on the left, text on the right. A 640x480 game therefore presents as 1280x480.
@@ -1778,6 +1797,56 @@ static void show_message(const char *msg)
    environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
 }
 
+/* Resolve `path` to an absolute path in `resolved`, or return NULL.
+ *
+ * Windows has no realpath(); _fullpath is the CRT's equivalent, but it returns
+ * the path even when it does not exist, while realpath fails on a missing path.
+ * The two display sites below rely on that difference to tell "the directory is
+ * here" from "the directory does not exist", so Windows gets the check
+ * explicitly. */
+static char *portable_realpath(const char *path, char *resolved)
+{
+#if defined(_WIN32)
+   if (!_fullpath(resolved, path, PATH_MAX_LENGTH))
+      return NULL;
+   /* Mirrors POSIX: report failure when the result names nothing on disk. */
+   if (_access(resolved, 0) != 0)
+      return NULL;
+   return resolved;
+#else
+   return realpath(path, resolved);
+#endif
+}
+
+/* The frontend's core options. Every read is the same three lines of protocol
+ * (set the key, call, check the value), so the three accessors below are what
+ * the rest of this file uses. `fallback` is returned when the frontend does not
+ * answer or the key is unknown, which is the case in a frontend without the
+ * core-options API. */
+
+static const char *opt_string(const char *key, const char *fallback)
+{
+   struct retro_variable var = {0};
+   var.key                   = key;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      return var.value;
+   return fallback;
+}
+
+/* A yes/no option whose two values are `on` and `off`. */
+static int opt_bool(const char *key, const char *on, int fallback)
+{
+   const char *v = opt_string(key, NULL);
+   if (!v) return fallback;
+   return strcmp(v, on) == 0;
+}
+
+static int opt_int(const char *key, int fallback)
+{
+   const char *v = opt_string(key, NULL);
+   return v ? atoi(v) : fallback;
+}
+
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 {
    (void)level;
@@ -1849,20 +1918,17 @@ static struct retro_input_descriptor input_descs[] = {
       {0, 0, 0, 0, NULL},
 };
 
-#ifdef VNOVEL_KIRIKIRI
 static bool kiri_input_wired =
       false; /* reset clears this so a new engine re-wires */
 static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t);
-#endif
 
 /* Keys the *core* acts on, as opposed to keys the game should see. Edge-driven
  * so a tap cannot be missed between frames, which is why this exists rather than
  * a poll in retro_run.
  *
- * Called from whichever keyboard callback the frontend was given: this function
- * directly for ONScripter/PONScripter, and from krkr_keyboard_cb for the
- * KiriKiri build, because RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK can only be
- * set once per session. */
+ * Called from krkr_keyboard_cb, the single keyboard callback the frontend is
+ * given, because RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK can only be set once
+ * per session. */
 static bool vnovel_core_keyboard_handle(bool down, unsigned keycode)
 {
    /* The menu hotkey, from the core option. 0 means unbound, which is the
@@ -1908,12 +1974,6 @@ static bool vnovel_core_keyboard_handle(bool down, unsigned keycode)
    return false;
 }
 
-#ifndef VNOVEL_KIRIKIRI
-static void vnovel_core_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
-{
-   vnovel_core_keyboard_handle(down, keycode);
-}
-#endif
 
 void retro_set_environment(retro_environment_t cb)
 {
@@ -1928,32 +1988,8 @@ void retro_set_environment(retro_environment_t cb)
 
    // Real keyboard events (Enter/Space/arrow keys) must reach the engine:
    // RetroArch's default retropad map does not carry Space.
-#ifdef VNOVEL_KIRIKIRI
    static struct retro_keyboard_callback kb_cb = {krkr_keyboard_cb};
    environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb_cb);
-#endif
-
-   /* A core-level keyboard callback for keys the *core* owns, registered in
-    * every configuration.
-    *
-    * The F12 toggle cannot rely on polling the key state in retro_run: that
-    * state is a level sampled once per frame, so a tap whose press and release
-    * both land between two frames is simply never seen. The callback is
-    * edge-driven, so it cannot miss one. It is a separate registration from the
-    * KiriKiri one above because that callback forwards keys to the engine and
-    * this one must not.
-    *
-    * RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK can only be set once per frontend
-    * session, so when the KiriKiri callback is registered it is the one that
-    * arrives and it must dispatch core keys too - see krkr_keyboard_cb. This
-    * registration covers the ONScripter/PONScripter build, where nothing else
-    * claims it. */
-#ifndef VNOVEL_KIRIKIRI
-   {
-      static struct retro_keyboard_callback core_kb_cb = {vnovel_core_keyboard_cb};
-      environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &core_kb_cb);
-   }
-#endif
 
    // Core options: frame sync, indicators, debug level
    libretro_set_core_options(
@@ -1975,7 +2011,6 @@ void retro_set_environment(retro_environment_t cb)
    * feedback the core gets about the ring it feeds — RetroArch's own statistics
    * printout is #ifdef DEBUG and only at deinit — and the KiriKiri submit
    * controller steers on it (see krkr_abuf_drain). */
-#ifdef VNOVEL_KIRIKIRI
    static struct retro_audio_buffer_status_callback audio_status_cb = {
          [](bool active, unsigned occupancy, bool underrun_likely)
          {
@@ -1987,7 +2022,6 @@ void retro_set_environment(retro_environment_t cb)
          }};
    environ_cb(RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK,
               &audio_status_cb);
-#endif /* VNOVEL_KIRIKIRI */
 
    // Shoulder buttons as mouse clicks, matching the KiriKiri shim and the
    // RetroPad convention: L = left click (the primary act: confirm/advance),
@@ -2092,12 +2126,15 @@ static void frame_cb(retro_usec_t usec)
 
 void retro_init(void)
 {
-   { /* Install crash diagnostics so a core fault leaves a backtrace instead of
-     * only RetroArch's bare "Process exitcode: -11". Resolve the portable log
-     * location first: unlike retro_init, retro_load_game has the save
-     * directory, and it runs after this per load — but RETRO_ENVIRONMENT_GET_
-     * SAVE_DIRECTORY is valid as soon as the environment is set, so ask here
-     * and let retro_load_game refresh it if the directory changes. */
+   /* Resolve VNOVEL_DEBUG before anything can print a diagnostic, so the
+    * start-up banner states what is on rather than what a later call turned
+    * on. */
+   core_debug_init();
+   {
+      /* Install crash diagnostics so a core fault leaves a backtrace instead of
+       * only RetroArch's bare "Process exitcode: -11". The log location comes
+       * from the save directory, which retro_load_game has as well; ask here so
+       * a fault during start-up is covered too. */
       const char *save_dir = NULL;
       if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir))
          ons_set_crash_log_path(save_dir);
@@ -2240,7 +2277,6 @@ void retro_init(void)
    }
 }
 
-#ifdef VNOVEL_KIRIKIRI
 // KiriKiri engine C functions (from engine_kirikiri_cabi.cpp)
 extern "C"
 {
@@ -2348,10 +2384,8 @@ extern "C"
    int krkr_take_frame(const unsigned char **pixels, int *w, int *h,
                        int *pitch, unsigned long long *serial);
 }
-#endif /* VNOVEL_KIRIKIRI */
 
-#ifdef VNOVEL_KIRIKIRI
-/* --- KiriKiri audio buffer ------------------------------------------------
+/* KiriKiri audio buffer
  * Holds the engine's mixed output between retro_run calls. The engine produces
  * in device quanta (1024 frames = 21.33 ms at 48 kHz) while retro_run runs at
  * the video rate, so production and consumption do not line up per call; this
@@ -2544,7 +2578,6 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
       seen[keycode] = 0;
    krkr_push_key((int)keycode, down ? 1 : 0);
 }
-#endif /* VNOVEL_KIRIKIRI */
 
 /* The text-layout flags the ONS/PONS engines read through the bridge
  * (engine_bridge.h). Called once before the engine thread starts and once per
@@ -2552,19 +2585,13 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
  * lays out its text) before retro_run is ever reached. */
 static void read_text_behaviour_options(void)
 {
-   struct retro_variable var = {0};
-
-   var.key = "vnovel_english_word_wrap";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      vnovel_english_word_wrap = (strcmp(var.value, "enabled") == 0);
-
-   var.key = "vnovel_fit_oversize_banners";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      vnovel_fit_oversize_banners = (strcmp(var.value, "enabled") == 0);
-
-   var.key = "vnovel_wrap_total_fit";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      vnovel_wrap_total_fit = (strcmp(var.value, "enabled") == 0);
+   vnovel_english_word_wrap =
+         opt_bool("vnovel_english_word_wrap", "enabled", vnovel_english_word_wrap);
+   vnovel_fit_oversize_banners = opt_bool("vnovel_fit_oversize_banners",
+                                          "enabled",
+                                          vnovel_fit_oversize_banners);
+   vnovel_wrap_total_fit =
+         opt_bool("vnovel_wrap_total_fit", "enabled", vnovel_wrap_total_fit);
 }
 
 bool retro_load_game(const struct retro_game_info *game)
@@ -2660,13 +2687,11 @@ bool retro_load_game(const struct retro_game_info *game)
    // via krkr_set_resolution in its branch.
    int forced_res_w = 0, forced_res_h = 0;
    {
-      struct retro_variable resvar = {0};
-      resvar.key                   = "vnovel_internal_resolution";
-      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &resvar) && resvar.value &&
-          strcmp(resvar.value, "native") != 0)
+      const char *res = opt_string("vnovel_internal_resolution", NULL);
+      if (res && strcmp(res, "native") != 0)
       {
          unsigned a = 0, b = 0;
-         if (sscanf(resvar.value, "%ux%u", &a, &b) == 2)
+         if (sscanf(res, "%ux%u", &a, &b) == 2)
          {
             forced_res_w = (int)a;
             forced_res_h = (int)b;
@@ -2675,7 +2700,6 @@ bool retro_load_game(const struct retro_game_info *game)
    }
 
    // Detect engine: KiriKiri for .xp3, PONScripter for pscript.dat, ONScripter-EN otherwise
-#ifdef VNOVEL_KIRIKIRI
 
    char xp3_check[PATH_MAX_LENGTH];
    fill_pathname_join(xp3_check, archive_path, "data.xp3", sizeof(xp3_check));
@@ -2747,12 +2771,12 @@ bool retro_load_game(const struct retro_game_info *game)
        * Resolved to an absolute path first: when the frontend hands over a
        * relative ROM path (a bare `retroarch data.xp3`, as the harness does) the
        * save directory is built from its dirname and comes out as `.../vnovel/.`
-       * - correct but useless to read. realpath is what makes the row say where
-       * the files actually are. */
+       * - correct but useless to read. Resolving it is what makes the row say
+       * where the files actually are. */
       {
          char line[160], abs[PATH_MAX_LENGTH];
          const char *shown = game_save_dir;
-         if (realpath(game_save_dir, abs))
+         if (portable_realpath(game_save_dir, abs))
             shown = abs;
          snprintf(line, sizeof(line), "Saves: %s", shown);
          vnovel_menu_set_info(VNOVEL_MENU_INFO_SAVES, line);
@@ -2763,49 +2787,46 @@ bool retro_load_game(const struct retro_game_info *game)
        * per-run override and outranks the table. Read here so it is in place
        * before krkr_init resolves the engine's options. */
       {
-         struct retro_variable compvar = {0};
-         compvar.key                   = "vnovel_kirikiri_compat";
-         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &compvar) && compvar.value)
-            krkr_set_engine_compat(compvar.value);
+         const char *era = opt_string("vnovel_kirikiri_compat", NULL);
+         if (era)
+            krkr_set_engine_compat(era);
       }
-      /* Diagnostic probes, on the same channel and for the same reason: the
-       * engine reads its debug word from the environment at start-up, and a
-       * frontend cannot set the environment. Read here so it is in place before
-       * krkr_init. The engine owns the name table; this passes the string
-       * through untouched. */
+      /* Diagnostic probes on the same channel: the engine reads its debug word
+       * from the environment at start-up, and a frontend cannot set the
+       * environment, so this is read here to be in place before krkr_init. The
+       * engine owns the name table; this passes the string through untouched. */
       {
-         struct retro_variable dbgvar = {0};
-         dbgvar.key                   = "vnovel_kirikiri_debug";
-         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
-            krkr_set_debug_flags(dbgvar.value);
+         const char *dbg = opt_string("vnovel_kirikiri_debug", NULL);
+         if (dbg)
+            krkr_set_debug_flags(dbg);
       }
       /* The host resource override directory, computed above as a softpatch
-       * sibling of the game (<gamedir>.overrides/). It was assigned to
-       * vnovel_override_dir and read by nothing until now: the KiriKiri path had
-       * no override channel, so a user patch to a script inside data.xp3 could
-       * not win. Same channel as the two above, for the same reason. */
+       * sibling of the game (<gamedir>.overrides/). Passed on the same channel
+       * as the era and debug options above: the engine reads the override
+       * directory at start-up on its own thread, so it must be set before
+       * krkr_init for a user patch inside data.xp3 to take effect. */
       krkr_set_override_dir(vnovel_override_dir);
       /* The override directory, for the menu: whether the channel is wired at
        * all is the first thing to check when a user patch does nothing, and the
        * path is what a user needs in order to put a file there.
        *
-       * Made absolute for display, for the same reason as the save path above:
-       * with a relative ROM path this comes out as `./.overrides/`, which names
-       * nothing a user can open. The engine keeps the relative form it was
-       * given - it is resolved against the game directory there - so this is a
-       * second string for the menu, not a change to what the engine uses. */
+       * Made absolute for display: with a relative ROM path this comes out as
+       * `./.overrides/`, which names nothing a user can open. The engine keeps
+       * the relative form it was given - it is resolved against the game
+       * directory there - so this is a second string for the menu, not a change
+       * to what the engine uses. */
       {
          char line[160], abs[PATH_MAX_LENGTH];
          const char *shown = vnovel_override_dir;
          const char *note = "";
          if (shown && shown[0])
          {
-            if (realpath(shown, abs))
+            if (portable_realpath(shown, abs))
                shown = abs;
             else
             {
-               /* realpath needs the path to exist, and the interesting case is
-                * exactly when it does not: no override directory means no
+               /* Resolution needs the path to exist, and the interesting case
+                * is exactly when it does not: no override directory means no
                 * patches are being read, which is the answer to "why did my
                 * patch do nothing". Prefix the working directory so the row
                 * still names a location the user can create. */
@@ -2833,31 +2854,26 @@ bool retro_load_game(const struct retro_game_info *game)
        * can change and then re-open the bar to confirm. */
       {
          char line[160];
-         struct retro_variable cv = {0};
-         cv.key = "vnovel_kirikiri_compat";
-         const char *want = "auto";
-         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &cv) && cv.value)
-            want = cv.value;
+         const char *want = opt_string("vnovel_kirikiri_compat", "auto");
          snprintf(line, sizeof(line), "Era: %s (see the log for the result)",
                   want);
          vnovel_menu_set_info(VNOVEL_MENU_INFO_COMPAT, line);
       }
       /* The game's identity, so the engine can key its per-game compat table.
-       * Computed here because retro_load_game is where the content path is known
-       * and where the engine's compat option is read; exported on the same
-       * channel and for the same reason (the mask reads the environment during
-       * engine start-up, on the engine's own thread).
+       * Computed here because retro_load_game is where the content path is
+       * known and where the engine's compat option is read; exported on the
+       * same channel because the engine reads the id during start-up, on its
+       * own thread.
        *
-       * The frontend's extended game information
-       * (RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, legal only here) was the first
-       * candidate, but its retro_game_info_ext carries no hash: only paths, a
-       * frontend-specific `name`, `meta`, a size and the in-archive flags. None
-       * of those identifies a release. So the id is the crc32 of data.xp3 — the
-       * file engine detection already opened — which is exactly what
-       * tools/hash-game.py fingerprints and vnovel.rdb is indexed on; the whole
-       * file is hashed, matching that tool. When it cannot be taken the engine
-       * has no table entry and falls through to the documented default era;
-       * that is logged rather than guessed at. */
+       * The id is the crc32 of data.xp3, the file engine detection already
+       * opened: the whole file is hashed, matching what
+       * tools/hash-game.py fingerprints and vnovel.rdb is indexed on. The
+       * frontend's extended game information is not used because
+       * retro_game_info_ext carries no hash - only paths, a frontend-specific
+       * `name`, `meta`, a size and the in-archive flags - none of which
+       * identifies a release. When the id cannot be taken the engine has no
+       * table entry and falls through to the documented default era; that is
+       * logged rather than guessed at. */
       {
          char gid[16];
          char line[160];
@@ -2865,13 +2881,12 @@ bool retro_load_game(const struct retro_game_info *game)
          {
             krkr_set_game_id(gid);
             log_cb(RETRO_LOG_INFO, "Game id: %s\n", gid);
-            /* What the menu shows. The frontend's own name is not used: the
-             * comment above records why it was rejected as an identity, and it
-             * would be misleading here for the same reason - it is whatever the
-             * frontend scraped, not something this core verified. The archive's
-             * basename is real and the user recognises it; the id beside it is
-             * the same one tools/hash-game.py prints, so a report can be checked
-             * against the database. */
+            /* What the menu shows. The frontend's own name is not used: it is
+             * whatever the frontend scraped, not something this core verified,
+             * so it would be a misleading identity. The archive's basename is
+             * real and the user recognises it; the id beside it is the same one
+             * tools/hash-game.py prints, so a report can be checked against the
+             * database. */
             {
                const char *base = strrchr(xp3_check, '/');
                base = base ? base + 1 : xp3_check;
@@ -2918,30 +2933,20 @@ bool retro_load_game(const struct retro_game_info *game)
       /* Read the text-plane options and make the requests BEFORE the engine
        * starts, not on the first retro_run.
        *
-       * This is an initialization-order requirement, and getting it wrong is
-       * invisible rather than loud. `krkr_init` below starts the engine thread,
-       * which boots KAG and draws its opening text immediately - a whole page,
-       * in one burst, before `retro_run` is ever called. Requesting the flags
-       * per-frame therefore arrived after every glyph had already been drawn
-       * and composited: the text plane reported `splice=0` for all of it (so
-       * the core accumulated nothing and showed a raw line box), and the
-       * artwork skip could not apply to layers already in the frame.
-       *
-       * Measured, and confirmed the other way round: with a slow-text scenario
-       * that draws over many frames, the same requests land mid-scene and both
-       * switches work (6 publications with splice=0, then 38 with splice=1).
-       * So the mechanism was always correct; only the moment was wrong.
+       * `krkr_init` below starts the engine thread, which boots KAG and draws
+       * its opening text immediately - a whole page, in one burst, before
+       * `retro_run` is ever called. Requesting the flags per-frame would arrive
+       * after every glyph had already been drawn and composited: the text plane
+       * would report `splice=0` for all of it (the core accumulates nothing and
+       * shows a raw line box), and the artwork skip could not apply to layers
+       * already in the frame. The mechanism is correct; only the timing matters.
        *
        * The read must happen here rather than in the option block below, which
        * runs on the first frame - too late by exactly that burst. */
       {
-         struct retro_variable kvar = {0};
-         kvar.key = "vnovel_text_debug_view";
-         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &kvar) && kvar.value)
-            opt_text_debug_view = (strcmp(kvar.value, "pip") == 0) ? 1 : 0;
-         kvar.key = "vnovel_split_view";
-         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &kvar) && kvar.value)
-            opt_split_view = (strcmp(kvar.value, "enabled") == 0) ? 1 : 0;
+         opt_text_debug_view =
+               opt_bool("vnovel_text_debug_view", "pip", opt_text_debug_view);
+         opt_split_view = opt_bool("vnovel_split_view", "enabled", opt_split_view);
 
          /* Page mode is an env var read at load, above; keep the union rule the
           * per-frame path uses (see update_splice_request) in one place by
@@ -2961,7 +2966,6 @@ bool retro_load_game(const struct retro_game_info *game)
       strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
       return true;
    }
-#endif /* VNOVEL_KIRIKIRI */
    // extern C declarations are at file scope above retro_load_game
    // Check for PONScripter
    char pscript_check[PATH_MAX_LENGTH];
@@ -3045,10 +3049,7 @@ bool retro_load_game(const struct retro_game_info *game)
 #endif
 
    // Read debug level option before starting engine
-   struct retro_variable dbgvar = {0};
-   dbgvar.key                   = "vnovel_debug_level";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dbgvar) && dbgvar.value)
-      opt_debug_level = atoi(dbgvar.value);
+   opt_debug_level = opt_int("vnovel_debug_level", opt_debug_level);
    vtable->setDebugLevel(engine, opt_debug_level);
    log_cb(RETRO_LOG_INFO, "Debug level: %d\n", opt_debug_level);
 
@@ -3138,7 +3139,6 @@ void retro_reset(void)
    * to initial conditions, then start it again. Both parts are driven here, in
    * order, with a bounded wait for the engine to acknowledge the stop — the
    * core never tears engine state down itself and never pokes engine flags. */
-#ifdef VNOVEL_KIRIKIRI
    if (!vtable)
    {
       krkr_request_stop();
@@ -3148,7 +3148,6 @@ void retro_reset(void)
       SDL_libretro_in_reset = false;
       return;
    }
-#endif
 
    stop_engine_thread();
 #ifdef LIBRETRO_FRAME_SYNC
@@ -3187,22 +3186,21 @@ extern "C" void SDL_ThreadedTimerCheck(void);
  * there `opt_ff_scale` stays 1.0 and FF never dilates KiriKiri's timed work. */
 static void read_ff_speed_option(void)
 {
-   struct retro_variable var = {0};
-   var.key                   = "vnovel_fastforward_speed";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   const char *v = opt_string("vnovel_fastforward_speed", NULL);
+   if (v)
    {
       int mult = 0;
-      if (strcmp(var.value, "2x") == 0)
+      if (strcmp(v, "2x") == 0)
          mult = 2;
-      else if (strcmp(var.value, "4x") == 0)
+      else if (strcmp(v, "4x") == 0)
          mult = 4;
-      else if (strcmp(var.value, "8x") == 0)
+      else if (strcmp(v, "8x") == 0)
          mult = 8;
-      else if (strcmp(var.value, "16x") == 0)
+      else if (strcmp(v, "16x") == 0)
          mult = 16;
-      else if (strcmp(var.value, "32x") == 0)
+      else if (strcmp(v, "32x") == 0)
          mult = 32;
-      else if (strcmp(var.value, "max") == 0)
+      else if (strcmp(v, "max") == 0)
          mult = 64;
       /* The multiplier is the FF RATE for the single game clock: the clock
      * dilates by `mult` while FF is on, so every timed engine event (ONS/PON
@@ -3250,12 +3248,8 @@ static void read_frame_options(void)
       }
    }
    // Re-read core options each frame (allows hot-reload from Quick Menu)
-   struct retro_variable var = {0};
-
-   var.key = "vnovel_frame_sync";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      bool new_sync = (strcmp(var.value, "enabled") == 0);
+      bool new_sync = opt_bool("vnovel_frame_sync", "enabled", opt_frame_sync);
       if (new_sync != opt_frame_sync)
       {
          opt_frame_sync = new_sync;
@@ -3266,14 +3260,10 @@ static void read_frame_options(void)
       }
    }
 
-   var.key = "vnovel_mode_indicators";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      opt_indicators = (strcmp(var.value, "enabled") == 0);
+   opt_indicators = opt_bool("vnovel_mode_indicators", "enabled", opt_indicators);
 
-   var.key = "vnovel_debug_level";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      int new_debug = atoi(var.value);
+      int new_debug = opt_int("vnovel_debug_level", opt_debug_level);
       if (new_debug != opt_debug_level)
       {
          opt_debug_level = new_debug;
@@ -3282,25 +3272,26 @@ static void read_frame_options(void)
       }
    }
 
-   var.key = "vnovel_software_cursor";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      opt_software_cursor = (strcmp(var.value, "enabled") == 0);
+   opt_software_cursor =
+         opt_bool("vnovel_software_cursor", "enabled", opt_software_cursor);
 
-   var.key = "vnovel_text_speed";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      int new_speed = -1;
-      if (strcmp(var.value, "slow") == 0)
-         new_speed = 0;
-      else if (strcmp(var.value, "normal") == 0)
-         new_speed = 1;
-      else if (strcmp(var.value, "fast") == 0)
-         new_speed = 2;
-      else if (strcmp(var.value, "instant") == 0)
-         new_speed = 3;
-      if (new_speed != opt_text_speed)
+      const char *v     = opt_string("vnovel_text_speed", NULL);
+      int         speed = -1;
+      if (v)
       {
-         opt_text_speed = new_speed;
+         if (strcmp(v, "slow") == 0)
+            speed = 0;
+         else if (strcmp(v, "normal") == 0)
+            speed = 1;
+         else if (strcmp(v, "fast") == 0)
+            speed = 2;
+         else if (strcmp(v, "instant") == 0)
+            speed = 3;
+      }
+      if (speed != opt_text_speed)
+      {
+         opt_text_speed = speed;
          if (engine && opt_text_speed >= 0 && opt_text_speed <= 2)
             vtable->setTextSpeed(engine, opt_text_speed);
       }
@@ -3312,10 +3303,8 @@ static void read_frame_options(void)
     * bridge (engine_bridge.h). Read each frame so Quick Menu changes apply. */
    read_text_behaviour_options();
 
-   var.key = "vnovel_textbox_opacity";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      int pct = atoi(var.value);
+      int pct = opt_int("vnovel_textbox_opacity", vnovel_textbox_opacity);
       if (pct < 0)
          pct = 0;
       if (pct > 200)
@@ -3323,42 +3312,44 @@ static void read_frame_options(void)
       vnovel_textbox_opacity = pct;
    }
 
-   var.key = "vnovel_mouse_sensitivity";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      opt_mouse_sensitivity = atof(var.value);
+   {
+      const char *v = opt_string("vnovel_mouse_sensitivity", NULL);
+      if (v)
+         opt_mouse_sensitivity = atof(v);
+   }
 #endif
 /* Read key remap options */
 #define PARSE_KEY(optname, idx)                                                \
    do                                                                          \
    {                                                                           \
-      var.key = optname;                                                       \
-      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)       \
+      const char *v = opt_string(optname, NULL);                               \
+      if (v)                                                                   \
       {                                                                        \
-         if (strcmp(var.value, "[") == 0)                                      \
+         if (strcmp(v, "[") == 0)                                              \
             remap_keys[idx] = SDLK_LEFTBRACKET;                                \
-         else if (strcmp(var.value, "]") == 0)                                 \
+         else if (strcmp(v, "]") == 0)                                         \
             remap_keys[idx] = SDLK_RIGHTBRACKET;                               \
-         else if (strcmp(var.value, "h") == 0)                                 \
+         else if (strcmp(v, "h") == 0)                                         \
             remap_keys[idx] = SDLK_h;                                          \
-         else if (strcmp(var.value, "q") == 0)                                 \
+         else if (strcmp(v, "q") == 0)                                         \
             remap_keys[idx] = SDLK_q;                                          \
-         else if (strcmp(var.value, "b") == 0)                                 \
+         else if (strcmp(v, "b") == 0)                                         \
             remap_keys[idx] = SDLK_b;                                          \
-         else if (strcmp(var.value, "backspace") == 0)                         \
+         else if (strcmp(v, "backspace") == 0)                                 \
             remap_keys[idx] = SDLK_BACKSPACE;                                  \
-         else if (strcmp(var.value, "escape") == 0)                            \
+         else if (strcmp(v, "escape") == 0)                                    \
             remap_keys[idx] = SDLK_ESCAPE;                                     \
-         else if (strcmp(var.value, "x") == 0)                                 \
+         else if (strcmp(v, "x") == 0)                                         \
             remap_keys[idx] = SDLK_x;                                          \
-         else if (strcmp(var.value, "return") == 0)                            \
+         else if (strcmp(v, "return") == 0)                                    \
             remap_keys[idx] = SDLK_RETURN;                                     \
-         else if (strcmp(var.value, "space") == 0)                             \
+         else if (strcmp(v, "space") == 0)                                     \
             remap_keys[idx] = SDLK_SPACE;                                      \
-         else if (strcmp(var.value, "z") == 0)                                 \
+         else if (strcmp(v, "z") == 0)                                         \
             remap_keys[idx] = SDLK_z;                                          \
-         else if (strcmp(var.value, "l") == 0)                                 \
+         else if (strcmp(v, "l") == 0)                                         \
             remap_keys[idx] = SDLK_l;                                          \
-         else if (strcmp(var.value, "f") == 0)                                 \
+         else if (strcmp(v, "f") == 0)                                         \
             remap_keys[idx] = SDLK_f;                                          \
          else                                                                  \
             remap_keys[idx] = default_remap_keys[idx];                         \
@@ -3374,7 +3365,6 @@ static void read_frame_options(void)
    PARSE_KEY("vnovel_key_advance", REMAP_ADVANCE);
 }
 
-#ifdef VNOVEL_KIRIKIRI
 /* KiriKiri frame. The engine owns its own thread and publishes a video surface;
  * this drives input, pacing, the single game clock, audio and the framebuffer
  * handoff. Runs only while KiriKiri is the active engine (vtable == NULL). */
@@ -3443,22 +3433,7 @@ static void kiri_frame(void)
          clock_scale_applied = want;
          ons_libretro_clock_set(want);
       }
-      static int kcdbg = -1;
-      if (kcdbg < 0)
-         kcdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
-      if (kcdbg)
-      {
-         static int kcdbg_count = 0;
-         if (++kcdbg_count >= 30)
-         {
-            kcdbg_count = 0;
-            fprintf(stderr,
-                    "[clock] kiri ff=%d scale=%.3f t=%lldms\n",
-                    (int)kiri_ff,
-                    clock_scale_applied,
-                    ons_libretro_game_clock_ms());
-         }
-      }
+      clock_trace("kiri ", (int)kiri_ff);
    }
    /* Pace to 60 fps. The engine's fpslimit plugin is a no-op and its main
      * loop has no pacing, so RetroArch would otherwise call retro_run as fast
@@ -3615,9 +3590,19 @@ static void kiri_frame(void)
          if (!stripe_init)
          {
             stripe_init = true;
+            /* On when the core's 'present' bit is set, at a default geometry;
+             * VNOVEL_PRESENT_STRIPES="height:alpha" overrides the geometry and
+             * also turns it on by itself, so an existing harness keeps working. */
+            bool on = CORE_DEBUG_ON(DEBUG_FLAG_PRESENT);
+            stripe_h = 8;
+            stripe_a = 64;
             const char *sv = getenv("VNOVEL_PRESENT_STRIPES");
-            if (sv && sv[0]) sscanf(sv, "%d:%d", &stripe_h, &stripe_a);
-            if (stripe_h <= 0) stripe_h = 0;
+            if (sv && sv[0])
+            {
+               on = true;
+               sscanf(sv, "%d:%d", &stripe_h, &stripe_a);
+            }
+            if (!on || stripe_h <= 0) stripe_h = 0;
          }
          bool draw_stripes = stripe_h > 0;
          /* Software cursor: the engine renders no pointer (dummy video
@@ -3628,17 +3613,12 @@ static void kiri_frame(void)
              draw_stripes || vnovel_menu_should_draw() ||
              opt_text_debug_view)
          {
-            static Uint32 *kshadow = NULL;
-            static int kshadow_sz  = 0;
-            int fb                 = pitch * h;
-            if (fb > kshadow_sz)
-            {
-               kshadow    = (Uint32 *)realloc(kshadow, fb);
-               kshadow_sz = fb;
-            }
+            static Uint32 *kshadow_buf = NULL;
+            static int kshadow_size    = 0;
+            Uint32 *kshadow            = overlay_shadow(
+                  &kshadow_buf, &kshadow_size, pixels, pitch * h);
             if (kshadow)
             {
-               memcpy(kshadow, pixels, fb);
                int kpitch = pitch / 4;
                if (draw_stripes)
                {
@@ -3712,38 +3692,10 @@ static void kiri_frame(void)
                   }
                } /* opt_software_cursor */
                /* Mode indicators (top-right), matching the ons/pons colors. */
-               {
-                  int bx = w - 12, by = 4;
-                  if (draw_auto)
-                  {
-                     for (int dy = 0; dy < 8; dy++)
-                        for (int dx = 0; dx < 8; dx++)
-                           if (by + dy >= 0 && by + dy < h && bx + dx >= 0 &&
-                               bx + dx < w)
-                              kshadow[(by + dy) * kpitch + (bx + dx)] =
-                                    0xCC22AA22;
-                     bx -= 12;
-                  }
-                  if (draw_skip)
-                  {
-                     for (int dy = 0; dy < 8; dy++)
-                        for (int dx = 0; dx < 8; dx++)
-                           if (by + dy >= 0 && by + dy < h && bx + dx >= 0 &&
-                               bx + dx < w)
-                              kshadow[(by + dy) * kpitch + (bx + dx)] =
-                                    0xCCAAAA22;
-                     bx -= 12;
-                  }
-                  if (draw_ff)
-                  {
-                     for (int dy = 0; dy < 8; dy++)
-                        for (int dx = 0; dx < 8; dx++)
-                           if (by + dy >= 0 && by + dy < h && bx + dx >= 0 &&
-                               bx + dx < w)
-                              kshadow[(by + dy) * kpitch + (bx + dx)] =
-                                    0xCC2266FF;
-                  }
-               }
+               draw_mode_badges(kshadow, kpitch, w, h,
+                                (draw_auto ? BADGE_AUTO : 0) |
+                                      (draw_skip ? BADGE_SKIP : 0) |
+                                      (draw_ff ? BADGE_FF : 0));
                /* The native menu, composited last so it sits above the game
                 * and the core's own overlays. Into kshadow, never into
                 * `pixels`: the engine's framebuffer and its dirty-rect
@@ -3905,7 +3857,6 @@ static void kiri_frame(void)
       }
    }
 }
-#endif /* VNOVEL_KIRIKIRI */
 
 /* Pull one batch from the engine's mixer and hand it to the frontend.
  *
@@ -3985,53 +3936,22 @@ static void ons_present_frame(const EngineSurface *screen)
                       vnovel_menu_should_draw() || opt_text_debug_view;
    if (need_shadow && screen && screen->pixels)
    {
-      static Uint32 *shadow  = NULL;
-      static int shadow_size = 0;
-      /* Size by the row *stride*, not by width*4. The engine's surface is
-       * allowed to pad each row (SDL surfaces are commonly aligned), and this
-       * buffer is both indexed with the stride below and handed to video_cb()
-       * with that same stride. Sizing it width*height*4 while addressing it as
-       * pitch*height means that as soon as pitch > width*4 the rows walk off the
-       * end of the allocation and read into the following row's bytes - a
-       * stride repeat, which shows as a diagonal shear/ghost rather than
-       * black - and the frontend, told the rows are `pitch` apart, reads the
-       * same undersized buffer the same wrong way. */
-      int fb_size            = screen->pitch * screen->height;
-      if (fb_size <= 0)
-      {
-         video_cb(NULL, 0, 0, 0);
-         return;
-      }
-      if (fb_size > shadow_size)
-      {
-         shadow      = (Uint32 *)realloc(shadow, fb_size);
-         shadow_size = fb_size;
-      }
+      static Uint32 *shadow_buf = NULL;
+      static int shadow_bytes   = 0;
+      int fb_size               = screen->pitch * screen->height;
+      Uint32 *shadow =
+            overlay_shadow(&shadow_buf, &shadow_bytes, screen->pixels, fb_size);
       if (!shadow)
       {
          video_cb(NULL, 0, 0, 0);
          return;
       }
-      memcpy(shadow, screen->pixels, fb_size);
       int w = screen->width, h = screen->height;
       int pitch = screen->pitch / 4;
-      /* Draw mode indicators (top-right corner) */
-      int bx = w - 12, by = 4;
-      if (draw_auto)
-      {
-         for (int dy = 0; dy < 8; dy++)
-            for (int dx = 0; dx < 8; dx++)
-               if (by + dy >= 0 && by + dy < h && bx + dx >= 0 && bx + dx < w)
-                  shadow[(by + dy) * pitch + (bx + dx)] = 0xCC22AA22;
-         bx -= 12;
-      }
-      if (draw_skip)
-      {
-         for (int dy = 0; dy < 8; dy++)
-            for (int dx = 0; dx < 8; dx++)
-               if (by + dy >= 0 && by + dy < h && bx + dx >= 0 && bx + dx < w)
-                  shadow[(by + dy) * pitch + (bx + dx)] = 0xCCAAAA22;
-      }
+      /* Mode indicators (top-right corner) */
+      draw_mode_badges(shadow, pitch, w, h,
+                       (draw_auto ? BADGE_AUTO : 0) |
+                             (draw_skip ? BADGE_SKIP : 0));
       /* Draw software cursor on shadow (not on engine framebuffer) */
       if (opt_software_cursor)
       {
@@ -4082,6 +4002,22 @@ static void ons_present_frame(const EngineSurface *screen)
    }
 }
 
+/* ~2 Hz trace of the game clock, so a human can watch the bias grow at
+ * (scale-1)x while fast-forward is on and freeze when it is off. `tag` prefixes
+ * the line to name the caller ("kiri ", trailing space included) or is NULL for
+ * the ONScripter path. */
+static void clock_trace(const char *tag, int ff)
+{
+   if (!CORE_DEBUG_ON(DEBUG_FLAG_CLOCK))
+      return;
+   static int count = 0;
+   if (++count < 30)
+      return;
+   count = 0;
+   fprintf(stderr, "[clock] %sff=%d scale=%.3f t=%lldms\n", tag ? tag : "", ff,
+           clock_scale_applied, ons_libretro_game_clock_ms());
+}
+
 /* Drive the single game clock. Only touch it when the effective rate
  * actually changes (FF on/off, or the option changed) — a plain double
  * compare per frame, no store, no call in the common case. `scale` is the
@@ -4094,24 +4030,7 @@ static void ons_drive_clock(bool ff)
       clock_scale_applied = want;
       ons_libretro_clock_set(want);
    }
-   /* ONS_CLOCK_DEBUG: ~2 Hz trace of the live clock so a human can watch the
-   * bias grow at (scale-1)x while FF is on and freeze when it is off. */
-   static int cdbg = -1;
-   if (cdbg < 0)
-      cdbg = getenv("ONS_CLOCK_DEBUG") ? 1 : 0;
-   if (cdbg)
-   {
-      static int cdbg_count = 0;
-      if (++cdbg_count >= 30)
-      {
-         cdbg_count = 0;
-         fprintf(stderr,
-                 "[clock] ff=%d scale=%.3f t=%lldms\n",
-                 (int)ff,
-                 clock_scale_applied,
-                 ons_libretro_game_clock_ms());
-      }
-   }
+   clock_trace(NULL, (int)ff);
 }
 
 /* Frontend heartbeat for the ONS/PONS engine thread. RetroArch stops calling
@@ -4132,15 +4051,14 @@ static void stamp_frontend_heartbeat(void)
  * sees them. */
 static void read_pointer_options(void)
 {
-   struct retro_variable pvar = {0};
-   pvar.key                   = "vnovel_pointer_enable";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
-      opt_pointer_enable = (strcmp(pvar.value, "enabled") == 0);
-   pvar.key = "vnovel_pointer_source";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &pvar) && pvar.value)
-      opt_pointer_source = (strcmp(pvar.value, "left") == 0)
-                                 ? POINTER_SOURCE_LEFT
-                                 : POINTER_SOURCE_RIGHT;
+   opt_pointer_enable =
+         opt_bool("vnovel_pointer_enable", "enabled", opt_pointer_enable);
+   {
+      const char *src = opt_string("vnovel_pointer_source", NULL);
+      if (src)
+         opt_pointer_source = (strcmp(src, "left") == 0) ? POINTER_SOURCE_LEFT
+                                                         : POINTER_SOURCE_RIGHT;
+   }
 }
 
 /* The text debug view option. Read on the same shared per-frame path as the
@@ -4149,22 +4067,16 @@ static void read_pointer_options(void)
  * take effect on KiriKiri. */
 static void read_text_debug_view_option(void)
 {
-   struct retro_variable dvar = {0};
-   dvar.key                   = "vnovel_text_debug_view";
-   int want = opt_text_debug_view;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dvar) && dvar.value)
-      want = (strcmp(dvar.value, "pip") == 0) ? 1 : 0;
-
+   int want = opt_bool("vnovel_text_debug_view", "pip", opt_text_debug_view);
    if (want != opt_text_debug_view)
       opt_text_debug_view = want;
 
-   /* Split view. Read here, on the same shared path, for the same reason as the
-    * debug view: the KiriKiri branch returns through kiri_frame() before
-    * read_frame_options(), so an option read there would never take effect on
-    * the engine this mode exists for. */
-   dvar.key = "vnovel_split_view";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &dvar) && dvar.value)
-      opt_split_view = (strcmp(dvar.value, "enabled") == 0) ? 1 : 0;
+   /* Split view follows the same shared path: the KiriKiri branch returns
+    * through kiri_frame() before read_frame_options(), so reading it there would
+    * never take effect on the engine this mode exists for. */
+   want = opt_bool("vnovel_split_view", "enabled", opt_split_view);
+   if (want != opt_split_view)
+      opt_split_view = want;
 }
 
 /* Whether anything currently wants a page assembled. Called after every option
@@ -4212,17 +4124,16 @@ static void update_splice_request(void)
  * must not have a key that puts one on screen; a user who wants it binds it. */
 static void read_menu_hotkey(void)
 {
-   struct retro_variable mvar = {0};
-   mvar.key                   = "vnovel_menu_hotkey";
-   if (!(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &mvar) && mvar.value))
+   const char *v = opt_string("vnovel_menu_hotkey", NULL);
+   if (!v)
       return;
 
    unsigned k = 0;
-   if      (!strcmp(mvar.value, "F12"))       k = RETROK_F12;
-   else if (!strcmp(mvar.value, "F11"))       k = RETROK_F11;
-   else if (!strcmp(mvar.value, "F10"))       k = RETROK_F10;
-   else if (!strcmp(mvar.value, "Tab"))       k = RETROK_TAB;
-   else if (!strcmp(mvar.value, "Backquote")) k = RETROK_BACKQUOTE;
+   if      (!strcmp(v, "F12"))       k = RETROK_F12;
+   else if (!strcmp(v, "F11"))       k = RETROK_F11;
+   else if (!strcmp(v, "F10"))       k = RETROK_F10;
+   else if (!strcmp(v, "Tab"))       k = RETROK_TAB;
+   else if (!strcmp(v, "Backquote")) k = RETROK_BACKQUOTE;
    menu_hotkey = k; /* "none" or anything unrecognised leaves it unbound */
 }
 
@@ -4264,13 +4175,11 @@ void retro_run(void)
 
    /* KiriKiri runs its own engine thread and owns its frame loop; ONS/PONS do
    * not, so the two paths are entirely separate. */
-#ifdef VNOVEL_KIRIKIRI
    if (!vtable)
    {
       kiri_frame();
       return;
    }
-#endif
    if (!vtable->isRunning || !vtable->isRunning(engine))
    {
       static Uint32 black[640 * 480];
@@ -4437,7 +4346,6 @@ void retro_unload_game(void)
    ons_libretro_clock_reset();
    clock_scale_applied = -1.0; /* force retro_run to re-install the rate */
 
-#ifdef VNOVEL_KIRIKIRI
    if (!vtable)
    {
       // KiriKiri path: shut down the krkrsdl2 engine thread cleanly.
@@ -4445,7 +4353,6 @@ void retro_unload_game(void)
       SDL_libretro_in_reset = false;
       return;
    }
-#endif
    stop_engine_thread();
    SDL_DestroySemaphore(SDL_libretro_event_sem);
    SDL_libretro_event_sem = nullptr;

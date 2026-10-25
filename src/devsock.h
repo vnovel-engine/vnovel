@@ -27,7 +27,7 @@ extern "C"
 {
 #endif
 
-   /* --- the record vocabulary --------------------------------------------
+   /* the record vocabulary
     *
     * What a consumer of this socket sees, defined once so it is not spelled as
     * literals through the sink and every client.
@@ -83,11 +83,7 @@ extern "C"
 
    /* Bind and listen on 127.0.0.1:`port`. Returns 0 on success, -1 when the
     * socket cannot be opened. Calling it twice is harmless. Nothing is
-    * accepted until the first poll: a consumer connects when it wants to.
-    *
-    * Built only for `make DEVWIRE=1`; without it these are INLINE NO-OPS (see
-    * below), so a caller never needs its own #ifdef. */
-#ifdef VNOVEL_DEVWIRE
+    * accepted until the first poll: a consumer connects when it wants to. */
    int vnovel_dev_socket_open(int port);
 
    /* Stop listening and drop the current consumer. */
@@ -116,20 +112,6 @@ extern "C"
     * internal buffer are truncated, not split. */
    int vnovel_dev_socket_poll(void (*on_line)(const char *line, void *userdata),
                               void *userdata);
-
-#else /* !VNOVEL_DEVWIRE -- the wire protocol is compiled out */
-   /* No-ops, so the shell calls these unconditionally and a non-wire build simply
-    * has no socket. */
-   static inline int  vnovel_dev_socket_open(int port) { (void)port; return -1; }
-   static inline void vnovel_dev_socket_close(void) {}
-   static inline int  vnovel_dev_socket_connected(void) { return 0; }
-   static inline int  vnovel_dev_socket_listening(void) { return 0; }
-   static inline void vnovel_dev_socket_send(const char *data, size_t n)
-   { (void)data; (void)n; }
-   static inline int  vnovel_dev_socket_poll(
-      void (*on_line)(const char *line, void *userdata), void *userdata)
-   { (void)on_line; (void)userdata; return 0; }
-#endif /* VNOVEL_DEVWIRE */
 
 #ifdef __cplusplus
 }

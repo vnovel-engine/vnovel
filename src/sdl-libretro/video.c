@@ -1,5 +1,6 @@
 #include <SDL_libretro.h>
 #include <time.h>
+#include "core_debug.h"
 #include <sdl/src/video/SDL_pixels_c.h>
 #include <sdl/src/video/dummy/SDL_nullvideo.h>
 #include <sdl/src/video/dummy/SDL_nullevents_c.h>
@@ -189,7 +190,7 @@ bool SDL_libretro_in_reset = false;
 volatile unsigned long long SDL_libretro_frontend_hb = 0;
 bool SDL_libretro_fastforward = false;
 
-/* ---- The single game clock ------------------------------------------------
+/* The single game clock
  * Engines must not each invent their own fast-forward time dilation: that is
  * how ONS and KiriKiri drifted (different rate definitions, one frame-count
  * based and one wall-time based). Instead the core owns one clock and every
@@ -249,7 +250,7 @@ void ons_libretro_clock_reset(void)
   clock_epoch_bias = 0;
   clock_bias_ms    = 0;
   clock_base_ms    = 0;   /* nonzero check in game_clock_ms rebases on next call */
-  if (getenv("ONS_CLOCK_DEBUG")) fprintf(stderr, "[clock] reset\n");
+  if (CORE_DEBUG_ON(DEBUG_FLAG_CLOCK)) fprintf(stderr, "[clock] reset\n");
 }
 
 static void DUMMY_UpdateRects(_THIS, int numrects, SDL_Rect *rects)

@@ -2,7 +2,6 @@
 mode_ext
 game
 *start
-; ===========================================================================
 ; PONScripter h_ligate: the substitutions Le sanglot des cigales relies on.
 ;
 ; SOURCE LINES ARE THE GAME'S OWN, verbatim from its pscript.dat. In them the
@@ -21,7 +20,6 @@ game
 ; LIFO, so 'basic' comes first and multi-character sequences after it).
 ; Clickwaits (@) and voice tags (~n~/~u~) are stripped from the source lines:
 ; the first would block the page, the second renders no text here.
-; ===========================================================================
 bg #000000,0
 repaint
 texton
@@ -33,31 +31,31 @@ h_ligate "fi", 0xfb01
 h_ligate "fl", 0xfb02
 h_ligate "--", 0x2013
 h_ligate "-!-", 0x2014
-; --- 1_pct_hyphen (pscript.dat line 1141) ---
+; 1_pct_hyphen (pscript.dat line 1141)
 ^ Mais pourquoi tant d'excuses%.?
 textshow
 repaint
 snapshotsave "pl_1_pct_hyphen"
 textclear
-; --- 2_pct_space (pscript.dat line 1177) ---
+; 2_pct_space (pscript.dat line 1177)
 ^ À qui peut%-elle bien demander pardon%.?
 textshow
 repaint
 snapshotsave "pl_2_pct_space"
 textclear
-; --- 3_emdash (pscript.dat line 1200) ---
+; 3_emdash (pscript.dat line 1200)
 ^-!- Keiichi, on va bientôt arriver. Allez, réveille%-toi.
 textshow
 repaint
 snapshotsave "pl_3_emdash"
 textclear
-; --- 4_pct_fused (pscript.dat line 1308) ---
+; 4_pct_fused (pscript.dat line 1308)
 ^-!- Combien tu veux de riz, un bol%.? Un demi%-bol%.?
 textshow
 repaint
 snapshotsave "pl_4_pct_fused"
 textclear
-; --- negative control: `pligate none` clears every definition ----------------
+; negative control: `pligate none` clears every definition
 ; Case 3's EXACT source line, rendered with no ligatures active. The '%' and the
 ; '-!-' MUST be visible here. That is what proves the cases above are really
 ; exercising the substitution rather than removing the markers some other way.

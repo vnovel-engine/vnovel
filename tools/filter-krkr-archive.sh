@@ -4,7 +4,6 @@
 # Usage: filter-krkr-archive.sh <in.a> <out.a>
 #
 # Why
-# ---
 # krkrsdl2 vendors its own libogg (external/krkrz/external/libogg/src/*.c) and our
 # runtime vendors another. Linked into one core that is a duplicate definition of
 # every ogg_* symbol: 71 of them, the only C collisions between the KiriKiri
@@ -20,7 +19,6 @@
 # links it.
 #
 # What this does
-# --------------
 # Copies the archive with krkrsdl2's ogg members removed. Members are matched by
 # name (bitwise.c.o, framing.c.o), not by path, because the archive is flat — the
 # build system already flattened the directory structure when it created it.

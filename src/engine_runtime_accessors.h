@@ -132,7 +132,7 @@ static const int *engine_timerRunningPtr(EngineHandle)
    return &SDL_timer_running;
 }
 
-/* --- thread ownership ------------------------------------------------------
+/* thread ownership
  *
  * The engine's script thread touches only the engine's own SDL (event queue,
  * timers, surface, mixer), so it must be created against that SDL and not the

@@ -8,14 +8,12 @@
 // exchange lives here and nowhere else.
 //
 // Shape of the seam
-// -----------------
 //   engine_cabi.h    the shell -> engine direction: one vtable per engine.
 //   engine_bridge.h  this file, the engine -> shell direction: the state and
 //                    callbacks an engine reads, plus the operations the shell
 //                    provides (unwinding out of exit(), the script clock).
 //
 // Consequences worth preserving
-// -----------------------------
 //   - An engine must not include core headers or call the frontend directly;
 //     it links against the bridge and the vtable only. That is what keeps it
 //     loadable into a different shell (a standalone runner, a test harness, or
@@ -120,7 +118,7 @@ extern "C"
    VNOVEL_EXPORT extern volatile int vnovel_script_error_jmp_valid;
    VNOVEL_EXPORT void libretro_script_error_longjmp(void);
 
-   /* --- text plane --------------------------------------------------------
+   /* text plane
     * Text rendered independently of the frame, so a shell can restyle it,
     * reflow it, or show it as a page instead of accepting the game's own
     * compositing. The design is per-engine capture behind one shared sink:
@@ -229,7 +227,7 @@ extern "C"
 
    VNOVEL_EXPORT void vnovel_request_text_plane_splice(int enabled);
 
-   /* --- Text runs: the STRUCTURED half of the text separation -------------
+   /* Text runs: the STRUCTURED half of the text separation
     *
     * VNovelTextPlane above is pixels - a picture of the text, which a shell can
     * relocate but not restyle or reflow. This is the text the engine was asked
@@ -350,7 +348,7 @@ extern "C"
 
    VNOVEL_EXPORT void vnovel_request_split_view(int enabled);
 
-   /* --- navigation results: the shell <- engine half of "select link N" ----
+   /* navigation results: the shell <- engine half of "select link N"
     *
     * The shell can ask the engine to take the Nth choice a page offers (the
     * development socket's inbound direction; see devsock.h). The engine is the
@@ -375,7 +373,7 @@ extern "C"
     * listening, so an engine that reports unconditionally is still correct. */
    VNOVEL_EXPORT void vnovel_publish_nav_result(int ordinal, int accepted);
 
-   /* --- the game's own menu, offered to the core's menu bar ----------------
+   /* the game's own menu, offered to the core's menu bar
     *
     * A script declares a right-click menu and the engine can only draw it as a
     * FLAT list; the core's menu bar (menu.h) can draw a TREE. So the entries are
@@ -400,7 +398,7 @@ extern "C"
     * engine polls it where it already polls the dev socket. */
    VNOVEL_EXPORT int vnovel_menu_take_pick(void);
 
-   /* --- choice labels: WHAT the choices are, not just that there are some ---
+   /* choice labels: WHAT the choices are, not just that there are some
     *
     * A pause says the reader must act; it does not say what they are choosing
     * between. Usually the page's own text carries the labels, so a consumer that
@@ -427,7 +425,7 @@ extern "C"
     * declaration cannot both be visible (that was a compile error: a static
     * declaration after a non-static one). */
 
-   /* --- the page-event vocabulary: ONE list, shared with the client --------
+   /* the page-event vocabulary: ONE list, shared with the client
  *
  * What happens to the READER's place in the text, as five events. They are the
  * same vocabulary the client sees, under the same names (devsock.h spells each
@@ -460,7 +458,7 @@ extern "C"
    typedef void (*vnovel_page_event_fn)(int event);
    VNOVEL_EXPORT extern vnovel_page_event_fn vnovel_page_event_cb;
 
-/* --- WHAT a menu's options are, for a menu with no text labels -----------
+/* WHAT a menu's options are, for a menu with no text labels
  *
  * A pause says the reader must act; it does not say what they are choosing
  * between. Usually the page's text carries the labels, so a consumer that
@@ -477,30 +475,20 @@ extern "C"
    typedef void (*vnovel_choice_label_fn)(int ordinal, const char *label);
    VNOVEL_EXPORT extern vnovel_choice_label_fn vnovel_choice_label_cb;
 
-/* --- the wire protocol, compiled out ------------------------------------
+/* The wire protocol publishers.
  *
  * The PUBLISHERS are development surface: they feed devsock.c and its records,
- * which the Makefile compiles in only for `make DEVWIRE=1`. Without VNOVEL_DEVWIRE
- * they are INLINE NO-OPS rather than declarations.
+ * which every build carries.
  *
- * Here and not at the call sites on purpose: the engines publish unconditionally,
- * and a caller that must remember an #ifdef will one day forget one -- linking
- * against a socket the build does not have, or silently dropping an event it
- * meant to send. An inline no-op makes the call vanish at compile time and
- * cannot be forgotten.
+ * Declared here and not at the call sites on purpose: the engines publish
+ * unconditionally, and a caller that must remember an #ifdef will one day
+ * forget one, silently dropping an event it meant to send.
  *
- * The event constants and the callback globals stay unconditional: they are the
- * bridge's own vocabulary, and the shell defines its sink whether or not the
- * wire protocol is compiled in. */
+ * The event constants and the callback globals stay unconditional too: they are
+ * the bridge's own vocabulary, and the shell defines its sink. */
 #define VNOVEL_BRIDGE_SUPPLIES_FLOW 1
-#ifndef VNOVEL_DEVWIRE
-   static inline void vnovel_publish_page_event(int event) { (void)event; }
-   static inline void vnovel_publish_choice_label(int o, const char *l)
-   { (void)o; (void)l; }
-#else
    VNOVEL_EXPORT void vnovel_publish_page_event(int event);
    VNOVEL_EXPORT void vnovel_publish_choice_label(int ordinal, const char *label);
-#endif /* VNOVEL_DEVWIRE */
    /* Apply any request made before this engine registered its callbacks.
     *
     * The core must request these BEFORE it starts an engine (an engine draws

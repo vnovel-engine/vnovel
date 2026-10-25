@@ -57,7 +57,7 @@ static void recording_sink(const VNovelTextPlane *plane, void *userdata)
 
 int main(void)
 {
-	/* --- inert until installed ------------------------------------------- */
+	/* inert until installed */
 	check(vnovel_text_plane_wanted() == 0,
 	      "no sink installed: wanted() is 0");
 
@@ -71,7 +71,7 @@ int main(void)
 	vnovel_publish_text_plane(NULL);
 	check(calls == 0, "NULL plane ignored even with a sink absent");
 
-	/* --- installed ------------------------------------------------------- */
+	/* installed */
 	vnovel_text_plane_cb       = recording_sink;
 	vnovel_text_plane_userdata = (void *)0x1234; /* must arrive unchanged */
 
@@ -133,7 +133,7 @@ int main(void)
 	vnovel_publish_text_plane(NULL);
 	check(calls == 1, "NULL plane ignored when a sink is installed");
 
-	/* --- detached again --------------------------------------------------- */
+	/* detached again */
 	vnovel_text_plane_cb = 0;
 	check(vnovel_text_plane_wanted() == 0, "detached: wanted() is 0 again");
 	vnovel_publish_text_plane(&plane);

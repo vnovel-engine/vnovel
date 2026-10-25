@@ -16,14 +16,6 @@
 // closing the peer" cannot happen. Nothing under the lock blocks (the fd is
 // non-blocking), so a sender never waits longer than a memcpy.
 
-/* The development wire protocol is a BUILD option (make DEVWIRE=1), not only a
- * runtime one: a build that ships a game should not carry a listener at all,
- * however politely it is off by default. Without VNOVEL_DEVWIRE this entire
- * translation unit is empty, so there is no socket code in the binary to reach
- * even by accident -- and the engines' publish calls are inline no-ops
- * (engine_bridge.h), so nothing calls in here. */
-#ifdef VNOVEL_DEVWIRE
-
 #include "devsock.h"
 
 #include <errno.h>
@@ -416,5 +408,3 @@ int vnovel_dev_socket_poll(void (*on_line)(const char *line, void *userdata),
       on_line(lines[i], userdata);
    return nlines;
 }
-
-#endif /* VNOVEL_DEVWIRE */

@@ -8,7 +8,7 @@
 int SDL_libretro_rightclick_button = RIGHTCLICK_NONE;
 int SDL_libretro_leftclick_button  = RIGHTCLICK_NONE;
 
-/* ---- Runtime-tunable input knob ----
+/* Runtime-tunable input knob
  * This used to be a function-local static initialised from the environment on
  * first use. It lives at module scope instead so the frontend (or a test) can
  * flip it at runtime through the setter below, and so the environment is
@@ -53,7 +53,7 @@ static int ctrl_tap_frames(void)
   return vnovel_ctrl_tap_frames;
 }
 
-/* ---- Test auto-advance ----
+/* Test auto-advance
  * Set ONS_TEST_AUTODVANCE=<frames> to inject a RETURN keypress every
  * N frames. This lets automated tests advance through text without a
  * human pressing buttons. Zero or unset = disabled.

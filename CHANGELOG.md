@@ -3,6 +3,80 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## 0.5.0 — 2026-10-25
+
+One diagnostics switch for the whole tree, and builds that work on Windows and
+on a Raspberry Pi 5 from a clean checkout. Per-engine detail is in each engine
+fork's own `CHANGELOG.md`.
+
+### Added
+
+- **One `VNOVEL_DEBUG` word replaces the scatter of per-feature environment
+  variables.** Diagnostics had grown as separate variables, each read on its own
+  schedule (`ONS_CLOCK_DEBUG`, `KRKR_INPUT_DEBUG`, `VNOVEL_MENU_DUMP`,
+  `VNOVEL_PRESENT_STRIPES`, a compile-time `KRKR_DEBUG_PROBES`). Two costs
+  followed: nothing could state which diagnostics a run had enabled, and a new
+  probe meant a new variable with a new spelling. A single 64-bit word now
+  covers them, divided into a fixed slice per module so each owns its bits
+  without agreeing on numbers with any other:
+
+  | Bits | Module |
+  |---|---|
+  | 0–7 | core (`src/`) — `clock`, `input`, `present`, `menu` |
+  | 8–15 | ONScripter-EN — `avi` |
+  | 16–23 | PONScripter — `avi` |
+  | 24–39 | KiriKiri — `province`, `fill`, `script`, `input`, `select`, `split` |
+  | 40–63 | spare |
+
+  `VNOVEL_DEBUG` takes a raw word, a name list, or both; names are slice-local
+  and optionally qualified (`core:clock`, `krkr:province`), and `all` turns on
+  every bit. A run prints the resolved word and the bits it enabled, so a log
+  says what was live. Diagnostics that carry a value rather than a yes/no keep
+  their own variable (`VNOVEL_TEXT_RUN_LOG`, `VNOVEL_PRESENT_STRIPES`,
+  `VNOVEL_DEV_PORT`, the test hooks). See `CONTROLS.md`.
+
+  Each project compiles its own copy of the mask, which depends on nothing but
+  libc, so the engines still build standalone: krkrsdl2 keeps its own name table
+  for its slice and is handed the bits as a word, and the two ONScripter engines
+  share one header through the include path they already use.
+
+### Fixed
+
+- **The Windows (mingw) build works again.** `realpath()` does not exist on
+  Windows, so the two menu rows that resolve a path for display now share a
+  portable version; the development socket needed `ws2_32` linked; and
+  libretro-common's `fopen_utf8.c` was missing from the source list, leaving a
+  Windows-only call with no definition. The KiriKiri engine also gained the TJS
+  integer declarations and the `CharacterSet.h` include it needed to compile
+  there.
+- **The aarch64 cross-build resolves its dependencies from the target.** The
+  engine's CMake was finding `sdl2`/`freetype2`/`fontconfig` through the host's
+  pkg-config, whose `-isystem /usr/include` put the host's `bits/wordsize.h`
+  ahead of the target's — making `intptr_t` 32-bit on a 64-bit target and
+  rejecting the engine's own pointer casts. The configure and build now aim
+  pkg-config at the target sysroot, and detect the two layouts that exist: a
+  self-contained toolchain (buildroot) that needs `PKG_CONFIG_SYSROOT_DIR` plus
+  `PKG_CONFIG_LIBDIR`, and a Debian/Ubuntu multiarch host whose arm64 `.pc`
+  files already carry target-correct paths and needs only `PKG_CONFIG_LIBDIR`.
+  A pkg-config given by path is left alone.
+
+### Changed
+
+- **KiriKiri and the development socket are no longer build options.** KiriKiri
+  is statically linked into the core, so a build without it cannot run an `.xp3`
+  game; the socket is what every harness, client and test drives the core
+  through. `make DEVWIRE=0`, `NO_DEVWIRE` and `KRKR_ENABLE` are gone, and with
+  them the `-kirikiri`/`-devwire` build-directory tags: the layout is
+  `build/<platform>[-debug]`. A build for a host that cannot satisfy the
+  engine's own CMake dependencies (SDL2, fontconfig, vorbisfile) is no longer
+  possible — those are required to build the core.
+- **The built core is linked into its per-platform directory and copied to the
+  repository root.** Linking every platform straight to that one shared name
+  left the last build of any platform looking current, which is how an x86_64
+  core once went into an aarch64 image.
+- `BUILDING.md` is the single build document, covering Linux native, the mingw
+  Windows cross-build, and Raspberry Pi 5 via Recalbox/buildroot.
+
 ## 0.4.0 — 2026-10-24
 
 A text look-ahead on all three engines, a development socket for the text

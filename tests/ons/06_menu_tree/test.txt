@@ -3,7 +3,6 @@ mode_ext
 english
 game
 *start
-; ===========================================================================
 ; ONScripter-EN: resetmenu/insertmenu probe (the game's own menubar).
 ;
 ; Two things this covers that nothing else does:
@@ -16,7 +15,7 @@ game
 ;   2. The depth argument NESTS. `SUB` opens a submenu and the entries after it
 ;      at a deeper level belong inside THAT, not to the entry before it. The
 ;      loader's code field is what makes it work: entries wired to the core
-;      with VNOVEL_MENU_DUMP=1 print as
+;      with VNOVEL_DEBUG=core:menu print as
 ;
 ;          Settings flag=0xa000
 ;            Wave flag=0x2000
@@ -34,7 +33,6 @@ game
 ; Engine identifier: every page is CYAN, so a capture cannot be confused with
 ; the ONS text/choice fixture (green), the sprite-menu one (magenta), or the PON
 ; one (blue).
-; ===========================================================================
 bg #004444,0
 repaint
 

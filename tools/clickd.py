@@ -56,7 +56,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# ------------------------------------------------------------- uinput --------
+# uinput
 # Kernel ABI, spelled out because stdlib has no uinput module. Layout and ioctl
 # numbers are from linux/uinput.h and linux/input-event-codes.h.
 
@@ -271,7 +271,7 @@ class VirtualPointer(UInputDevice):
         return True
 
 
-# ------------------------------------------------------------- input ---------
+# input
 
 KEY = {  # linux/input-event-codes.h, only what driving a VN needs
     "Return": 28, "Enter": 28, "Space": 57, "Escape": 1, "Backspace": 14,
@@ -457,7 +457,7 @@ class Input:
         self.ptr.close()
 
 
-# ------------------------------------------------------------- capture -------
+# capture
 
 class Grabber:
     """Persistent ffmpeg x11grab -> MJPEG; newest frame held in memory.
@@ -606,7 +606,7 @@ def to_png(jpg):
     return jpg   # fall back to the raw JPEG rather than 500
 
 
-# ------------------------------------------------------------- page ----------
+# page
 
 PAGE = b"""<!doctype html><meta charset=utf-8>
 <title>clickd</title>
@@ -658,7 +658,7 @@ setInterval(()=>fetch('/health').then(r=>r.json()).then(h=>{
 """
 
 
-# ------------------------------------------------------------- server --------
+# server
 
 class Handler(BaseHTTPRequestHandler):
     grabber = None

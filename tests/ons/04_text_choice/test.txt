@@ -3,7 +3,6 @@ mode_ext
 english
 game
 *start
-; ===========================================================================
 ; ONScripter-EN: text/choice layout probe.
 ;
 ; ENGINE IDENTIFIER: every line of text is prefixed "ONS", and every page is a
@@ -23,9 +22,8 @@ game
 ; Note: this build has NO goto/jump — `select` is the ONLY branching verb, so
 ; every page transition below is a select, including the ones that merely
 ; advance to the next case.
-; ===========================================================================
 
-; ---- case 1: text, then a choice leading to one of two pages -------------
+; case 1: text, then a choice leading to one of two pages
 bg #004400,0
 repaint
 texton
@@ -58,7 +56,7 @@ repaint
 snapshotsave "ons_tc_2b_right_page"
 select "ONS CASE-1 result: continue to case 2",*case2
 
-; ---- case 2: text, a choice, then more text ------------------------------
+; case 2: text, a choice, then more text
 *case2
 bg #00CC00,0
 repaint
@@ -82,7 +80,7 @@ repaint
 snapshotsave "ons_tc_4_case2_after_choice"
 select "ONS CASE-2 result: continue to case 3",*case3
 
-; ---- case 3: a page that is only a choice --------------------------------
+; case 3: a page that is only a choice
 *case3
 bg #003300,0
 repaint
@@ -95,7 +93,7 @@ select "ONS CASE-3 result: from choice A, continue to case 4",*case4
 mov %0,2
 select "ONS CASE-3 result: from choice B, continue to case 4",*case4
 
-; ---- case 4: a choice, then text -----------------------------------------
+; case 4: a choice, then text
 *case4
 bg #005500,0
 repaint

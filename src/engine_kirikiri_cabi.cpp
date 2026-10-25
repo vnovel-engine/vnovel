@@ -50,6 +50,7 @@ static inline int unsetenv(const char *name)
  * no engine types in it (stdbool/stdint only), which is exactly why the core can
  * include it directly while declaring every other engine symbol by hand. */
 #include "Present.h"
+#include "core_debug.h"
 /* The text-plane splice switch, engine side (visual/PresentIntf.h). Declared by
  * hand rather than including that header: it is the engine-internal half of the
  * seam and pulls in engine types this file deliberately avoids. C++ linkage, as
@@ -190,15 +191,13 @@ static char krkr_archive_file[PATH_MAX_LENGTH]  = "";
 static char krkr_personal_path[PATH_MAX_LENGTH] = "";
 
 /* Engine era for the KiriKiri path, set from the frontend's core option before
- * the engine thread starts. Empty means "let the engine decide": the engine
- * then reads the game's own .cf (enginecompat) and falls back to this build's
- * defaults. A non-empty value is passed as -enginecompat, which the engine
- * gives priority over the game's .cf. */
-static char krkr_compat[16] = "";
+ * the engine thread starts. "auto"/unset means let the engine decide: it reads
+ * the game's own .cf (enginecompat) and falls back to this build's defaults. A
+ * named era is exported as KRKRSDL2_COMPAT (see krkr_set_engine_compat). */
 static volatile int *krkr_auto_mode_ptr         = NULL;
 static volatile int *krkr_engine_stopped_ptr    = NULL;
 
-/* --- The presented frame, owned by this file --------------------------------
+/* The presented frame, owned by this file
  *
  * The engine hands its finished composite to the callback below, which copies it
  * here. kiri_frame() then passes this to retro_video_refresh_t. The copy exists
@@ -216,12 +215,10 @@ static int            krkr_frame_w = 0, krkr_frame_h = 0, krkr_frame_pitch = 0;
 static unsigned long long krkr_frame_serial = 0;     /* last presented serial */
 static int            krkr_frame_dirty = 0;      /* 1 when a new frame is waiting */
 
-/* There are deliberately NO plane statics here any more. This file used to keep
- * its own copy of the captured text plane, which nothing read: the shell's sink
- * (vnovel_text_plane_sink) owns the copy and is reached through
- * vnovel_publish_text_plane. The engine's callback now translates the engine's
- * plane into the bridge's shape and publishes it, so there is one copy and one
- * path rather than two that never met. */
+/* No plane statics here: the shell's sink (vnovel_text_plane_sink, reached
+ * through vnovel_publish_text_plane) owns the captured text plane. The engine's
+ * callback translates the plane into the bridge's shape and publishes it, so
+ * there is one copy and one path. */
 
 /* The size the core wants the engine to render at, stated before the engine
  * builds its primary layer. 0,0 means the engine chooses. Guarded by
@@ -261,52 +258,119 @@ static bool krkr_dir_exists(const char *path)
    struct stat st;
    return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
+/* Export one env var from a frontend option value. When `value` is NULL, empty,
+ * or one of the comma/space-separated keywords in `empty_words`, the var is
+ * unsetenv'd; otherwise it is setenv'd verbatim. An unset leaves a value the
+ * launcher exported in place where the engine reads it (KRKRSDL2_* are read on
+ * the engine thread during start-up, after the option setter returns), so a
+ * developer driving the core through the environment still steers the build. */
+static void krkr_export_env(const char *name, const char *value,
+                            const char *empty_words)
+{
+   if (!value || !value[0])
+      goto unset;
+   if (empty_words)
+   {
+      const char *p = empty_words;
+      for (;;)
+      {
+         const char *comma = strchr(p, ',');
+         const char *space = strchr(p, ' ');
+         const char *end;
+         if (comma && (!space || comma < space))
+            end = comma;
+         else if (space)
+            end = space;
+         else
+            end = p + strlen(p);
+         if ((size_t)(end - p) == strlen(value) &&
+             strncmp(p, value, end - p) == 0)
+            goto unset;
+         if (!*end)
+            break;
+         p = end + 1;
+      }
+   }
+   setenv(name, value, 1);
+   return;
+unset:
+   unsetenv(name);
+}
+
+/* The dummy SDL drivers and the libretro-target marker. Set before the engine
+ * thread starts (krkr_init) and again inside krkr_main before init_platform: the
+ * engine's SDL2 reads them once at video/audio init. */
+static void krkr_export_dummy_drivers(void)
+{
+   setenv("SDL_VIDEODRIVER", "dummy", 1);
+   setenv("SDL_AUDIODRIVER", "dummy", 1);
+   setenv("KRKRSDL2_LIBRETRO", "1", 1);
+}
+
+/* Copy a path into a fixed buffer and normalise it to the engine's forward-slash
+ * convention. Truncates to n-1 and NUL-terminates. The engine's storage layer and
+ * TJS path helpers are written against forward slashes and accept both forms on
+ * Windows (Win32 opens either separator), so emitting one form keeps the strings
+ * the engine and its scripts see identical across platforms — a stray backslash
+ * in a name that travels into TJS and back as a storage name would silently fail
+ * to resolve rather than erroring. */
+static void krkr_copy_path(char *dst, size_t n, const char *src)
+{
+   if (!dst || n == 0)
+      return;
+   if (!src)
+      src = "";
+   strncpy(dst, src, n - 1);
+   dst[n - 1] = 0;
+   krkr_normalize_path(dst);
+}
+
+/* The options the engine is ALWAYS started with, each with the reason it is
+ * mandatory. A table rather than an inline literal at the call site, so the set
+ * is one reviewable list and an entry cannot be dropped by accident: what
+ * matters is not "does the engine read this" but "does anything read this".
+ *
+ * `-debugwin` is read by GAME SCRIPTS. The stock startup.tjs every KiriKiri
+ * title ships opens with
+ *
+ *     if(System.getArgument("-debugwin") == void) System.exit();
+ *
+ * - a console check that quits unless the option is present, because the
+ * original engine always passed it. `System.getArgument` reads the engine's
+ * option table, so a bare name is enough and the value is never inspected; for
+ * anything else the parser appends "=yes".
+ *
+ * `-forcelog=clear` makes TVPSetLogLocation() call TVPStartLogToFile(), which
+ * drains the accumulated important-log queue into <datapath>/krkr.console.log as
+ * its first act. Without it every TVPAddImportantLog line (the per-game compat
+ * mask's provenance, each plugin's override disposition, whether a resource
+ * override directory registered and how many files it found) stays in an
+ * in-memory deque this tree never drains, so a run says nothing about any of it.
+ * `clear` starts a fresh file each run rather than appending.
+ *
+ * `-readencoding` and `-wsfreq` state what the engine cannot infer: the
+ * scenarios are Shift_JIS, and the mixer runs at 48 kHz.
+ *
+ * NOT here: `-evalcontext=global`, which used to be hardcoded. The engine
+ * consults its option stock before the compatibility mask is applied and the
+ * mask yields to an explicit option, so a value here would decide the post-!
+ * operator mode for every game while the switch read as configurable; the era
+ * switches belong solely to the mask
+ * (deps/krkrsdl2/src/core/base/sdl2/CompatProfile.cpp). */
+#define KRKR_MANDATORY_ARGS                                                      \
+   "-debugwin",           /* read by the game's startup.tjs; it exits without it */\
+   "-forcelog=clear",     /* the important-log queue -> krkr.console.log */         \
+   "-readencoding=Shift_JIS",                                                      \
+   "-wsfreq=48000"
 
 static void *krkr_main(void *data)
 {
    chdir(krkr_game_path);
-   /* Engine arguments, kept to the ones that do something.
-    *
-    * What is NOT here is `-evalcontext=global`, which used to be hardcoded. That
-    * was the defect: the engine's option stock is consulted before the
-    * compatibility mask is applied, and the mask correctly yields to an explicit
-    * option, so a value passed here decided the post-! operator mode for every
-    * game while the switch read as configurable. The era switches now belong
-    * solely to the mask (deps/krkrsdl2/src/core/base/sdl2/CompatProfile.cpp).
-    *
-    * `-debugwin` is a legacy KiriKiri 2 argument with a real future purpose: it
-    * is what surfaces the KiriKiri debugger (and the debug menus to be
-    * re-introduced with it). It stays so that work has a starting point rather
-    * than being re-derived; nothing reads it today.
-    *
-    * `-forcelog=clear` IS read, and is the one that matters here: it is what
-    * makes TVPSetLogLocation() call TVPStartLogToFile(), which drains the
-    * accumulated important-log queue into <datapath>/krkr.console.log as its
-    * first act. Without it every TVPAddImportantLog line - the per-game compat
-    * mask's provenance, each plugin's override disposition, whether a resource
-    * override directory registered and how many files it found - goes into an
-    * in-memory deque that this tree never drains, so a run says nothing about
-    * any of it. `clear` starts a fresh file each run rather than appending.
-    *
-    * The previous name here was `-log`, which no code reads: the flag was a
-    * silent no-op and the log stayed invisible.
-    *
-    * `-readencoding`, `-wsfreq` and `-datapath` are load-bearing and have no
-    * other owner yet (datapath in particular: without it the engine falls back
-    * to a machine-wide shared preference directory, which is how two games come
-    * to read each other's system variables — see the note below).
-    *
-    * Slots: name/args, the three optional appends, and the terminating NULL. */
-   char *argv[12] = {(char *)"krkrsdl2",
-                     (char *)"-debugwin",
-                     /* Read by DebugIntf.cpp: TVPStartLogToFile() drains the
-                      * important-log queue into krkr.console.log. See above -
-                      * without it a run reports none of it. */
-                     (char *)"-forcelog=clear",
-                     (char *)"-readencoding=Shift_JIS",
-                     (char *)"-wsfreq=48000",
+   /* Slots: name/args, then the optional appends (-datapath, the embedded-XP3
+    * file), and the terminating NULL. */
+   char *argv[12] = {(char *)"krkrsdl2", KRKR_MANDATORY_ARGS,
                      NULL, NULL, NULL, NULL, NULL};
-   int argc = 5;
+   int argc = 1 + 4; /* name + KRKR_MANDATORY_ARGS */
    /* The engine's data path: without this it defaults on POSIX to
     * SDL_GetPrefPath(NULL, "krkrsdl2"), a single machine-wide directory shared
     * by every title, so two games (or two builds of one) read and write each
@@ -340,21 +404,11 @@ static void *krkr_main(void *data)
      * fills with RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY. */
    if (krkr_personal_path[0])
       setenv("KRKRSDL2_PERSONAL_PATH", krkr_personal_path, 1);
-   /* Polyfill data dir (system_polyfill/*.tjs + startup.tjs). On the dev
-     * machine the launcher exports this; on a packaged install nothing does, so
-     * default to the path the platform's package installs to. An explicit env
-     * var still wins.
-     *
-     * Windows has no /usr/share: the natural location is a system/ directory
-     * beside the frontend, which is where a distribution would drop the polyfill
-     * files. Built from the game directory the core already chdir'd to.
-     *
-     * The separator is normalised to '/' on every platform. The engine's own
-     * storage layer accepts both (TVPUtf8ToUtf16 and the path helpers are
-     * written against forward slashes, and Windows APIs take them too), so
-     * emitting one form keeps the TJS-visible strings stable and avoids a
-     * per-platform branch at every use site. This is the boundary: the core
-     * hands the engine a path in the engine's own convention. */
+   /* Polyfill data dir (system_polyfill/*.tjs + startup.tjs). Only set when
+     * unset: an explicit env var is a launcher override and wins. Defaults to
+     * /usr/share/krkrsdl2 on POSIX; Windows has no /usr/share, so a system/
+     * directory beside the game directory (already chdir'd to) is the natural
+     * package location. Separator normalised to '/' — see krkr_copy_path. */
    if (!getenv("KRKRSDL2_DATA_PATH"))
    {
 #ifdef _WIN32
@@ -370,14 +424,12 @@ static void *krkr_main(void *data)
       setenv("KRKRSDL2_DATA_PATH", "/usr/share/krkrsdl2", 1);
 #endif
    }
-   /* The search path is assembled by the engine from ExePath() (see
+   /* The plugin search path is assembled by the engine from ExePath() (see
     * TVPLoadPluigins), not from an environment variable, so nothing is set
-    * here. A path_env used to be built and never read. */
+    * here. */
    if (krkr_engine_present())
       krkrsdl2_pre_init_platform();
-   setenv("SDL_VIDEODRIVER", "dummy", 1);
-   setenv("SDL_AUDIODRIVER", "dummy", 1);
-   setenv("KRKRSDL2_LIBRETRO", "1", 1);
+   krkr_export_dummy_drivers();
    if (krkrsdl2_init_platform())
    {
       fprintf(stderr, "krkr_main: init_platform failed\n");
@@ -478,20 +530,11 @@ extern "C"
       krkr_auto_mode_ptr       = &krkrsdl2_auto_mode;
       krkr_engine_stopped_ptr  = &krkrsdl2_engine_stopped;
 
-      /* Install the host side of the presentation seam.
-       *
-       * The engine now hands its finished composite to us directly, with the
-       * geometry and pitch stated explicitly, instead of us scraping an
-       * SDL_Surface out of the window by struct offset and re-uploading a dirty
-       * rectangle through SDL_UpdateTexture. Everything SDL was doing on that
-       * path - a dummy video driver so a window surface would exist, a
-       * renderer, a texture, a dirty-rect upload - is now unnecessary for the
-       * libretro target.
-       *
+      /* Install the host side of the presentation seam. The engine hands its
+       * finished composite directly, with geometry and pitch stated explicitly.
        * The callback runs on the engine thread, inside its composite, so all it
        * does is copy into the core's own frame buffer under the lock; the
-       * actual retro_video_refresh_t call happens on the core's thread in
-       * kiri_frame(). */
+       * retro_video_refresh_t call happens on the core's thread in kiri_frame(). */
       {
          extern void krkr_install_present_callbacks(void);
          krkr_install_present_callbacks();
@@ -508,9 +551,7 @@ extern "C"
      * globals survive) this is what lets StartApplication run a second time.
      * The engine owns the individual flags; we call one entry point. */
       krkrsdl2_prepare_restart();
-      setenv("KRKRSDL2_LIBRETRO", "1", 1);
-      setenv("SDL_VIDEODRIVER", "dummy", 1);
-      setenv("SDL_AUDIODRIVER", "dummy", 1);
+      krkr_export_dummy_drivers();
 
       if (pthread_create(&krkr_thread, NULL, krkr_main, NULL) != 0)
       {
@@ -531,11 +572,7 @@ extern "C"
    }
    void krkr_setArchivePath(EngineHandle engine, const char *path)
    {
-      strncpy(krkr_game_path, path, sizeof(krkr_game_path) - 1);
-      krkr_game_path[sizeof(krkr_game_path) - 1] = 0;
-      /* Normalise at the boundary: everything downstream (chdir, ExePath, the
-       * engine's storage) then sees one form. */
-      krkr_normalize_path(krkr_game_path);
+      krkr_copy_path(krkr_game_path, sizeof(krkr_game_path), path);
    }
 
    /* The game is THIS FILE: a single executable with an embedded XP3 archive.
@@ -552,9 +589,7 @@ extern "C"
          krkr_archive_file[0] = 0;
          return;
       }
-      strncpy(krkr_archive_file, path, sizeof(krkr_archive_file) - 1);
-      krkr_archive_file[sizeof(krkr_archive_file) - 1] = 0;
-      krkr_normalize_path(krkr_archive_file);
+      krkr_copy_path(krkr_archive_file, sizeof(krkr_archive_file), path);
    }
    extern "C" void krkr_set_save_path(const char *path);
    void krkr_setSavePath(EngineHandle engine, const char *path)
@@ -617,35 +652,26 @@ extern "C"
          krkr_personal_path[0] = 0;
          return;
       }
-      strncpy(krkr_personal_path, path, sizeof(krkr_personal_path) - 1);
-      krkr_personal_path[sizeof(krkr_personal_path) - 1] = 0;
-      /* Boundary normalisation, as for the game path: this string becomes
-       * System.personalPath, which TJS concatenates with file names. */
-      krkr_normalize_path(krkr_personal_path);
+      krkr_copy_path(krkr_personal_path, sizeof(krkr_personal_path), path);
    }
 
-   /* The host side of the presentation seam (visual/Present.h).
-    *
-    * The engine calls the present callback once per finished composite, on its
-    * own thread, with a buffer that is valid only for the duration of the call.
-    * All that is needed here is to take a copy for kiri_frame() to hand to the
-    * frontend, and to record the geometry: the frontend's reported video size
-    * comes from it, so the engine's real resolution (800x600 for this title)
+   /* The host side of the presentation seam (visual/Present.h). The engine calls
+    * this once per finished composite, on its own thread, with a buffer valid
+    * only for the duration of the call. This takes a copy for kiri_frame() to
+    * hand the frontend and records the geometry: the frontend's reported video
+    * size comes from it, so the engine's real resolution (800x600 for this title)
     * reaches RetroArch instead of the 640x480 guessed before the engine exists.
-    *
-    * This is the whole of the core's knowledge of how the engine draws. The
-    * engine describes a buffer; nothing here knows it is SDL, or that a window
-    * exists. */
+    * The engine describes a buffer; nothing here knows it is SDL, or that a
+    * window exists. */
    static bool krkr_present_cb(const tTVPPresentBuffer *buffer)
    {
       if (!buffer || !buffer->Pixels || buffer->Width <= 0 || buffer->Height <= 0 ||
           buffer->Pitch <= 0)
          return false;
 
-      /* Sanity-bound the geometry for the same reason the old surface-offset
-       * path did: this comes from the engine thread and a bad pitch would turn
-       * the copy below into a heap overrun. A genuine widescreen mode is wide
-       * and short; garbage is negative or gigantic. */
+      /* Bound the geometry: this comes from the engine thread, and a bad pitch
+       * would turn the copy below into a heap overrun. A genuine widescreen mode
+       * is wide and short; garbage is negative or gigantic. */
       if (buffer->Width > 8192 || buffer->Height > 2160 ||
           buffer->Pitch < buffer->Width * 4 || buffer->Pitch > buffer->Width * 8)
          return false;
@@ -679,11 +705,8 @@ extern "C"
    /* Asks the frontend for the size it wants the engine to render at, before
     * the engine builds its primary layer, so the game's own
     * System.screenWidth/screenHeight are right from the first frame rather than
-    * corrected after it.
-    *
-    * The value is stashed by the core through krkr_set_present_size() during
-    * load. This replaces the old arrangement, where the core resolved the
-    * engine's setter symbol and called it after the window was already sized. */
+    * corrected after it. The value is stashed by the core through
+    * krkr_set_present_size() during load. */
    static void krkr_query_size_cb(int *w, int *h, void *hostdata)
    {
       (void)hostdata;
@@ -766,11 +789,9 @@ extern "C"
 
    static bool krkr_text_plane_cb(const tTVPTextPlane *plane)
    {
-      /* pitch KEEPS ITS SIGN. The engine's bitmaps are bottom-up, so a
-       * negative stride is the row direction, not an error. The frame path's
-       * `pitch <= 0` and `pitch < width*4` tests rejected every publication -
-       * the engine publishes a real 808x48 text surface with pitch -3232 - so
-       * capture appeared to do nothing even with the seam wired. */
+      /* pitch KEEPS ITS SIGN. The engine's bitmaps are bottom-up, so a negative
+       * stride is the row direction, not an error: it publishes a real 808x48
+       * text surface with pitch -3232. Bound the MAGNITUDE only, below. */
       if (!plane || !plane->Pixels || plane->Width <= 0 || plane->Height <= 0 ||
           plane->Pitch == 0)
          return false;
@@ -785,14 +806,8 @@ extern "C"
       }
 
       /* Translate into the engine-neutral shape and hand it to the shell
-       * through the bridge, which owns the copy.
-       *
-       * This callback used to copy into its own file-static buffer, which
-       * nothing read: the shell's sink (vnovel_text_plane_sink in
-       * src/libretro.cpp) keeps its own state and is reached only through
-       * vnovel_publish_text_plane. So every glyph was published into a buffer
-       * nobody looked at and capture appeared to do nothing. Publishing through
-       * the bridge makes the seam one path instead of two that never met. */
+       * through the bridge, which owns the copy (vnovel_text_plane_sink in
+       * src/libretro.cpp, reached only through vnovel_publish_text_plane). */
       VNovelTextPlane vp;
       vp.pixels     = plane->Pixels;
       vp.width      = plane->Width;
@@ -811,17 +826,11 @@ extern "C"
       vp.plane_y    = plane->PlaneY;
       vp.splice     = kiri_text_plane_splice;
       /* The window this fragment lives in, so the shell can size its page
-       * without waiting for a frame of its own.
-       *
-       * The shell used to learn the window size on ITS thread (the present
-       * path), but the engine publishes its opening burst of text during
-       * start-up - before the shell has presented anything - so every one of
-       * those publications was dropped for want of a page size and the start of
-       * the page was lost. Reported here, on the same thread and in the same
-       * message, the size is always available when a fragment is.
-       *
-       * 0 until the engine has composited a frame; the shell then still has the
-       * frame path as a fallback. */
+       * without waiting for a frame of its own. The engine publishes its opening
+       * burst of text during start-up, before the shell has presented anything,
+       * so the size is reported here on the same thread and in the same message:
+       * always available when a fragment is. 0 until the engine has composited a
+       * frame; the shell then still has the frame path as a fallback. */
       vp.window_w   = krkr_frame_w;
       vp.window_h   = krkr_frame_h;
       vp.restart    = plane->Restart ? 1 : 0;
@@ -909,70 +918,66 @@ extern "C"
       return have;
    }
 
-   /* Diagnostic probes, from the frontend's core option. Exported on the same
-    * channel the engine reads (KRKRSDL2_DEBUG), for the same reason the era is:
-    * a libretro frontend cannot set the environment, and the engine's debug word
-    * is read from the environment during start-up.
+   /* Diagnostic probes, from the frontend's core option or from the shared
+    * debug mask's KiriKiri slice.
     *
-    * The value is the engine's own spec syntax (a comma-separated list of probe
-    * names, or a raw word), documented in
-    * deps/krkrsdl2/src/core/base/sdl2/DebugFlags.h. It is passed through
-    * unparsed so the engine owns the name table - the core must not carry a
-    * second copy of it, or a probe added engine-side would be unreachable from
-    * the frontend. */
+    * VNOVEL_DEBUG carries every module's bits in one word (see
+    * src/vnovel_debug.h); the KiriKiri slice is bits 24-39. The engine's own
+    * DebugFlags table is self-contained - that engine builds standalone with its
+    * own CMake and cannot include the core's headers - so the core hands it the
+    * slice as a raw word through the channel it already reads: KRKRSDL2_DEBUG,
+    * whose parser accepts a hex word. The core option stays, and a frontend
+    * option wins over the environment, because a frontend cannot set the
+    * environment and the option is what a RetroArch user can reach.
+    *
+    * The option's value is still passed through unparsed, so the engine owns its
+    * name table - the core must not carry a second copy of it. */
    extern "C" void krkr_set_debug_flags(const char *spec)
    {
-      if (!spec || !spec[0] || strcmp(spec, "none") == 0)
+      if (spec && spec[0] && strcmp(spec, "none") != 0)
       {
-         /* "none" or unset: do not export anything, so a value inherited from
-          * the shell still applies for a developer driving the core directly. */
+         setenv("KRKRSDL2_DEBUG", spec, 1);
          return;
       }
-      setenv("KRKRSDL2_DEBUG", spec, 1);
+      /* No option: export this mask's KiriKiri slice as a hex word, if any bit
+       * is set. A value inherited from the shell still applies for a developer
+       * driving the core directly. */
+      char word[32];
+      uint64_t slice =
+            (vnovel_debug_word() >> VNOVEL_DEBUG_SHIFT_KRKR) &
+            ((1ULL << VNOVEL_DEBUG_WIDTH_KRKR) - 1);
+      if (!slice)
+         return;
+      snprintf(word, sizeof(word), "0x%llx", (unsigned long long)slice);
+      setenv("KRKRSDL2_DEBUG", word, 1);
    }
 
    /* Engine-compatibility selection from the frontend's core option. Applied by
-    * exporting the value on the channel the compatibility mask actually reads
-    * (KRKRSDL2_COMPAT), not as an engine argument.
-    *
-    * It used to become `-enginecompat=<era>`, which the mask never read: the
-    * option therefore did nothing, a game ran on an empty mask, and the one
-    * behaviour it was silently supplying before (the hardcoded
-    * -evalcontext=global) was gone — the screen stayed blank. The mask is the
-    * single owner of the era switches, so the host feeds it through its own
-    * input rather than through a second, competing mechanism.
-    *
-    * setenv rather than a stored string: the mask reads the environment during
-    * engine start-up, which happens on the engine thread after this returns. */
+    * exporting the value on the channel the compatibility mask reads
+    * (KRKRSDL2_COMPAT), not as an engine argument. The mask is the single owner
+    * of the era switches, so the host feeds it through its own input rather than
+    * through a second, competing mechanism. setenv (not a stored string)
+    * because the mask reads the environment during engine start-up, on the
+    * engine thread, after this returns. */
    extern "C" void krkr_set_engine_compat(const char *era)
    {
+      /* "auto" or unset: do not export a spec. The engine then applies its own
+       * default era (see TVP_COMPAT_DEFAULT_LEVEL) rather than an empty mask. A
+       * launcher that exported KRKRSDL2_COMPAT itself still steers the build,
+       * because nothing here overwrites it. */
       if (!era || !era[0] || strcmp(era, "auto") == 0)
-      {
-         /* "auto" or unset: do not export a spec. The engine then applies its
-          * own default era (see TVP_COMPAT_DEFAULT_LEVEL) rather than an empty
-          * mask. A launcher that exported KRKRSDL2_COMPAT itself still steers
-          * the build, because nothing here overwrites it. */
-         krkr_compat[0] = 0;
          return;
-      }
-      strncpy(krkr_compat, era, sizeof(krkr_compat) - 1);
-      krkr_compat[sizeof(krkr_compat) - 1] = 0;
-      setenv("KRKRSDL2_COMPAT", krkr_compat, 1);
+      setenv("KRKRSDL2_COMPAT", era, 1);
    }
 
    /* Host resource override directory: a directory laid out like the game's
     * resource tree whose files replace the game's own for the names they match.
-    * Exported rather than passed as an argument for the same reason as the
-    * compat spec above: the engine reads it during start-up, on its own thread,
-    * after this returns. */
+    * Exported (not passed as an argument) for the same reason as the compat
+    * spec: the engine reads it during start-up, on its own thread, after this
+    * returns. An empty/unset value unexports the directory. */
    extern "C" void krkr_set_override_dir(const char *dir)
    {
-      if (!dir || !dir[0])
-      {
-         unsetenv("KRKRSDL2_OVERRIDE_DIR");
-         return;
-      }
-      setenv("KRKRSDL2_OVERRIDE_DIR", dir, 1);
+      krkr_export_env("KRKRSDL2_OVERRIDE_DIR", dir, NULL);
    }
 
    /* The loaded game's identity, so the engine's per-game compat table can key
@@ -984,15 +989,11 @@ extern "C"
     * dat/vnovel.dat records, so one game has one id across the database, the
     * tools and the engine's table. The core computes it in retro_load_game,
     * and passes "" or NULL when the file could not be hashed: the engine then
-    * falls through to its documented default rather than guessing. */
+    * falls through to its documented default rather than guessing. An empty
+    * value unexports the id. */
    extern "C" void krkr_set_game_id(const char *id)
    {
-      if (!id || !id[0])
-      {
-         unsetenv("KRKRSDL2_GAME_ID");
-         return;
-      }
-      setenv("KRKRSDL2_GAME_ID", id, 1);
+      krkr_export_env("KRKRSDL2_GAME_ID", id, NULL);
    }
 
    /* Last mouse position (engine 800x600 space), for the software cursor overlay. */
@@ -1005,7 +1006,7 @@ extern "C"
          *y = krkr_mouse_y;
    }
 
-   /* --- Reset as a two-phase, engine-owned handshake -------------------------
+   /* Reset as a two-phase, engine-owned handshake
  * The core posts a REQUEST to return the engine to initial conditions and
  * polls for acknowledgement; it never tears engine state down itself.
  *
@@ -1156,19 +1157,14 @@ extern "C"
       krkrsdl2_pending_select = ordinal;
    }
 
-/* Input diagnostics. KRKR_INPUT_DEBUG=1 traces the whole input path, which is
- * what found the vendored-SDL rename bug: kb_cb entry (RetroArch -> core),
- * poll (what the engine sees), and push (what the shim hands to SDL). Each
- * stage is a different failure mode, so all three are worth keeping — a quiet
- * "poll" heartbeat distinguishes "RetroArch delivered nothing" from
- * "delivered but the engine ignored it". Off by default and branch-predicted
- * away, so it costs nothing in a normal run. */
+/* Input diagnostics. The core's 'input' bit (VNOVEL_DEBUG=input) traces the
+ * whole input path: what the shim hands to SDL, and what the push was accepted
+ * as. Each stage is a different failure mode, so both are worth keeping - a
+ * push the queue refuses looks the same as a poll that never saw the press,
+ * and only the return code tells them apart. Off by default. */
 static bool krkr_input_debug(void)
 {
-   static int dbg = -1;
-   if (dbg < 0)
-      dbg = getenv("KRKR_INPUT_DEBUG") ? 1 : 0;
-   return dbg != 0;
+   return CORE_DEBUG_ON(DEBUG_FLAG_INPUT);
 }
 
 
@@ -1266,17 +1262,11 @@ static bool krkr_input_debug(void)
 #define KRKR_RETRO_DEVICE_ID_MOUSE_RIGHT 3
 
       /* Current engine surface size, for mapping pointer coordinates into engine
-     * space. The internal rendering resolution is chosen by the game (or forced
-     * via the core option), so it cannot be assumed: take it from the frame the
-     * presentation seam published, which is the geometry the engine itself
-     * reports.
-     *
-     * This previously read w/h out of the live SDL_Surface at hardcoded byte
-     * offsets (flags(4)+pad(4)+format(8)+w(4)+h(4)), which made SDL's struct
-     * layout part of our ABI and misreported silently if it ever changed. The
-     * seam exists precisely so the host needs to know nothing about SDL, and the
-     * values it carries are the same ones the scrape was fishing for. Falls back
-     * to 800x600 until the engine has published its first frame. */
+       * space. The internal rendering resolution is chosen by the game (or forced
+       * via the core option), so it cannot be assumed: take it from the frame the
+       * presentation seam published, which is the geometry the engine itself
+       * reports. Falls back to 800x600 until the engine has published its first
+       * frame. The seam keeps the host free of SDL struct layout. */
       int surf_w = 800, surf_h = 600;
       pthread_mutex_lock(&krkr_frame_lock);
       if (krkr_frame_w > 0 && krkr_frame_h > 0)
@@ -1345,7 +1335,7 @@ static bool krkr_input_debug(void)
                                         KRKR_RETRO_DEVICE_JOYPAD,
                                         0,
                                         KRKR_RETRO_DEVICE_ID_JOYPAD_L);
-      /* Input probe (KRKR_INPUT_DEBUG=1). Logs the whole RetroPad/MOUSE state
+      /* Input probe (VNOVEL_DEBUG=input). Logs the whole RetroPad/MOUSE state
        * the engine sees, but only when something is non-zero — a quiet line on
        * a quiet frame still proves the poll ran, because one heartbeat is
        * emitted every ~2 s. This distinguishes "RetroArch delivered nothing"
@@ -1393,16 +1383,12 @@ static bool krkr_input_debug(void)
          prev_my = my;
       }
 
-      /* Push mouse button event on click state change.
-     * Right button (SDL button 3) opens the KAG right-click menu. RetroArch can
-     * deliver it as the mouse RIGHT button, the pointer-pressed state, or a
-     * RetroPad shoulder button.
-     *
-     * L = LEFT click (the primary act: confirm/advance, click a dialog button);
-     * R = RIGHT click (cancel/back, the KAG right-click menu). This matches the
-     * RetroPad convention where the left shoulder is the affirmative action and
-     * the right shoulder is the secondary/back action — the mapping was
-     * previously inverted (L emitted a right-click and R a left-click). */
+      /* Push mouse button event on click state change. Right button (SDL button
+     * 3) opens the KAG right-click menu; RetroArch can deliver it as the mouse
+     * RIGHT button, the pointer-pressed state, or a RetroPad shoulder button.
+     * L = LEFT click (confirm/advance, click a dialog button); R = RIGHT click
+     * (cancel/back, the KAG right-click menu), matching the RetroPad convention
+     * where the left shoulder is the affirmative action. */
       {
          int lbtn = krkr_input_state(
                0, KRKR_RETRO_DEVICE_JOYPAD, 0, KRKR_RETRO_DEVICE_ID_JOYPAD_L);
@@ -1411,10 +1397,10 @@ static bool krkr_input_debug(void)
          /* L -> left click, R -> right click. A real mouse's right button also
          * means right-click. */
          int right = mright || rbtn;
-         /* RetroArch reports POINTER_PRESSED for ANY button, so a right-click also
-         * sets `pressed`. Without the !right guard this emitted a spurious LEFT
-         * press alongside the right, and KAG consumed it as a left click
-         * (advance/hide) — defeating the right-click KAG menu. */
+         /* RetroArch reports POINTER_PRESSED for ANY button, so a right-click
+         * also sets `pressed`. The !right guard keeps a right-click from
+         * emitting a spurious LEFT press that KAG would consume as
+         * advance/hide. */
          int left = mleft || lbtn || (pressed && !right);
          int btn = 0, is_down = 0;
          if (left != prev_left)
@@ -1444,21 +1430,16 @@ static bool krkr_input_debug(void)
             *(unsigned char *)(ev + 18) = 1; /* clicks */
             *(int *)(ev + 20)           = mx;
             *(int *)(ev + 24)           = my;
-#ifdef KRKR_DEBUG_PROBES
+            if (krkr_input_debug())
             {
                static int n = 0;
                if (n < 40)
                {
-                  fprintf(stderr,
-                          "krkr_pump: PUSH btn=%d down=%d at (%d,%d)\n",
-                          btn,
-                          is_down,
-                          mx,
-                          my);
+                  fprintf(stderr, "krkr_pump: PUSH btn=%d down=%d at (%d,%d)\n",
+                          btn, is_down, mx, my);
                   n++;
                }
             }
-#endif
             p_SDL_PushEvent(ev);
          }
       }
@@ -1523,20 +1504,17 @@ static bool krkr_input_debug(void)
                /*  L3     */ {EMIT_NONE, 0},
                /*  R3     */ {EMIT_NONE, 0}, /* pointer click */
          };
-         /* Why the D-pad is a CONTROLLER event, not arrow KEY events:
-         *
-         * KAG games distinguish the arrow *keys* from the D-pad via KiriKiri's
-         * virtual-pad VKs (VK_PADUP/PADDOWN/PADLEFT/PADRIGHT). Fata Morgana's
-         * MainWindow.tjs createPadKeyMap() maps exactly VK_PADLEFT->VK_LEFT,
-         * VK_PADDOWN->VK_DOWN, ... to drive menu focus; it has no branch for
-         * bare VK_LEFT/etc. So injecting arrow key events navigates the
-         * load/save list (plain KAG arrow handling) but leaves the title/menu
-         * screen un-navigable. The engine already accepts SDL_CONTROLLERBUTTON*
-         * and converts it to VK_PAD* (sdl_gamecontrollerbutton_to_vk_key,
-         * SDLApplication.cpp:216) — the shim was simply not using that route.
-         * Sending a controller event restores the VK_PAD path without the
-         * double-delivery that made us stop opening the controller natively
-         * (56529ca): the engine stays unopened, the shim is the only source. */
+         /* Why the D-pad is a CONTROLLER event, not arrow KEY events: KAG games
+         * distinguish the arrow *keys* from the D-pad via KiriKiri's virtual-pad
+         * VKs (VK_PADUP/PADDOWN/PADLEFT/PADRIGHT). Fata Morgana's MainWindow.tjs
+         * createPadKeyMap() maps exactly VK_PADLEFT->VK_LEFT, VK_PADDOWN->VK_DOWN,
+         * ... to drive menu focus; it has no branch for bare VK_LEFT/etc. Arrow
+         * key events navigate the load/save list (plain KAG arrow handling) but
+         * leave the title/menu screen un-navigable. The engine accepts
+         * SDL_CONTROLLERBUTTON* and converts it to VK_PAD*
+         * (sdl_gamecontrollerbutton_to_vk_key, SDLApplication.cpp:216). The
+         * engine is left unopened (KRKRSDL2_LIBRETRO); the shim is the only
+         * source of pad events, so there is no double-delivery. */
          static int prev[16];
          for (int i = 0; i < 16; i++)
          {

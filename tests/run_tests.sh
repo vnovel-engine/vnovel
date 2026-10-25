@@ -9,10 +9,6 @@
 #   ./run_tests.sh --golden     # create/update golden references
 #   NO_XVFB=1 ./run_tests.sh    # run with visible window (debugging)
 
-# The RELEASE core by default: the suite checks what ships, and the DEVWIRE
-# build has a socket the tests do not use. (A plain `make` now produces the
-# devwire output, so this name is the no-wire one -- see the Makefile's note on
-# why the two flavours have different output names.)
 CORE="${CORE:-$(realpath "$(dirname "$0")/../vnovel_libretro.so")}"
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 RA="${RA:-retroarch}"
@@ -65,11 +61,12 @@ run_test() {
 
     rm -f "$RA_SAVE_DIR"/*.bmp "$RA_SAVE_DIR"/*.txt 2>/dev/null
     
-    # VNOVEL_MENU_DUMP makes the core print the menu tree it built from a game's
-    # resetmenu/insertmenu entries (src/menu.cpp). Silent unless a test declares
-    # a menu, so it costs the others nothing, and it is the only way to assert
-    # menu STRUCTURE headless -- the harness never opens the menu.
-    ONS_TEST_WIDTH="$TEST_WIDTH" ONS_TEST_HEIGHT="$TEST_HEIGHT" VNOVEL_MENU_DUMP=1 \
+    # The core's 'menu' debug bit (VNOVEL_DEBUG=menu) makes the core print the
+    # menu tree it built from a game's resetmenu/insertmenu entries
+    # (src/menu.cpp). Silent unless a test declares a menu, so it costs the
+    # others nothing, and it is the only way to assert menu STRUCTURE headless
+    # -- the harness never opens the menu.
+    ONS_TEST_WIDTH="$TEST_WIDTH" ONS_TEST_HEIGHT="$TEST_HEIGHT" VNOVEL_DEBUG=core:menu \
     timeout 10 "$RA" -L "$CORE" "$game" --verbose \
         --max-frames="$MAX_FRAMES" 2>/tmp/nova_test.log || true
     
@@ -183,18 +180,16 @@ if [ -x "$TESTS_DIR/krkr/text_choice/build.sh" ]; then
 
         # The core under test must actually contain the KiriKiri engine.
         #
-        # KiriKiri is opt-in (`make KRKR_ENABLE=1`) and BOTH builds write the
-        # same vnovel_libretro.so, so a plain `make` run after a KiriKiri build
-        # silently replaces it with an ONScripter/PONScripter-only core. This
-        # leg then fails with "engine never reached KAG" — a symptom that names
-        # the scenario and sends you looking at the fixture, the script and the
-        # look-ahead, none of which is the cause. That cost a session. The
-        # engine's own entry point is the check: it exists only in a KiriKiri
-        # build, so a missing symbol is the real diagnosis and is reported as
-        # the test's SKIP reason, not as a failure of the scenario.
+        # Every build has it, so a core without it is a stale artifact from
+        # before the engine was always-on rather than a differently-configured
+        # build. It would otherwise fail with "engine never reached KAG" - a
+        # symptom that names the scenario and sends you looking at the fixture,
+        # the script and the look-ahead, none of which is the cause. The
+        # engine's own entry point is the check: a missing symbol is the real
+        # diagnosis.
         if command -v nm >/dev/null 2>&1 && \
            ! nm -C "$CORE" 2>/dev/null | grep -q 'krkr_main'; then
-            echo "FAIL ($CORE has no KiriKiri engine — rebuild with KRKR_ENABLE=1)"
+            echo "FAIL ($CORE has no KiriKiri engine - rebuild)"
             FAIL=$((FAIL + 1))
             continue
         fi

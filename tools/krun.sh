@@ -6,12 +6,12 @@
 # mistaken for the run under test. The log lands at /tmp/<tag>.log.
 #
 # Usage: krun.sh <tag> <secs> [env-or-args...]
-#   krun.sh fate 40 KRKRSDL2_DATA_PATH=$PWD/deps/krkrsdl2/data VNOVEL_TEXT_RUN_LOG=/tmp/fate.log
-#   krun.sh cfg  25 VNOVEL_PRESENT_STRIPES=4:32        # frame diagnostics
+#   krun.sh fate 40 KRKRSDL2_DATA_PATH=$PWD/deps/krkrsdl2/data VNOVEL_DEBUG=core:present
+#   krun.sh cfg  25 VNOVEL_DEBUG=krkr:province,core:clock   # diagnostics
 #
-# The old examples here named KRKR2_* variables. Those belonged to the KiriKiri 2
-# experiment (deps/kirikiri2), which was removed from the tree and archived
-# beside this repo; no code in this tree reads any of them.
+# VNOVEL_DEBUG is one 64-bit mask, 8 bits per module (core/ons/pons, 16 for
+# krkr): see src/vnovel_debug.h. A diagnostic that carries a value rather than
+# on/off keeps its own variable (VNOVEL_TEXT_RUN_LOG, VNOVEL_PRESENT_STRIPES).
 #
 # Requires DISPLAY=:97 to exist (Xvfb 800x600x24) and the game data at
 # /home/matcha/Fate-Eng-Install/data.xp3. Afterwards ALWAYS run kstop.sh and

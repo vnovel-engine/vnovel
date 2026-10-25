@@ -20,7 +20,7 @@ variables:
   GIT_DEPTH: 0
   PACKAGE_DIR: dist
 
-# --- lint --------------------------------------------------------------------
+# lint
 
 # Enforce the libretro coding standards on this repository's own sources only.
 # The engine forks under deps/ and smpeg/ keep upstream formatting, so they are
@@ -48,7 +48,7 @@ lint:format:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# --- build -------------------------------------------------------------------
+# build
 
 .build_template: &build_common
   stage: build
@@ -106,7 +106,7 @@ build:windows-x86_64:
     - make -j"$(nproc)" platform=mingw
     - sh ci/package.sh "$PLATFORM"
 
-# --- package -----------------------------------------------------------------
+# package
 
 # Packaging happens inside each build job (the artifacts are the bundle), so
 # this stage only verifies the bundles are complete before a release.
@@ -142,7 +142,7 @@ verify-bundles:
       done
     - echo "bundles complete"
 
-# --- release -----------------------------------------------------------------
+# release
 
 # The bundles are the build jobs' own artifacts, so a release needs no link
 # generation here: the release-cli step only creates the Release, and the

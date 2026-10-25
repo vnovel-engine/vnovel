@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# --- where the core goes -----------------------------------------------------
+# where the core goes
 
 if [ -z "$cores_dir" ] && [ -n "$prefix" ]; then
 	cores_dir="$prefix/lib/libretro"
@@ -95,7 +95,7 @@ esac
 src_core="$HERE/$CORE"
 [ -f "$src_core" ] || die "$CORE not found next to $PROG; run this from the unpacked release"
 
-# --- uninstall ---------------------------------------------------------------
+# uninstall
 
 if [ "$uninstall" -eq 1 ]; then
 	target="$cores_dir/$CORE"
@@ -107,7 +107,7 @@ if [ "$uninstall" -eq 1 ]; then
 	exit 0
 fi
 
-# --- install -----------------------------------------------------------------
+# install
 
 say "cores directory: $cores_dir"
 [ "$dry" -eq 1 ] || mkdir -p "$cores_dir" || die "cannot create $cores_dir"

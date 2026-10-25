@@ -1,8 +1,6 @@
-# =============================================================================
 # vnovel Libretro Core — Source lists and include paths
-# =============================================================================
 
-# --- Directory layout ---
+# Directory layout
 DEPS_DIR        := $(CORE_DIR)/deps
 LIBRETRO_COMM   := $(DEPS_DIR)/libretro-common
 SDL_LIBRETRO    := $(SRC_DIR)/sdl-libretro
@@ -11,7 +9,7 @@ PONSCRIPTER     := $(DEPS_DIR)/ponscripter/src
 SMPEG_DIR       := $(CORE_DIR)/smpeg
 SDL_DIR         := $(DEPS_DIR)/sdl
 
-# --- Include paths (shared) ---
+# Include paths (shared)
 INCFLAGS := \
   -I$(LIBRETRO_COMM)/include \
   -I$(ONSCRIPTER_EN) \
@@ -66,31 +64,29 @@ endif
 CFLAGS   += $(VENDORED_INCLUDE) -include $(SDL_LIBRETRO)/SDL_config_libretro.h
 CXXFLAGS += $(VENDORED_INCLUDE) -include $(SDL_LIBRETRO)/SDL_config_libretro.h
 
-# --- libmad config ---
+# libmad config
 CFLAGS += -DFPM_DEFAULT -DSIZEOF_INT=4
 
-# --- SDL_mixer config ---
+# SDL_mixer config
 CFLAGS += -DOGG_MUSIC -DMP3_MAD_MUSIC
 
-# --- Thread library ---
+# Thread library
 LDFLAGS += -lpthread -lfreetype
 
-# =============================================================================
 # Source files
-# =============================================================================
 
-# --- bzip2 ---
+# bzip2
 RUNTIME_C += $(addprefix $(DEPS_DIR)/bzip2/, \
   blocksort.c huffman.c crctable.c randtable.c \
   compress.c decompress.c bzlib.c \
 )
 
-# --- libogg ---
+# libogg
 RUNTIME_C += $(addprefix $(DEPS_DIR)/libogg/src/, \
   bitwise.c framing.c \
 )
 
-# --- libvorbis ---
+# libvorbis
 RUNTIME_C += $(addprefix $(DEPS_DIR)/libvorbis/lib/, \
   mdct.c smallft.c block.c envelope.c window.c lsp.c \
   lpc.c analysis.c synthesis.c psy.c info.c \
@@ -98,13 +94,13 @@ RUNTIME_C += $(addprefix $(DEPS_DIR)/libvorbis/lib/, \
   codebook.c sharedbook.c lookup.c bitrate.c vorbisfile.c \
 )
 
-# --- libmad (MP3 decoder) ---
+# libmad (MP3 decoder)
 RUNTIME_C += $(addprefix $(DEPS_DIR)/libmad/, \
   version.c fixed.c bit.c timer.c stream.c frame.c \
   synth.c decoder.c layer12.c layer3.c huffman.c \
 )
 
-# --- SDL 1.2 (core, with dummy backends) ---
+# SDL 1.2 (core, with dummy backends)
 RUNTIME_C += $(addprefix $(SDL_DIR)/src/, \
   SDL.c SDL_error.c SDL_fatal.c \
   audio/SDL_audio.c audio/SDL_audiocvt.c audio/SDL_audiodev.c \
@@ -133,22 +129,23 @@ RUNTIME_C += $(addprefix $(SDL_DIR)/src/, \
   loadso/dummy/SDL_sysloadso.c \
 )
 
-# --- SDL → libretro bridge ---
+# SDL → libretro bridge
 RUNTIME_C += $(addprefix $(SDL_LIBRETRO)/, \
   audio.c events.c video.c SDL_ttf.c \
 )
 RUNTIME_CXX += $(SDL_LIBRETRO)/SDL_image.cpp
 
-# --- SDL_mixer ---
+# SDL_mixer
 RUNTIME_C += $(addprefix $(DEPS_DIR)/sdl-mixer/, \
   mixer.c music.c effects_internal.c effect_position.c \
   load_voc.c load_aiff.c load_ogg.c music_ogg.c \
   dynamic_ogg.c music_mad.c \
 )
 
-# --- libretro-common ---
+# libretro-common
 RUNTIME_C += $(addprefix $(LIBRETRO_COMM)/, \
   compat/compat_strl.c \
+  compat/fopen_utf8.c \
   encodings/encoding_utf.c \
   encodings/encoding_crc32.c \
   streams/file_stream.c \
@@ -158,7 +155,7 @@ RUNTIME_C += $(addprefix $(LIBRETRO_COMM)/, \
   file/file_path.c \
 )
 
-# --- SMPEG (MPEG-1 audio/video decoder) ---
+# SMPEG (MPEG-1 audio/video decoder)
 RUNTIME_C   += $(SMPEG_DIR)/MPEGfilter.c
 RUNTIME_CXX += $(addprefix $(SMPEG_DIR)/, \
   MPEG.cpp MPEGlist.cpp MPEGring.cpp MPEGstream.cpp MPEGsystem.cpp smpeg.cpp \
@@ -172,11 +169,9 @@ RUNTIME_CXX += $(addprefix $(SMPEG_DIR)/video/, \
   motionvec.cpp parseblock.cpp readfile.cpp util.cpp vhar128.cpp video.cpp \
 )
 
-# =============================================================================
 # Engine: ONScripter-EN
 # Compiled as a static library with -fvisibility=hidden to avoid symbol
 # conflicts with PONScripter (they share class names like ScriptHandler).
-# =============================================================================
 ONS_CXX := $(addprefix $(ONSCRIPTER_EN)/, \
   ONScripterLabel.cpp \
   ONScripterLabel_animation.cpp \
@@ -213,10 +208,8 @@ ONS_CXX := $(addprefix $(ONSCRIPTER_EN)/, \
 ONS_OBJS := $(ONS_CXX:.cpp=.ons.o)
 $(ONS_OBJS): CXXFLAGS += -fvisibility=hidden
 
-# =============================================================================
 # Engine: PONScripter
 # Same approach — hidden visibility, separate object files.
-# =============================================================================
 PONS_CXX := $(addprefix $(PONSCRIPTER)/, \
   PonscripterWrap.cpp \
   PonscripterLabel.cpp \
@@ -257,39 +250,33 @@ PONS_OBJS := $(PONS_CXX:.cpp=.pons.o)
 PONS_C := $(PONSCRIPTER)/bstrlib.c
 PONS_OBJS += $(PONS_C:.c=.pons.o)
 
-# =============================================================================
 # Core files
-# =============================================================================
-# The core keeps only the libretro entry points and the KiriKiri ABI (which is
-# already dlopen-based). Everything the engines share — SDL, the sdl-libretro
-# glue, the mixer, SMPEG, the decoders, the bridge — is in the runtime module
-# below, because there must be exactly one live SDL and it must be the one the
-# engine's event loop is blocked in.
-#
-# The RC file: linking
-#
-#   core -> runtime, engine_ons, engine_pons
-#   engine_ons -> runtime
-#   engine_pons -> runtime
-#
-# so core and engines all resolve SDL to the same runtime object.
+# The core's own sources: the libretro entry points, the menu, the shared
+# wrap planner and the KiriKiri ABI wrapper. Everything the engines share — SDL,
+# the sdl-libretro glue, the mixer, SMPEG, the decoders, the bridge — is in the
+# runtime sources below, so there is exactly one live SDL and it is the one the
+# engine's event loop is blocked in. The two groups are compiled into the same
+# shared object.
 CORE_CXX := \
   $(SRC_DIR)/libretro.cpp \
   $(SRC_DIR)/menu.cpp \
   $(SRC_DIR)/wrap.cpp
 
-# The KiriKiri engine wrapper, compiled unless KiriKiri is explicitly turned off
-# (`make KRKR_ENABLE=0`; ON by default, normalised in the Makefile). Off, the
-# krkrsdl2 archive is not linked and libretro.cpp compiles the KiriKiri path out
-# entirely (see VNOVEL_KIRIKIRI).
-ifeq ($(KRKR_ENABLE),1)
-   CORE_CXX += $(SRC_DIR)/engine_kirikiri_cabi.cpp
-endif
+# The KiriKiri engine wrapper. Always compiled: KiriKiri is a first-class engine
+# in the core, not a build option.
+CORE_CXX += $(SRC_DIR)/engine_kirikiri_cabi.cpp
 
 # The bridge holds state core, runtime and engines all use. It lives in the
 # runtime so every module resolves the same copy (see the one-bridge-file
 # contract in engine_bridge.c).
 RUNTIME_C += $(SRC_DIR)/engine_bridge.c
+
+# The debug mask, one copy for the whole tree (see src/vnovel_debug.h). In the
+# runtime beside the bridge, because the core and both ONScripter modules test
+# bits from it and must read the same word.
+RUNTIME_C += $(SRC_DIR)/vnovel_debug.c
+RUNTIME_C += $(SRC_DIR)/core_debug.c
+RUNTIME_C += $(SRC_DIR)/engine_debug.c
 
 # embed_stub provides getResource(), which the engines call; it belongs with the
 # engine-side runtime rather than the core.
@@ -314,7 +301,7 @@ $(BUILD_DIR)/$(SRC_DIR)/engine_pons_cabi.o: CXXFLAGS += $(PONS_RENAME)
 ONS_EXTRA_CXX := $(SRC_DIR)/engine_ons_cabi.cpp
 PONS_EXTRA_CXX := $(SRC_DIR)/engine_pons_cabi.cpp
 
-# --- NP2kai menu (vendored, MIT (c) 2017 AZO) ---
+# NP2kai menu (vendored, MIT (c) 2017 AZO)
 # The native menu's foundation, vendored bottom-up: the VRAM abstraction and
 # font manager first, the menu itself later. See deps/np2kai-menu/README.md for
 # the adaptation layer, and why the vendored sources are unmodified.
