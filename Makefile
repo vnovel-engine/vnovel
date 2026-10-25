@@ -693,6 +693,29 @@ FALLBACK_FONT_HDR  := resources/fonts/fallback_font.h
 EXTRA_FALLBACK_FONT     := resources/fonts/FiraSans-Regular.ttf
 EXTRA_FALLBACK_FONT_HDR := resources/fonts/extra_fallback_font.h
 
+# User-selectable faces (core options `vnovel_font_face` / `_font_size` /
+# `_font_tint`). Everything here is SIL OFL 1.1 with its licence text beside it
+# in resources/fonts/ — the same arrangement as Mona and FiraSans, so the bundle
+# is auditable from the directory alone.
+#
+# THESE SHIP AS FILES, NOT BLOBS IN THE CORE, and that is deliberate. They are
+# installed next to the engine data (tools/deploy-engine-data.sh), whose
+# directory is already required for overrides.txt and the KAG polyfill, so this
+# adds no new dependency; it keeps the core binary ~5.8 MB smaller than
+# embedding them would; and it lets a user drop in a face of their own under the
+# same name. The two FALLBACK fonts above are embedded because a game with no
+# usable font must still render with nothing deployed beside the core — a
+# user-chosen face has no such requirement.
+#
+# The name each face is installed under is what the engines open, so the list
+# below and `font_face_files[]` in src/font_options.h must agree.
+FONT_FILES := \
+  resources/fonts/ComicNeue-Regular.ttf \
+  resources/fonts/OpenDyslexic-Regular.otf \
+  resources/fonts/AtkinsonHyperlegible-Regular.ttf \
+  resources/fonts/EBGaramond-Variable.ttf \
+  resources/fonts/BIZUDPGothic-Regular.ttf
+
 # One artifact, linked straight into the repo root where the start-* scripts
 # and install.sh expect it ($(TARGET) resolves relative to $(CORE_DIR)).
 all: $(TARGET)
@@ -708,9 +731,9 @@ $(EXTRA_FALLBACK_FONT_HDR): $(EXTRA_FALLBACK_FONT)
 	@echo "EMBED $(EXTRA_FALLBACK_FONT)"
 	$(Q)python3 tools/embed_font.py $(EXTRA_FALLBACK_FONT) $@
 
-# libretro.cpp includes the generated header; CORE_DIR is ".", so its object is
-# build/$(platform)/./libretro.o. Make the header before it compiles (the .d
-# file already tracks the header's contents after that).
+# libretro.cpp includes the generated headers; CORE_DIR is ".", so its object is
+# build/$(platform)/./libretro.o. Make the headers before it compiles (the .d
+# file already tracks their contents after that).
 $(BUILD_DIR)/./src/libretro.o: $(FALLBACK_FONT_HDR) $(EXTRA_FALLBACK_FONT_HDR)
 
 # Include compiler-generated header dependencies (-MMD). If a header changes,

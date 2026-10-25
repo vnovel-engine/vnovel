@@ -161,6 +161,93 @@ set. It exists because the vendored menu walker (`appends()` in
 a tree that differs from what was handed to it — the dump shows what was actually
 put in the menu. `tests/ons/06_menu_tree` asserts on it.
 
+## Fonts
+
+Four core options change how dialogue is drawn, on all three engines. Their
+point is legibility for people with reading impairment, and general comfort.
+
+| Option | Values | Default |
+|---|---|---|
+| `Font` (`vnovel_font_face`) | `game`, then every face in the face directory | `game` |
+| `Font Size` (`vnovel_font_size`) | 50–300% in 5% steps | `100` |
+| `Font Letter Spacing` (`vnovel_font_letter_spacing`) | −0.20 to +0.50 em in 0.01 steps, plus −0.25…−1.00 em outliers | `0.00` |
+| `Font Word Spacing` (`vnovel_font_word_spacing`) | −0.20 to +0.50 em in 0.01 steps, plus −0.25…−1.00 em outliers | `0.00` |
+| `Font Tint (Contrast)` (`vnovel_font_tint`) | `dimmer`, `normal`, `brighter`, `pure white` | `normal` |
+| `Font Tint - Custom RGB` (`vnovel_font_tint_custom`) | `off`, or three comma-separated percentages | `off` |
+
+`game` uses the game's own font (or the engine's fallback when the game has
+none) and changes nothing. It is the default and the only value that leaves a
+run bit-identical.
+
+**`Font` takes effect after a restart of the game.** Each engine opens its
+typeface once, when the game boots, so changing `Font` mid-game redraws nothing
+already on screen — close and reload the game to see it. The other four font
+options (`Font Size`, `Font Letter Spacing`, `Font Word Spacing`,
+`Font Tint`) are re-read as text is drawn and apply without a restart; `Font
+Size` applies to text laid out after the change, so it shows on the next
+window or scene rather than on the line already on screen.
+
+**The face list is built from the directory, not compiled in.** The core lists
+the face directory at startup: the `Font` option offers the **bundled faces**
+under friendly names, then any other `.ttf`/`.otf` it finds, under its filename.
+Dropping a font into that directory is therefore all it takes to make it
+selectable — no rebuild. A bundled face whose file is absent is not offered, and
+a saved choice whose face has since been removed falls back to the game's font
+with a warning in the log.
+
+**The face directory** is the engine data directory — the one `overrides.txt`
+and the KAG polyfill live in (`<system_directory>/vnovel`, or `KRKRSDL2_DATA_PATH`
+when set explicitly). It is the directory the core already publishes to the
+KiriKiri engine, so all three engines open a face the same way, `<dir>/<file>`,
+and `tools/deploy-engine-data.sh` installs the bundled set there. Bundled faces
+are SIL Open Font License, each with its licence text beside it in
+`resources/fonts/`.
+
+**Bundled faces.** `OpenDyslexic` weights the bottoms of letters to stop them
+swapping places. `Atkinson Hyperlegible` (Braille Institute) makes letterforms
+distinct from each other rather than weighting them, which is what helps where
+the problem is acuity rather than letter-tracking. `Comic Neue` is a comic-book
+face. `EB Garamond` is a reading serif. `BIZ UDPGothic` is a Japanese
+universal-design face and the only bundled one with Japanese glyphs.
+
+**Japanese text.** The Latin faces carry no CJK glyphs, so a Japanese game under
+one of them falls back to the game's own font (or Mona) for that text. Choose
+`BIZ UDPGothic` for Japanese.
+
+**Font Size** scales the size the game's script asked for, so the text box, line
+spacing and wrapping grow with the text rather than the text outgrowing them.
+That is also what keeps the total-fit line planner correct: it measures with the
+engine's own advances against the engine's own line room, so both must come from
+the same scaled numbers.
+
+**Letter Spacing** and **Word Spacing** are fractions of the font's own size (an
+`em`), not pixel counts, so a setting means the same visual amount whatever the
+face and the size are. Letter spacing opens the gap after *every* character;
+word spacing opens the gap at a space, on top of the letter spacing that space
+already got. Positive widens, negative tightens (negative overlaps glyphs, which
+is occasionally what a too-loose face needs). Both default to `0.00`, the only
+value that leaves a run bit-identical.
+
+They are applied inside the one function each engine uses to *advance the cursor*
+and to *measure a run* — ONScripter's per-character fold, PONScripter's
+`GlyphAdvance` — never beside the drawing code. That is what keeps the total-fit
+planner exact: it wraps to the width of the text that will actually be drawn, so
+a raised letter spacing reflows the line rather than running it off the box. A
+spacing added only where glyphs are drawn would wrap to a width the visible line
+never reaches.
+
+On ONScripter the em is the glyph's own width, so a setting reads the same on
+Latin (half-width cell) and Japanese (full-width cell) text instead of vanishing
+on the wider glyphs. These two options affect **ONScripter and PONScripter**;
+KiriKiri lays its text out through KAG and ignores them.
+
+**Font Tint** is a per-channel multiply applied where each engine blends a
+glyph, so raising it lifts dim text toward white and lowering it dims text
+against a bright backdrop. It is a multiply rather than a blend or a curve so it
+composes with the text-plane separation ([`text-rendering-handover.md`](private/notes/text-rendering-handover.md) §10). The tint applies to
+the text colour; ONScripter's shadow stays black, so raising the tint increases
+text-to-shadow contrast rather than flattening it.
+
 ## Development aids
 
 ### Text Debug View (`Text Debug View`)

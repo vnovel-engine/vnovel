@@ -44,6 +44,9 @@ set -eu
 
 CORE_DIR=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$CORE_DIR/deps/krkrsdl2/data"
+# The user-selectable font faces live with the other vendored fonts; they are
+# DATA for the installed tree, not something compiled into the core.
+FONTS_SRC="$CORE_DIR/resources/fonts"
 
 TARGET=${1:-/mnt/recalbox/bios/vnovel}
 
@@ -57,6 +60,20 @@ mkdir -p "$TARGET/system_polyfill"
 cp "$SRC/overrides.txt" "$SRC/mona.ttf" "$TARGET/"
 cp "$SRC"/system_polyfill/*.tjs "$TARGET/system_polyfill/"
 
+# The selectable faces (core option `vnovel_font_face`) go beside overrides.txt,
+# which is the directory the core publishes to the engines as vnovel_font_dir.
+# They are NOT embedded in the core, so a missing file here costs the user the
+# choice of that face and nothing else — the option then falls back to the game's
+# own font. All are SIL OFL 1.1; the licence texts stay in the source tree rather
+# than the install to keep the deployed directory to what runs.
+SELECTABLE_FACES="ComicNeue-Regular.ttf OpenDyslexic-Regular.otf
+                  AtkinsonHyperlegible-Regular.ttf EBGaramond-Variable.ttf
+                  BIZUDPGothic-Regular.ttf"
+for f in $SELECTABLE_FACES; do
+	[ -r "$FONTS_SRC/$f" ] || { echo "missing vendored font: $FONTS_SRC/$f" >&2; exit 1; }
+	cp "$FONTS_SRC/$f" "$TARGET/"
+done
+
 # Remove a startup.tjs this script used to install. It was a 39-byte placeholder
 # (`Debug.message("Hello world!")`) and it is actively harmful: the data
 # directory is added as an engine auto-path (ScriptMgnIntf.cpp:675), so a
@@ -69,16 +86,22 @@ rm -f "$TARGET/startup.tjs"
 # starts and then fails somewhere unrelated.
 echo "verifying:"
 fail=0
-for f in overrides.txt mona.ttf \
-         system_polyfill/KAGParser.tjs system_polyfill/LayerCompat.tjs \
-         system_polyfill/MenuItem.tjs system_polyfill/PluginStubs.tjs \
-         system_polyfill/Util.tjs; do
-	if cmp -s "$SRC/$f" "$TARGET/$f"; then
-		printf '  ok       %s\n' "$f"
+# The two bundled data files come from the engine data dir; the selectable
+# faces come from resources/fonts, where they are vendored. Verified against
+# their own source, so a wrong-source copy cannot pass.
+check() { # <source-dir> <relative-path>
+	if cmp -s "$1/$2" "$TARGET/$2"; then
+		printf '  ok       %s\n' "$2"
 	else
-		printf '  DIFFERS  %s\n' "$f"
+		printf '  DIFFERS  %s\n' "$2"
 		fail=1
 	fi
+}
+check "$SRC" overrides.txt
+check "$SRC" mona.ttf
+for f in $SELECTABLE_FACES; do check "$FONTS_SRC" "$f"; done
+for f in KAGParser.tjs LayerCompat.tjs MenuItem.tjs PluginStubs.tjs Util.tjs; do
+	check "$SRC" "system_polyfill/$f"
 done
 
 # The BOM check. `cmp` above already proves the bytes match the source; this

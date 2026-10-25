@@ -150,8 +150,12 @@ several files (`PPSSPP/`, `dolphin-emu/`):
 ```
 bios/vnovel/
     overrides.txt             plugin override table (builtin shims + names)
-    startup.tjs
     mona.ttf                  fallback font
+    ComicNeue-Regular.ttf     |
+    OpenDyslexic-Regular.otf  | the selectable faces for the `Font` core
+    AtkinsonHyperlegible-...  | option; a user may replace any of them
+    EBGaramond-Variable.ttf   |   (see "Fonts" below)
+    BIZUDPGothic-Regular.ttf  |
     system_polyfill/
         KAGParser.tjs         the KAG scenario parser
         LayerCompat.tjs
@@ -159,6 +163,17 @@ bios/vnovel/
         PluginStubs.tjs       readFile, p.dll, extrans, ...
         Util.tjs
 ```
+
+(`startup.tjs` must NOT be here: the data directory is an engine auto-path, so a
+`startup.tjs` in it shadows the game's own by base name and the game never
+boots. `tools/deploy-engine-data.sh` deletes any copy it finds.)
+
+The five selectable faces are installed by `tools/deploy-engine-data.sh` and are
+SIL Open Font License; each keeps its licence text in `resources/fonts/`. They
+live here rather than inside the core so the binary stays small and a user can
+drop in a face of their own under the same name. A missing or unreadable face
+costs only the choice of that face — the `Font` option then uses the game's own
+font.
 
 This is arranged so that one directory serves every deployment: it ships with
 the share (so it travels to the Windows box and the Pi alike), it needs no

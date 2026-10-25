@@ -6,6 +6,13 @@
 #include <libretro.h>
 #include <retro_inline.h>
 
+/* `vnovel_font_face`'s value list is built AT RUNTIME (see its definition
+ * below and build_font_face_options in libretro.cpp): the core lists the face
+ * directory when it starts and offers every face it finds, so a user's own
+ * .ttf/.otf becomes a choice without recompiling. The definition below carries
+ * no values of its own — libretro.cpp fills them at registration, before
+ * RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL is called. */
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -314,6 +321,132 @@ extern "C"
                 {NULL, NULL},
           },
           "off"},
+         {"vnovel_font_face",
+          "Font",
+          "Which typeface to draw dialogue with. 'game' uses the game's own "
+          "font (or the engine's fallback when the game has none) and changes "
+          "nothing. 'OpenDyslexic' weights the bottoms of letters to stop them "
+          "swapping places, for readers with dyslexia. 'Atkinson Hyperlegible' "
+          "is from the Braille Institute: its letters are made distinct from "
+          "each other rather than weighted, which is what helps low vision. "
+          "'Comic Neue' is a comic-book face. 'EB Garamond' is a reading "
+          "serif, comfortable over long passages. 'BIZ UDPGothic' is a "
+          "Japanese universal-design face and the only bundled choice with "
+          "Japanese glyphs; Japanese text ignores the Latin-only faces and "
+          "always falls back, so pick this one for a Japanese game. All "
+          "bundled faces are under the SIL Open Font License. Any other "
+          ".ttf/.otf dropped into the core's system directory (bios/vnovel, "
+          "beside overrides.txt) is offered here too, under its filename. "
+          "TAKES EFFECT AFTER A RESTART OF THE GAME: the engine opens its "
+          "typeface once, when the game starts, so changing this mid-game "
+          "does not redraw anything already on screen — close the game and "
+          "load it again to see the new face. (Font Size, Font Letter "
+          "Spacing, Font Word Spacing and Font Tint apply without a restart.)",
+          /* Filled at runtime by build_font_face_options(): the bundled faces
+           * plus whatever the face directory holds. See this header's top. */
+          {{0, 0}},
+          "game"},
+         {"vnovel_font_size",
+          "Font Size",
+          "Scale the game's own font size, for text that is too small to read "
+          "comfortably. Applied to the size the game's script asked for, so the "
+          "text box, line spacing and line wrapping all grow with the text "
+          "instead of the text outgrowing them. 100% leaves the game's size "
+          "alone.",
+          {
+                {"50", NULL}, {"55", NULL}, {"60", NULL}, {"65", NULL}, {"70", NULL}, {"75", NULL},
+                {"80", NULL}, {"85", NULL}, {"90", NULL}, {"95", NULL}, {"100", NULL}, {"105", NULL},
+                {"110", NULL}, {"115", NULL}, {"120", NULL}, {"125", NULL}, {"130", NULL}, {"135", NULL},
+                {"140", NULL}, {"145", NULL}, {"150", NULL}, {"155", NULL}, {"160", NULL}, {"165", NULL},
+                {"170", NULL}, {"175", NULL}, {"180", NULL}, {"185", NULL}, {"190", NULL}, {"195", NULL},
+                {"200", NULL}, {"205", NULL}, {"210", NULL}, {"215", NULL}, {"220", NULL}, {"225", NULL},
+                {"230", NULL}, {"235", NULL}, {"240", NULL}, {"245", NULL}, {"250", NULL}, {"255", NULL},
+                {"260", NULL}, {"265", NULL}, {"270", NULL}, {"275", NULL}, {"280", NULL}, {"285", NULL},
+                {"290", NULL}, {"295", NULL}, {"300", NULL},
+          },
+          "100"},
+         {"vnovel_font_tint",
+          "Font Tint (Contrast)",
+          "Adjust the colour of dialogue text to make it stand out against "
+          "whatever is behind it. A percentage per channel: 'white' is the "
+          "game's own colour unchanged, 'brighter' and 'pure white' push a "
+          "dim or tinted text colour up toward full white, 'dimmer' pulls it "
+          "down toward the background. Use this when the game's text colour is "
+          "low-contrast against its text box.",
+          {
+                {"dimmer", NULL},
+                {"normal", NULL},
+                {"brighter", NULL},
+                {"pure white", NULL},
+                {NULL, NULL},
+          },
+          "normal"},
+         {"vnovel_font_tint_custom",
+          "Font Tint - Custom RGB",
+          "Set the text tint as three comma-separated percentages (R,G,B), "
+          "e.g. '100,100,80' to warm the text slightly. Only used when Font "
+          "Tint (Contrast) is set to 'normal'; the other settings override "
+          "this. Each value is 0-200, where 100 leaves that channel alone.",
+          {
+                {"off", NULL},
+                {"50,50,50", NULL},
+                {"80,80,80", NULL},
+                {"100,100,100", NULL},
+                {"100,100,80", NULL},
+                {"120,120,120", NULL},
+                {"150,150,150", NULL},
+                {NULL, NULL},
+          },
+          "off"},
+         {"vnovel_font_letter_spacing",
+          "Font Letter Spacing",
+          "Add space between individual characters, as a fraction of the font's "
+          "own size, to open up dense or cramped text. Negative values tighten "
+          "the letters instead, which can help when a face is too loose. This "
+          "also affects where lines wrap, exactly as the wider letters do, so "
+          "text is never cut off. Applies to ONScripter and PONScripter text; "
+          "KiriKiri lays its text out itself and ignores it.",
+          {
+                {"-1.00", NULL}, {"-0.90", NULL}, {"-0.80", NULL}, {"-0.70", NULL}, {"-0.60", NULL}, {"-0.50", NULL},
+                {"-0.40", NULL}, {"-0.30", NULL}, {"-0.25", NULL}, {"-0.20", NULL}, {"-0.19", NULL}, {"-0.18", NULL},
+                {"-0.17", NULL}, {"-0.16", NULL}, {"-0.15", NULL}, {"-0.14", NULL}, {"-0.13", NULL}, {"-0.12", NULL},
+                {"-0.11", NULL}, {"-0.10", NULL}, {"-0.09", NULL}, {"-0.08", NULL}, {"-0.07", NULL}, {"-0.06", NULL},
+                {"-0.05", NULL}, {"-0.04", NULL}, {"-0.03", NULL}, {"-0.02", NULL}, {"-0.01", NULL}, {"0.00", NULL},
+                {"0.01", NULL}, {"0.02", NULL}, {"0.03", NULL}, {"0.04", NULL}, {"0.05", NULL}, {"0.06", NULL},
+                {"0.07", NULL}, {"0.08", NULL}, {"0.09", NULL}, {"0.10", NULL}, {"0.11", NULL}, {"0.12", NULL},
+                {"0.13", NULL}, {"0.14", NULL}, {"0.15", NULL}, {"0.16", NULL}, {"0.17", NULL}, {"0.18", NULL},
+                {"0.19", NULL}, {"0.20", NULL}, {"0.21", NULL}, {"0.22", NULL}, {"0.23", NULL}, {"0.24", NULL},
+                {"0.25", NULL}, {"0.26", NULL}, {"0.27", NULL}, {"0.28", NULL}, {"0.29", NULL}, {"0.30", NULL},
+                {"0.31", NULL}, {"0.32", NULL}, {"0.33", NULL}, {"0.34", NULL}, {"0.35", NULL}, {"0.36", NULL},
+                {"0.37", NULL}, {"0.38", NULL}, {"0.39", NULL}, {"0.40", NULL}, {"0.41", NULL}, {"0.42", NULL},
+                {"0.43", NULL}, {"0.44", NULL}, {"0.45", NULL}, {"0.46", NULL}, {"0.47", NULL}, {"0.48", NULL},
+                {"0.49", NULL}, {"0.50", NULL},
+          },
+          "0.00"},
+         {"vnovel_font_word_spacing",
+          "Font Word Spacing",
+          "Add space at each word gap, as a fraction of the font's own size, on "
+          "top of the letter spacing. Useful with a face whose word gaps are too "
+          "tight to tell apart, or after raising Font Letter Spacing and wanting "
+          "the words to separate again. Applies to ONScripter and PONScripter "
+          "text; KiriKiri lays its text out itself and ignores it.",
+          {
+                {"-1.00", NULL}, {"-0.90", NULL}, {"-0.80", NULL}, {"-0.70", NULL}, {"-0.60", NULL}, {"-0.50", NULL},
+                {"-0.40", NULL}, {"-0.30", NULL}, {"-0.25", NULL}, {"-0.20", NULL}, {"-0.19", NULL}, {"-0.18", NULL},
+                {"-0.17", NULL}, {"-0.16", NULL}, {"-0.15", NULL}, {"-0.14", NULL}, {"-0.13", NULL}, {"-0.12", NULL},
+                {"-0.11", NULL}, {"-0.10", NULL}, {"-0.09", NULL}, {"-0.08", NULL}, {"-0.07", NULL}, {"-0.06", NULL},
+                {"-0.05", NULL}, {"-0.04", NULL}, {"-0.03", NULL}, {"-0.02", NULL}, {"-0.01", NULL}, {"0.00", NULL},
+                {"0.01", NULL}, {"0.02", NULL}, {"0.03", NULL}, {"0.04", NULL}, {"0.05", NULL}, {"0.06", NULL},
+                {"0.07", NULL}, {"0.08", NULL}, {"0.09", NULL}, {"0.10", NULL}, {"0.11", NULL}, {"0.12", NULL},
+                {"0.13", NULL}, {"0.14", NULL}, {"0.15", NULL}, {"0.16", NULL}, {"0.17", NULL}, {"0.18", NULL},
+                {"0.19", NULL}, {"0.20", NULL}, {"0.21", NULL}, {"0.22", NULL}, {"0.23", NULL}, {"0.24", NULL},
+                {"0.25", NULL}, {"0.26", NULL}, {"0.27", NULL}, {"0.28", NULL}, {"0.29", NULL}, {"0.30", NULL},
+                {"0.31", NULL}, {"0.32", NULL}, {"0.33", NULL}, {"0.34", NULL}, {"0.35", NULL}, {"0.36", NULL},
+                {"0.37", NULL}, {"0.38", NULL}, {"0.39", NULL}, {"0.40", NULL}, {"0.41", NULL}, {"0.42", NULL},
+                {"0.43", NULL}, {"0.44", NULL}, {"0.45", NULL}, {"0.46", NULL}, {"0.47", NULL}, {"0.48", NULL},
+                {"0.49", NULL}, {"0.50", NULL},
+          },
+          "0.00"},
          {"vnovel_menu_hotkey",
           "Menu Hotkey",
           "Which key toggles the core's own menu bar. Bound to F12 by default. "

@@ -3,6 +3,82 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## 0.6.0 — 2026-10-26
+
+Dialogue you can read: the typeface, its size, its spacing and its contrast are
+the reader's to choose, and the faces are files that ship beside the game data
+rather than blobs compiled into the core.
+
+### Added
+
+- **Font selection for readability, as core options.** Six new options let a
+  reader choose the typeface dialogue is drawn in, scale it, space it, and
+  adjust its contrast, on all three engines:
+
+  | Option | Values | Default |
+  |---|---|---|
+  | `Font` | `game`, then every face in the face directory | `game` |
+  | `Font Size` | 50–300% in 5% steps | `100` |
+  | `Font Letter Spacing` | −0.20 … +0.50 em in 0.01 steps, plus −0.25…−1.00 em outliers | `0.00` |
+  | `Font Word Spacing` | −0.20 … +0.50 em in 0.01 steps, plus −0.25…−1.00 em outliers | `0.00` |
+  | `Font Tint (Contrast)` | `dimmer`, `normal`, `brighter`, `pure white` | `normal` |
+  | `Font Tint - Custom RGB` | `off`, or three comma-separated percentages | `off` |
+
+  `game` is the default and changes nothing. `OpenDyslexic` (weighted letter
+  bottoms) and `Atkinson Hyperlegible` (letterforms made distinct, from the
+  Braille Institute) are the two aimed at reading impairment; `Comic Neue` is a
+  comic-book face, `EB Garamond` a reading serif, and `BIZ UDPGothic` a
+  Japanese universal-design face — the only one with Japanese glyphs, so a
+  Japanese game falls back to its own font for the Latin-only faces. All the
+  bundled faces are under the SIL Open Font License.
+
+  `Font Size` scales the size the game's script asked for, so the text box,
+  line spacing and wrapping grow with the text rather than the text outgrowing
+  them — which is also what keeps the total-fit line planner honest, since it
+  measures with the engine's own advances against the engine's own line room.
+
+  `Font Letter Spacing` and `Font Word Spacing` are fractions of the font's own
+  size, so a setting means the same visual amount whatever the face and the size
+  are; positive widens, negative tightens, and the extremes (−1.00 em) overlap
+  glyphs until the line reads as one word. They are applied inside the function
+  each engine uses to advance its cursor *and* to measure a run, so the
+  total-fit planner wraps to the width of the text that is actually drawn and
+  the line reflows instead of running off the box. ONScripter and PONScripter
+  only; KiriKiri lays its text out through KAG and ignores them.
+
+  `Font Tint` is a per-channel multiply applied where each engine blends a
+  glyph, so raising it lifts dim text toward white and lowering it dims text
+  against a bright backdrop; it is a multiply rather than a blend so it composes
+  with the text-plane separation.
+
+  **The faces ship as files**, beside `overrides.txt` in the engine data
+  directory, so they cost the core binary nothing and a user can replace one
+  under the same name. The `Font` list is built at startup from that directory:
+  the bundled names first, then any other `.ttf`/`.otf` found, under its
+  filename — so dropping in a font makes it selectable with no rebuild.
+  `tools/deploy-engine-data.sh` installs the bundled set.
+  `resources/fonts/` keeps each face with its licence text. The face is opened
+  through the engine-core bridge, so the three engines resolve it the same way.
+
+  With the default options a run is **bit-identical** to before: the totals-fit
+  golden renders byte-for-byte the same.
+
+### Fixed
+
+- **`Font Size` now reaches text laid out after the change.** A game sets its
+  text window once, at start-up, and the engines applied the scale only where a
+  window is established — so a change made in the middle of a game never reached
+  the layout again and the option looked inert. The engines now keep the
+  script's own geometry as a base, re-derive the scale from it, and re-apply at
+  the next sentence boundary when the core reports a change. Re-deriving from the
+  base is what makes a repeat application correct: applying the scale twice at
+  150% would otherwise give 225%. The same change means a size can be turned
+  back down again, which an in-place multiply could not do.
+- **Core options are published before the engine thread starts** on the reset
+  path as well as the load path. The engine runs the script — and lays out its
+  text — before the next frame, so a per-frame read was one frame too late for
+  the first sentence after a reset.
+
 ## 0.5.0 — 2026-10-25
 
 One diagnostics switch for the whole tree, and builds that work on Windows and

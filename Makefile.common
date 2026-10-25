@@ -153,6 +153,7 @@ RUNTIME_C += $(addprefix $(LIBRETRO_COMM)/, \
   string/stdstring.c \
   time/rtime.c \
   file/file_path.c \
+  file/retro_dirent.c \
 )
 
 # SMPEG (MPEG-1 audio/video decoder)

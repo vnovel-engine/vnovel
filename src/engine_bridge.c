@@ -29,6 +29,7 @@
 
 #include "engine_bridge.h"
 #include <setjmp.h>
+#include <stdio.h>
 
 /* frontend callbacks */
 
@@ -56,6 +57,102 @@ VNOVEL_EXPORT const unsigned char *vnovel_fallback_font_data = 0;
 VNOVEL_EXPORT int vnovel_fallback_font_len                   = 0;
 VNOVEL_EXPORT const char *vnovel_override_dir                = 0;
 VNOVEL_EXPORT int vnovel_textbox_opacity                     = 100;
+
+/* User font selection (see engine_bridge.h and src/font_options.h). `font_dir`
+ * is the directory the faces are installed in, set by the core from the engine
+ * data path; NULL until then, which makes every lookup report "no face", so an
+ * engine that runs before the core publishes behaves as it always did. The
+ * per-glyph values default to the identity. */
+VNOVEL_EXPORT const char *vnovel_font_dir    = 0;
+VNOVEL_EXPORT const char *vnovel_font_face_file = 0;
+VNOVEL_EXPORT int vnovel_font_size_percent   = 100;
+VNOVEL_EXPORT int vnovel_font_tint_r         = 100;
+VNOVEL_EXPORT int vnovel_font_tint_g         = 100;
+VNOVEL_EXPORT int vnovel_font_tint_b         = 100;
+
+/* Letter- and word-spacing, in per-mille of the em (see font_options.h). 0 is
+ * the identity, so an engine that multiplies its em by these gets nothing when
+ * the options are at their defaults. */
+VNOVEL_EXPORT int vnovel_font_letter_spacing = 0;
+VNOVEL_EXPORT int vnovel_font_word_spacing   = 0;
+
+/* Set when the font-size option changes, cleared by an engine that has applied
+ * it at a page boundary (see vnovel_font_api.h). Lives here with the other
+ * bridge state so the core and the engines share one definition. */
+VNOVEL_EXPORT int vnovel_font_scale_refresh_requested = 0;
+
+VNOVEL_EXPORT int vnovel_font_selected_path(char *out, int out_size,
+                                            const char **name)
+{
+   const char *file;
+   int n;
+   if (name) *name = 0;
+   if (out && out_size > 0) out[0] = '\0';
+   /* Nothing published, no directory to look in, or the game's own font chosen:
+    * all three mean "do nothing", which is also what a run with the frontend
+    * options absent gets. */
+   if (!out || out_size <= 0 || !vnovel_font_dir || !vnovel_font_dir[0])
+      return 0;
+   if (!vnovel_font_face_file || !vnovel_font_face_file[0])
+      return 0;
+   file = vnovel_font_face_file;
+   n = snprintf(out, (size_t)out_size, "%s/%s", vnovel_font_dir, file);
+   /* Truncated: a path that does not fit is not a path, so report "no face"
+    * rather than something an engine would try to open. */
+   if (n <= 0 || n >= out_size)
+   {
+      out[0] = '\0';
+      return 0;
+   }
+   if (name) *name = file;
+   return 1;
+}
+
+VNOVEL_EXPORT int vnovel_font_scaled_size(int size)
+{
+   int pct = vnovel_font_size_percent;
+   if (pct == 100)
+      return size;
+   if (pct < VNOVEL_FONT_SCALE_MIN) pct = VNOVEL_FONT_SCALE_MIN;
+   if (pct > VNOVEL_FONT_SCALE_MAX) pct = VNOVEL_FONT_SCALE_MAX;
+   /* Round to nearest, then floor at 1: a size of 0 makes the engines skip the
+    * glyph (ONScripter's drawGlyph returns early), which would silently drop the
+    * line rather than show it small. */
+   int out = (size * pct + 50) / 100;
+   return out < 1 ? 1 : out;
+}
+
+VNOVEL_EXPORT unsigned int vnovel_font_tint_rgb(unsigned int rgb)
+{
+   if (vnovel_font_tint_r == 100 && vnovel_font_tint_g == 100 &&
+       vnovel_font_tint_b == 100)
+      return rgb;
+   int r = (int)((rgb >> 16) & 0xff);
+   int g = (int)((rgb >> 8) & 0xff);
+   int b = (int)(rgb & 0xff);
+   r = r * vnovel_font_tint_r / 100;
+   g = g * vnovel_font_tint_g / 100;
+   b = b * vnovel_font_tint_b / 100;
+   if (r > 255) r = 255;
+   if (g > 255) g = 255;
+   if (b > 255) b = 255;
+   if (r < 0) r = 0;
+   if (g < 0) g = 0;
+   if (b < 0) b = 0;
+   return ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+}
+
+VNOVEL_EXPORT int vnovel_font_spacing_px(int per_mille, int em_px)
+{
+   /* Plain truncating division, on purpose: truncation toward zero is an ODD
+    * function, so tightening by the amount a widening added cancels to exactly
+    * 0. Flooring toward -infinity would not (it maps +0.5 to 0 and -0.5 to -1),
+    * which would leave a sub-pixel drift between the two. The result is whole
+    * script pixels, so the spacing quantises to the engine's own unit; the
+    * engine's measure and draw both add that same integer, so the plan is
+    * unaffected by the quantisation. */
+   return (int)(((long)per_mille * (long)em_px) / 1000L);
+}
 
 /* text plane (see engine_bridge.h)
  * Installed by the shell before any engine starts. An engine checks

@@ -40,6 +40,7 @@
 #include <SDL_keysym.h>
 #include <setjmp.h>
 #include "key_remap.h"
+#include "font_options.h"
 #include "vnovel_visibility.h"
 
 #ifdef __cplusplus
@@ -88,6 +89,103 @@ extern "C"
  * the whole run. NULL/0 outside the libretro build (nothing to fall back to). */
    VNOVEL_EXPORT extern const unsigned char *vnovel_fallback_font_data;
    VNOVEL_EXPORT extern int vnovel_fallback_font_len;
+
+   /* User font selection (core options `vnovel_font_face`, `vnovel_font_size`,
+    * `vnovel_font_tint*`). Written by the core, read by every engine.
+    *
+    * This is the shape the whole feature is built on. The face is published
+    * ONCE at start-up and never changes while a game runs, because the engines
+    * reach their font pipeline at different times — ONScripter/PONScripter at
+    * `openFont`/`FontsStruct`, KiriKiri at font registration — and none of those
+    * costs anything per glyph.
+    *
+    * The face is a FILE, in the directory below. That directory is the engine
+    * data directory (the one overrides.txt and the KAG polyfill already live
+    * in), so all three engines resolve the face the same way: open
+    * `<dir>/<file>`. It keeps the core binary ~5.8 MB smaller than embedding
+    * the faces would, and lets a user replace one. See src/font_options.h for
+    * why the two fallback fonts are still embedded while these are not. */
+   VNOVEL_EXPORT extern const char *vnovel_font_dir;
+
+   /* The user's chosen face, as a FILENAME (basename) in the directory below,
+    * or an empty string for the game's own font. A filename rather than an index
+    * because the core BUILDS the option list at runtime from the directory it
+    * finds (see build_font_face_options in libretro.cpp), so a face the user
+    * added is selectable without the engines knowing it exists — the same two
+    * fields describe a bundled face and a user's own.
+    *
+    * Written by the core, read by every engine at the point it opens or
+    * registers a face. Empty means "the game's own font", which is the default
+    * and the only value that leaves a normal run bit-identical. */
+   VNOVEL_EXPORT extern const char *vnovel_font_face_file;
+
+   /* Scale applied to whatever size the game's script asked for, in percent.
+    * 100 = unchanged. Read per glyph (see below). Engines clamp through
+    * vnovel_font_scaled_size, so a hostile value cannot make every glyph a
+    * screenful. */
+   VNOVEL_EXPORT extern int vnovel_font_size_percent;
+
+   /* Per-channel multiply applied to a glyph's colour at blend time, in percent
+    * (100 = unchanged). Read per glyph by the draw path that tints the glyph
+    * mask. See VNovelFontTint in src/font_options.h for why a multiply.
+    *
+    * These three are LIVE, re-read per glyph, so a frontend that changes a font
+    * option mid-run takes effect without a restart; nothing is cached on the
+    * engine side. The face above is published once because the bytes it names
+    * do not change. */
+   VNOVEL_EXPORT extern int vnovel_font_tint_r;
+   VNOVEL_EXPORT extern int vnovel_font_tint_g;
+   VNOVEL_EXPORT extern int vnovel_font_tint_b;
+
+   /* Letter- and word-spacing, in per-mille of the em (core options
+    * `vnovel_font_letter_spacing` / `vnovel_font_word_spacing`). LIVE, read per
+    * character, so a change in the frontend shows on the next line. 0 is the
+    * identity and is the default: an engine multiplies its own em by these, so
+    * at 0 it adds nothing and the run is bit-identical.
+    *
+    * An engine must add these INSIDE whatever function computes both its cursor
+    * advance and its run measurement. That is what keeps total-fit wrapping
+    * correct at a non-zero spacing (see font_options.h). */
+   VNOVEL_EXPORT extern int vnovel_font_letter_spacing;
+   VNOVEL_EXPORT extern int vnovel_font_word_spacing;
+
+   /* Raised by the core when the font-size option changes, cleared by an engine
+    * once it has applied the new value at a page boundary. See
+    * vnovel_font_api.h for why the engine owns the timing. */
+   VNOVEL_EXPORT extern int vnovel_font_scale_refresh_requested;
+
+   /* The four operations every engine needs, defined once here rather than
+    * three times in the engines — the whole point of the bridge. Each is
+    * deliberately tiny: the first two are called per glyph. */
+
+   /* The full path to the selected face, in `out` (size `out_size`), or 0 when
+    * the game's own font should be used (nothing selected, no directory
+    * published, an out-of-range index, or the VNOVEL_FONT_GAME entry). This is
+    * the ONE place the choice is validated, so no engine can read past the
+    * table or build a path out of an unchecked index.
+    *
+    * `name` receives the basename (for a log line) and may be NULL; it needs no
+    * storage of its own — it points into static data. Together with the
+    * returned path, `out` is what the engine opens. */
+   VNOVEL_EXPORT int vnovel_font_selected_path(char *out, int out_size,
+                                               const char **name);
+
+   /* `size` scaled by vnovel_font_size_percent, clamped to
+    * VNOVEL_FONT_SCALE_MIN..MAX and never below 1. Returns `size` unchanged when
+    * the scale is 100, so the default path does no arithmetic. */
+   VNOVEL_EXPORT int vnovel_font_scaled_size(int size);
+
+   /* Per-mille of the em → whole script pixels, at `em_px` = the engine's own
+    * em in script pixels. An engine calls this in the ONE function that both
+    * advances its cursor and measures a run, so both get the identical integer
+    * and total-fit wrapping stays exact (see font_options.h). Returns 0 for a
+    * per_mille of 0, so the default adds nothing. */
+   VNOVEL_EXPORT int vnovel_font_spacing_px(int per_mille, int em_px);
+
+   /* `rgb` (0xRRGGBB) with vnovel_font_tint_* applied as a per-channel
+    * percentage. Returns `rgb` unchanged when every channel is 100. Alpha is not
+    * in `rgb` and is not touched: the engines carry glyph alpha separately. */
+   VNOVEL_EXPORT unsigned int vnovel_font_tint_rgb(unsigned int rgb);
 
    /* Directory of loose files that override game/archive assets, published by the
  * core and read by the engine. The engine prepends it to the archive path

@@ -14,7 +14,7 @@ deps/sdl-mixer
 deploy-recalbox.py
 deploy-system.local.py
 
-# generated font embed (from resources/fonts/*.ttf)
+# generated font embed (from resources/fonts/*.ttf, *.otf)
 resources/fonts/fallback_font.h
 resources/fonts/extra_fallback_font.h
 

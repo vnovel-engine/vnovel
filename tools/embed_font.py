@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """embed_font.py FONT.ttf OUT.h — emit a C header with the font as a byte array.
 
-Used by the Makefile to embed the vendored fallback font (resources/fonts/, OFL)
-into the core so it is available at runtime with no external file. Keep this
+Used by the Makefile to embed the vendored fallback fonts (resources/fonts/, OFL)
+into the core so they are available at runtime with no external file. Keep this
 trivial: the font is the source of truth, the header is a build artifact.
+
+This is only for the two FALLBACK fonts. They are embedded because a game whose
+own font is missing must still render, and that has to work with nothing
+deployed beside the core. The user-selectable faces are NOT embedded: they ship
+as files next to the engine data (see tools/deploy-engine-data.sh), which keeps
+the core binary small and lets a user replace a face.
 """
 import os
 import sys

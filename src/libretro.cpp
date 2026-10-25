@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <retro_dirent.h>   /* portable directory listing (POSIX dirent / Win32) */
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -1847,6 +1848,55 @@ static int opt_int(const char *key, int fallback)
    return v ? atoi(v) : fallback;
 }
 
+/* A spacing option, written as a decimal fraction of the em ("0.05", "-0.10"),
+ * as per-mille. Parsed by hand rather than with strtof* so the result is the
+ * exact integer the engines will use with no float in the chain: "0.05" is 50
+ * per-mille, "-0.10" is -100, and anything unparsable falls back to `fallback`
+ * (0 at the defaults, so a bad value is the identity, not a surprise).
+ *
+ * Three fractional digits are read, which is one more than the option's own
+ * 0.05 step, so a value a hand-edited config states more precisely than the
+ * menu offers is still honoured down to the per-mille. */
+static int opt_per_mille(const char *key, int fallback)
+{
+   const char *v = opt_string(key, NULL);
+   if (!v) return fallback;
+   int sign = 1;
+   if (*v == '-') { sign = -1; v++; }
+   else if (*v == '+') v++;
+   /* A leading '.' is accepted as "0.": the option values always carry the
+    * leading zero, but a hand-edited config is a real input and ".5" meaning
+    * nothing would be a silent surprise. */
+   if ((*v < '0' || *v > '9') && *v != '.') return fallback;
+
+   long whole = 0;
+   while (*v >= '0' && *v <= '9')
+      whole = whole * 10 + (*v++ - '0');
+
+   long frac = 0;
+   if (*v == '.')
+   {
+      long scale = 1;
+      v++;
+      while (scale < 1000 && *v >= '0' && *v <= '9')
+      {
+         frac = frac * 10 + (*v++ - '0');
+         scale *= 10;
+      }
+      /* Pad "0.5" out to "0.500": fewer than three digits may have been read. */
+      while (scale < 1000)
+      {
+         frac *= 10;
+         scale *= 10;
+      }
+   }
+
+   long pm = (whole * 1000 + frac) * sign;
+   if (pm < VNOVEL_FONT_SPACING_MIN) pm = VNOVEL_FONT_SPACING_MIN;
+   if (pm > VNOVEL_FONT_SPACING_MAX) pm = VNOVEL_FONT_SPACING_MAX;
+   return (int)pm;
+}
+
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 {
    (void)level;
@@ -1975,6 +2025,13 @@ static bool vnovel_core_keyboard_handle(bool down, unsigned keycode)
 }
 
 
+/* Font support, defined with the rest of it further down but needed here
+ * because `vnovel_font_face`'s value list is built from the face directory at
+ * registration, and the frontend can be asked for its system directory no
+ * earlier than this. */
+void resolve_font_dir(void);
+void build_font_face_options(const char *dir);
+
 void retro_set_environment(retro_environment_t cb)
 {
    static struct retro_log_callback log;
@@ -1992,6 +2049,14 @@ void retro_set_environment(retro_environment_t cb)
    environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb_cb);
 
    // Core options: frame sync, indicators, debug level
+   /* The `Font` option's value list first: it is built from the face directory,
+    * and libretro_set_core_options hands the definition to the frontend, so the
+    * list has to be filled before that call or the option would be registered
+    * with no values. This is the earliest point the frontend can be asked for
+    * its system directory, which is what locates the faces. */
+   resolve_font_dir();
+   build_font_face_options(vnovel_font_dir);
+
    libretro_set_core_options(
          environ_cb, &opt_frame_sync, &opt_indicators, &opt_debug_level);
 
@@ -2579,6 +2644,351 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
    krkr_push_key((int)keycode, down ? 1 : 0);
 }
 
+/* The face directory's contents, as the `Font` option offers them, and the
+ * mapping from a chosen value back to a filename. Called before the core
+ * options are registered, with the same directory the engines will use (see
+ * publish_font_options).
+ *
+ * Two sources, bundled first so the documented set is always present:
+ *   1. vnovel_font_sources (src/font_options.h) — the bundled faces, offered
+ *      under a stable label, and only when the file is actually there.
+ *   2. any other .ttf/.otf in the directory, offered under its filename.
+ *
+ * So a face the user adds is selectable with no code change, and a bundled face
+ * that was not deployed is not offered as a dead choice. The listing goes
+ * through libretro-common's retro_dirent, which has a Win32 implementation as
+ * well as the POSIX one, so this works on every platform the core targets.
+ *
+ * Each value is its own label (libretro shows the value when the label is
+ * NULL): a bundled face reads as its friendly name, a user's own as its
+ * filename, which is the most honest thing to show for a file we know nothing
+ * else about. */
+#define FONT_OPTION_MAX 40
+static const char *font_face_files[FONT_OPTION_MAX + 1];  /* value index -> file */
+
+/* Where the selectable faces live, published to the engines as
+ * `vnovel_font_dir`.
+ *
+ * The directory is the engine data directory — the one overrides.txt and the
+ * KAG polyfill already live in, where tools/deploy-engine-data.sh installs the
+ * faces. Two ways to find it, and both are needed:
+ *
+ *   KRKRSDL2_DATA_PATH   set explicitly by a launcher, or by the KiriKiri engine
+ *                        itself at its own init. An explicit value is the user's
+ *                        decision and wins.
+ *   <system dir>/vnovel  what the core resolves from the frontend when the
+ *                        variable is not set, so the ONScripter engines find the
+ *                        faces too — the directory is meant for all three, it is
+ *                        just that only the KiriKiri path had a reason to look
+ *                        it up before.
+ *
+ * Called before the `Font` option's values are built, which is what needs the
+ * directory. The frontend calls SET_ENVIRONMENT more than once, and the system
+ * directory is not available on every call, so the resolved value STICKS: once
+ * a directory has been found it is never downgraded to none, or a later bare
+ * call would wipe a good answer and leave the option with no faces. */
+void resolve_font_dir(void)
+{
+   const char *dir = getenv("KRKRSDL2_DATA_PATH");
+
+   if ((!dir || !dir[0]) && (!vnovel_font_dir || !vnovel_font_dir[0]))
+   {
+      const char *sysdir = NULL;
+      if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysdir) &&
+          sysdir && sysdir[0])
+      {
+         static char dirbuf[PATH_MAX_LENGTH];
+         snprintf(dirbuf, sizeof(dirbuf), "%s/vnovel", sysdir);
+         dir = dirbuf;
+      }
+   }
+   if (dir && dir[0])
+      vnovel_font_dir = dir;
+}
+
+static int font_file_present(const char *dir, const char *file)
+{
+   char path[PATH_MAX_LENGTH];
+   FILE *f;
+   if (!dir || !dir[0] || !file || !file[0])
+      return 0;
+   snprintf(path, sizeof(path), "%s/%s", dir, file);
+   f = fopen(path, "rb");
+   if (!f)
+      return 0;
+   fclose(f);
+   return 1;
+}
+
+static int font_name_is_face(const char *name)
+{
+   size_t n;
+   if (!name || !name[0] || name[0] == '.')
+      return 0;
+   n = strlen(name);
+   if (n <= 4)
+      return 0;
+   /* Case-insensitive by hand rather than with strcasecmp: that is POSIX, and
+    * this file also has to compile for Windows. Only ASCII is needed, since an
+    * extension is. */
+   {
+      const char *ext = name + n - 4;
+      int i;
+      static const char *const want[2] = {".ttf", ".otf"};
+      for (i = 0; i < 2; i++)
+      {
+         int j;
+         for (j = 0; j < 4; j++)
+         {
+            char a = ext[j], b = want[i][j];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (a != b)
+               break;
+         }
+         if (j == 4)
+            return 1;
+      }
+   }
+   return 0;
+}
+
+void build_font_face_options(const char *dir)
+{
+   struct retro_core_option_definition *def = 0;
+   int i, n = 0;
+
+   /* Built once, and only from a resolved directory. The frontend calls
+    * SET_ENVIRONMENT repeatedly and the system directory is not available on
+    * every call, so without the directory test the FIRST build would be the
+    * empty one and the option would offer nothing but "game" for the whole run.
+    * The directory does not change while a game runs, so one successful build is
+    * also all that is correct. */
+   {
+      static int built = 0;
+      if (built)
+         return;
+      if (!dir || !dir[0])
+         return;   /* no directory yet: leave it to a later call */
+      built = 1;
+   }
+
+   /* Find the definition first: the values are written straight into its own
+    * array, which the frontend reads, so there is no second copy to keep in
+    * step. `values` is a fixed array inside the struct, not a pointer, so this
+    * is a copy rather than an assignment. */
+   for (i = 0; option_defs_us[i].key; i++)
+      if (strcmp(option_defs_us[i].key, "vnovel_font_face") == 0)
+      {
+         def = &option_defs_us[i];
+         break;
+      }
+   if (!def)
+      return;
+
+   /* "game" is always first and always present: it is the default, and the only
+    * value that leaves a run bit-identical. Its file slot is empty, which is
+    * what makes the bridge report "no face" for it. */
+   def->values[n].value = "game";
+   def->values[n].label = NULL;   /* the value is its own label */
+   font_face_files[n]   = "";
+   n++;
+
+   for (i = 0; i < VNOVEL_FONT_SOURCE_COUNT && n < FONT_OPTION_MAX; i++)
+   {
+      const char *file = vnovel_font_sources[i].file;
+      if (!font_file_present(dir, file))
+         continue;   /* not deployed: offering it would be a dead choice */
+      def->values[n].value = vnovel_font_sources[i].label;
+      def->values[n].label = NULL;
+      font_face_files[n]   = file;
+      n++;
+   }
+
+   /* Anything else in the directory is a face the user added.
+    *
+    * `retro_dirent_get_name` returns a pointer into the directory handle's own
+    * buffer, which the next `retro_readdir` overwrites, so each accepted name
+    * is copied into storage this list owns. Storing the pointer directly would
+    * leave every entry naming whichever file was read last. The copies live for
+    * the process, like the option table they feed. */
+   if (dir && dir[0])
+   {
+      struct RDIR *rd = retro_opendir(dir);
+      if (rd)
+      {
+         while (retro_readdir(rd) && n < FONT_OPTION_MAX)
+         {
+            const char *name = retro_dirent_get_name(rd);
+            char *copy;
+            int dup = 0;
+            if (!font_name_is_face(name))
+               continue;
+            /* A bundled face is already offered above, under its label. */
+            for (i = 0; i < VNOVEL_FONT_SOURCE_COUNT && !dup; i++)
+               if (vnovel_font_sources[i].file &&
+                   strcmp(vnovel_font_sources[i].file, name) == 0)
+                  dup = 1;
+            if (dup)
+               continue;
+            copy = (char *)malloc(strlen(name) + 1);
+            if (!copy)
+               continue;
+            strcpy(copy, name);
+            def->values[n].value = copy;
+            def->values[n].label = NULL;
+            font_face_files[n]   = copy;
+            n++;
+         }
+         retro_closedir(rd);
+      }
+   }
+
+   /* NULL-terminate, and clear the leftover rows so a stale placeholder cannot
+    * be read as a value. */
+   for (i = n; i < RETRO_NUM_CORE_OPTION_VALUES_MAX; i++)
+   {
+      def->values[i].value = NULL;
+      def->values[i].label = NULL;
+   }
+   font_face_files[n] = NULL;
+}
+
+/* The font settings, read from the frontend and resolved into the bridge
+ * (engine_bridge.h). Called beside read_text_behaviour_options so the whole set
+ * of text-affecting options is read at the same two moments.
+ *
+ * The face is a one-time publication (the file it names does not change), while
+ * size and tint are re-read every call because they are consulted per glyph. */
+static void publish_font_options(void)
+{
+   /* The face directory is resolved once, early (see resolve_font_dir); this
+    * only re-checks the explicit environment override, because the KiriKiri
+    * engine may have set KRKRSDL2_DATA_PATH after the early resolution. */
+   {
+      const char *dir = getenv("KRKRSDL2_DATA_PATH");
+      if (dir && dir[0])
+         vnovel_font_dir = dir;
+   }
+
+   /* The `Font` option's list was built from this directory at registration
+    * (build_font_face_options), so nothing is rebuilt here — the frontend was
+    * handed that list and rebuilding would only desynchronise the two. */
+
+   /* Face: the option value IS the filename (see build_font_face_options), so
+    * this is a lookup of the chosen value in the very list that was offered.
+    * Anything unrecognised — the frontend giving nothing, a face removed since
+    * the choice was saved, a hand-edited config — resolves to the game's own
+    * font, which is the safe direction: a stale choice falls back rather than
+    * naming a file that is not there. The engines then open that file, and each
+    * independently falls back to the game font if it cannot. */
+   {
+      const char *v    = opt_string("vnovel_font_face", "game");
+      const char *file = "";
+      int i;
+      if (v && strcmp(v, "game") != 0)
+      {
+         /* The option's own value list is the single source of truth: the
+          * builder wrote it and the frontend was handed it, so a lookup here
+          * cannot disagree with what the user was offered. */
+         for (i = 0; option_defs_us[i].key; i++)
+         {
+            int k;
+            if (strcmp(option_defs_us[i].key, "vnovel_font_face") != 0)
+               continue;
+            for (k = 0; option_defs_us[i].values[k].value; k++)
+               if (strcmp(v, option_defs_us[i].values[k].value) == 0)
+               {
+                  file = font_face_files[k] ? font_face_files[k] : "";
+                  break;
+               }
+            break;
+         }
+         if (!file[0])
+            log_cb(RETRO_LOG_WARN,
+                   "font: '%s' is not a face in %s; using the game font\n",
+                   v, vnovel_font_dir ? vnovel_font_dir : "(no face directory)");
+      }
+      vnovel_font_face_file = file;
+   }
+
+   /* Size: a percentage of the game's own size. Clamped here as well as in the
+    * bridge helper, so the value a debugger sees is the one in force.
+    *
+    * A CHANGE is signalled to the engines (vnovel_font_scale_refresh_requested):
+    * geometry is derived from this value only where the script establishes a
+    * window, and most games do that once at boot — so without a signal a
+    * mid-game change would never be picked up at all. The engine applies it at
+    * its next page boundary, which is the earliest moment it is safe. */
+   {
+      int pct = opt_int("vnovel_font_size", vnovel_font_size_percent);
+      if (pct < VNOVEL_FONT_SCALE_MIN) pct = VNOVEL_FONT_SCALE_MIN;
+      if (pct > VNOVEL_FONT_SCALE_MAX) pct = VNOVEL_FONT_SCALE_MAX;
+      if (pct != vnovel_font_size_percent)
+         vnovel_font_scale_refresh_requested = 1;
+      vnovel_font_size_percent = pct;
+   }
+
+   /* Tint: one named preset, plus a custom triple for the 'normal' slot. The
+    * presets are deliberately coarse — a reader picking "brighter" should not
+    * have to think in per-channel percentages. */
+   {
+      const char *v = opt_string("vnovel_font_tint", "normal");
+      int r = 100, g = 100, b = 100;
+      if (v && strcmp(v, "dimmer") == 0)          { r = g = b = 60; }
+      else if (v && strcmp(v, "brighter") == 0)   { r = g = b = 130; }
+      else if (v && strcmp(v, "pure white") == 0) { r = g = b = 200; }
+      else
+      {
+         const char *c = opt_string("vnovel_font_tint_custom", NULL);
+         if (c && strcmp(c, "off") != 0)
+         {
+            int vals[3], n = 0;
+            const char *p = c;
+            while (n < 3)
+            {
+               char *end;
+               long val = strtol(p, &end, 10);
+               if (end == p)
+                  break;
+               vals[n++] = (int)val;
+               p         = end;
+               if (*p == ',')
+                  p++;
+            }
+            if (n == 3)
+            {
+               r = vals[0];
+               g = vals[1];
+               b = vals[2];
+            }
+            else
+               log_cb(RETRO_LOG_ERROR,
+                      "font: tint '%s' is not three comma-separated numbers; "
+                      "using normal\n",
+                      c);
+         }
+      }
+      if (r < 0) r = 0;
+      if (g < 0) g = 0;
+      if (b < 0) b = 0;
+      if (r > 200) r = 200;
+      if (g > 200) g = 200;
+      if (b > 200) b = 200;
+      vnovel_font_tint_r = r;
+      vnovel_font_tint_g = g;
+      vnovel_font_tint_b = b;
+   }
+
+   /* Spacing: the option strings are decimal ems ("0.05"), the bridge wants
+    * per-mille integers, so the parse is a scaled integer read — no float, which
+    * keeps the value exact and the engines free of a float rounding of their
+    * own. "0.00" is the default and parses to 0, the identity. */
+   vnovel_font_letter_spacing =
+         opt_per_mille("vnovel_font_letter_spacing", vnovel_font_letter_spacing);
+   vnovel_font_word_spacing =
+         opt_per_mille("vnovel_font_word_spacing", vnovel_font_word_spacing);
+}
+
 /* The text-layout flags the ONS/PONS engines read through the bridge
  * (engine_bridge.h). Called once before the engine thread starts and once per
  * frame; the first call matters, because the engine thread runs the script (and
@@ -2592,6 +3002,7 @@ static void read_text_behaviour_options(void)
                                           vnovel_fit_oversize_banners);
    vnovel_wrap_total_fit =
          opt_bool("vnovel_wrap_total_fit", "enabled", vnovel_wrap_total_fit);
+   publish_font_options();
 }
 
 bool retro_load_game(const struct retro_game_info *game)
@@ -2962,6 +3373,15 @@ bool retro_load_game(const struct retro_game_info *game)
             split_requested = 1;
          }
       }
+      /* The font options, for the same reason and by the same timing argument
+       * as the block above: `krkr_init` boots KAG, which registers its fonts and
+       * lays out its opening text before the first `retro_run`. The face is read
+       * at registration, so a per-frame read would be too late for the whole
+       * first page — and for the size and tint, which are consulted per glyph as
+       * the text is drawn. The ONS/PON path reads these at the same point
+       * relative to its own engine start (see read_text_behaviour_options). */
+      publish_font_options();
+
       krkr_init(engine);
       strncpy(last_archive_path, archive_path, sizeof(last_archive_path));
       return true;
@@ -3171,6 +3591,14 @@ void retro_reset(void)
          vtable->setDebugLevel(engine, opt_debug_level);
          if (vtable->setAudioPaused)
             vtable->setAudioPaused(engine, 0);
+         /* Same reason as the load path: the engine thread runs the script —
+            and lays out its text — before the next retro_run, so the options
+            must be in the bridge beforehand. The per-frame read happens after
+            this thread starts, which is one frame too late for the first
+            sentence. (This path mattered less when the values persisted from
+            the previous frame; it matters now that a size change also has to
+            raise the refresh flag before the engine consults it.) */
+         read_text_behaviour_options();
          if (vtable->startThread)
             vtable->startThread(engine);
       }
