@@ -193,18 +193,23 @@ The core is one file, but the KiriKiri engine needs a small set of
 **non-compiled** assets at runtime. This build has no native `KAGParser` plugin,
 so the TJS polyfill parses every scenario.
 
-They live in a per-core subdirectory of the frontend's system ("BIOS")
-directory, the same shape the BIOS directory already uses for cores needing
-several files (`PPSSPP/`, `dolphin-emu/`):
+They live in a `vnovel/` subdirectory **beside the core**, in the frontend's
+libretro ("cores") directory:
 
 | Platform | Directory |
 |---|---|
-| Recalbox / Pi | `/recalbox/share/bios/vnovel` |
-| Windows (same share) | `K:\Recalbox\bios\vnovel` |
-| RetroArch elsewhere | `<system_directory>/vnovel` |
+| Linux (packaged) | `/usr/lib/<triplet>/libretro/vnovel` |
+| Recalbox / Pi | `/usr/lib/libretro/vnovel` |
+| RetroArch elsewhere | `<libretro_directory>/vnovel` |
+
+The core finds it with `RETRO_ENVIRONMENT_GET_LIBRETRO_PATH`, i.e. relative to
+its own file. That is deliberate: the data belongs to the core's version, so
+keeping it next to the core means the two can never be mismatched, and it is a
+directory a package may install into — unlike the system ("BIOS") directory,
+which belongs to the reader and is where this used to live.
 
 ```
-bios/vnovel/
+libretro/vnovel/
     overrides.txt             plugin override table (builtin shims + names)
     mona.ttf                  fallback font
     ComicNeue-Regular.ttf     |
@@ -231,17 +236,17 @@ drop in a face of their own under the same name. A missing or unreadable face
 costs only the choice of that face — the `Font` option then uses the game's own
 font.
 
-This is arranged so that one directory serves every deployment: it ships with
-the share (so it travels to the Windows box and the Pi alike), it needs no
-per-machine setup, and it does not depend on replacing the core.
+It ships in every release bundle and in the Debian package, and `install.sh`
+copies it next to the core, so an unpacked bundle and an installed package behave
+identically and neither needs any per-machine setup.
 
-**The core resolves it with no configuration.** At startup it asks the frontend
-for its system directory and, if `<system_directory>/vnovel/system_polyfill/`
-exists, points `KRKRSDL2_DATA_PATH` there. `KRKRSDL2_OVERRIDE_PATH` is set to the
-same system directory, so `overrides.txt` is found too. An explicit environment
-variable wins over both, and if the `vnovel/` copy is absent the engine falls
-back to the compiled-in default (`/usr/share/krkrsdl2`), which is where a
-packaged install places it.
+**The core resolves it with no configuration.** It derives the cores directory
+from its own loaded path and points `KRKRSDL2_DATA_PATH` at the `vnovel/`
+directory there. The frontend's system ("BIOS") directory is still set as
+`KRKRSDL2_OVERRIDE_PATH`, so a reader can drop in an `overrides.txt` of their
+own without touching the packaged copy, and it takes precedence. An explicit
+`KRKRSDL2_DATA_PATH` wins over everything, and if no `vnovel/` copy exists the
+engine falls back to its compiled-in default (`/usr/share/krkrsdl2`).
 
 Two files are load-bearing and easy to break:
 
