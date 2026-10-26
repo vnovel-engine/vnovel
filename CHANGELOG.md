@@ -3,6 +3,33 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## 1.0.0-rc2 — 2026-10-27
+
+Replaces 1.0.0-rc1, which could not run KiriKiri games from a release.
+
+### Fixed
+
+- **KiriKiri (`.xp3`) games now run from a release.** Every rc1 package — the
+  tarballs, the zips and the `.deb` — shipped the core alone, without the
+  engine's own data files, so a `.xp3` game would start and then fail: the KAG
+  scenario parser is part of that data, and so is the table that tells the
+  engine which plugins to satisfy internally rather than by loading the game's
+  own Windows binaries. ONScripter and PONScripter games were unaffected.
+
+  Those files now ship in every bundle, and `install.sh` places them next to
+  the core. The core looks for them relative to its own location, so the data
+  and the core can no longer be a version apart, and the release no longer
+  depends on a file a user was never asked to create.
+
+- **The core finds its data wherever the core itself is.** It previously looked
+  in the frontend's system ("BIOS") directory, which belongs to the reader: a
+  package cannot install there, so nothing ever put the files where the core
+  expected them. A reader's own `overrides.txt` in that directory still takes
+  precedence, so customising a plugin override needs no edit to the installed
+  set.
+
+Nothing else differs from rc1.
+
 ## 1.0.0-rc1 — 2026-10-26
 
 The first release candidate. The core itself is what 0.6.0 shipped — the same
