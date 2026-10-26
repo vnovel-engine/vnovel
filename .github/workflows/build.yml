@@ -1,0 +1,186 @@
+name: build
+
+# Build the core for every platform a release ships, verify each bundle, and —
+# on a tag — publish the bundles as a GitHub Release.
+#
+# GitHub is the mirror and the release channel; GitLab stays the origin
+# (.gitlab-ci.yml). The platform list matches: Linux x86_64, Linux aarch64,
+# Windows x86_64, plus macOS arm64, which GitLab does not build because no
+# macOS runner is available there.
+
+on:
+  push:
+    branches: [main]
+    tags: ["*"]
+  pull_request:
+  workflow_dispatch:
+
+# gh release create needs to write the release; nothing else needs more.
+permissions:
+  contents: write
+
+# A tag build is never cancelled: its artifacts are a release.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the version comes from git describe, and a shallow
+          # clone has no tags to describe.
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          # xz-utils and unzip are for the verification step (a .deb's members
+          # are xz-compressed and tar shells out to xz; the Windows bundle is a
+          # zip). Both happen to be in the runner image today, which is exactly
+          # why they are named: a check that silently cannot run is worse than
+          # no check.
+          sudo apt-get install -y -qq build-essential pkg-config cmake ninja-build \
+            python3 xz-utils unzip libfreetype-dev libsdl2-dev libfontconfig-dev \
+            libvorbis-dev
+      - name: Build
+        run: make -j"$(nproc)"
+      - name: Package the bundle and the Debian package
+        run: |
+          sh ci/package.sh linux-x86_64
+          sh ci/deb.sh amd64 "$(sh ci/version.sh | sed 's/^v//')" vnovel_libretro.so
+      - name: Verify
+        run: sh ci/verify-bundle.sh dist/*.tar.gz dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  linux-aarch64:
+    # A native arm64 runner, not a cross build: it gives the engine's CMake a
+    # real target pkg-config, so sdl2/freetype/fontconfig/vorbisfile resolve to
+    # arm64 packages instead of being faked through a multiarch sysroot.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          # xz-utils and unzip are for the verification step (a .deb's members
+          # are xz-compressed and tar shells out to xz; the Windows bundle is a
+          # zip). Both happen to be in the runner image today, which is exactly
+          # why they are named: a check that silently cannot run is worse than
+          # no check.
+          sudo apt-get install -y -qq build-essential pkg-config cmake ninja-build \
+            python3 xz-utils unzip libfreetype-dev libsdl2-dev libfontconfig-dev \
+            libvorbis-dev
+      - name: Build
+        run: make -j"$(nproc)"
+      - name: Package the bundle and the Debian package
+        run: |
+          sh ci/package.sh linux-aarch64
+          sh ci/deb.sh arm64 "$(sh ci/version.sh | sed 's/^v//')" vnovel_libretro.so
+      - name: Verify
+        run: sh ci/verify-bundle.sh dist/*.tar.gz dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-aarch64
+          path: dist/*
+          if-no-files-found: error
+
+  windows-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential pkg-config cmake ninja-build \
+            python3 zip unzip xz-utils gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+            mingw-w64-tools libz-mingw-w64-dev
+      - name: Build the static vorbis, ogg and freetype the engine links
+        # Separate from the core build on purpose: it installs into
+        # build/mingw-deps/, and without it the engine builds with no .ogg
+        # decoder and no freetype — silently, with the build still succeeding
+        # (or, on a sysroot without freetype, dying at ft2build.h).
+        run: tools/build-mingw-vorbis.sh
+      - name: Build
+        run: make -j"$(nproc)" platform=mingw
+      - name: Package the bundle
+        run: sh ci/package.sh windows-x86_64
+      - name: Verify
+        # Checks the DLL's import table: a core that imports a non-system
+        # library which is not in the bundle does not start.
+        run: sh ci/verify-bundle.sh dist/*.zip dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  macos-arm64:
+    # arm64 only, and deliberately: a universal build would apply the engine's
+    # -msse2/-mavx2 source flags to the arm64 slice, which needs a change in the
+    # krkrsdl2 fork's CMake. arm64 sidesteps that and is what the runner is.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install build dependencies
+        run: brew install pkg-config cmake ninja sdl2 freetype fontconfig libvorbis
+      - name: Build
+        env:
+          # freetype is keg-only, so Homebrew does not link its .pc file into
+          # the shared pkgconfig directory and neither the core's own ft2build.h
+          # include nor the engine's freetype lookup would resolve. sdl2,
+          # fontconfig and libvorbis are not keg-only and are found already.
+          PKG_CONFIG_PATH: /opt/homebrew/opt/freetype/lib/pkgconfig
+        run: make -j"$(sysctl -n hw.ncpu)"
+      - name: Package the bundle
+        run: sh ci/package.sh macos-arm64
+      - name: Verify
+        run: sh ci/verify-bundle.sh dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    # Tag pushes only. Every bundle is built by the jobs above, so this job
+    # downloads them rather than building anything: what is published is
+    # exactly what was verified.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux-x86_64, linux-aarch64, windows-x86_64, macos-arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Check the assembled release
+        run: |
+          ls -l dist/
+          sh ci/verify-bundle.sh dist/*
+      - name: Release notes from the changelog
+        run: sh ci/release-notes.sh "${GITHUB_REF_NAME}" > notes.md
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "VNovel ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            dist/*

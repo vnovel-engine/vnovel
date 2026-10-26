@@ -115,13 +115,14 @@ This port was AI-assisted (Nova, powered by GLM-5.2-FP8).
 ## Building
 
 **See [BUILDING.md](BUILDING.md) — the single build document.** It covers the
-three workspaces (Linux native, Windows via mingw, Raspberry Pi 5 via
-Recalbox/buildroot), their dependencies, and the failures each one can produce.
+four workspaces (Linux native, Windows via mingw, macOS arm64, Raspberry Pi 5
+via Recalbox/buildroot), their dependencies, and the failures each one can
+produce.
 
 Quick version, Linux:
 
 ```bash
-git clone --recursive https://gitlab.com/matchaxnb/vnovel.git
+git clone --recursive https://github.com/vnovel-engine/vnovel.git
 cd vnovel
 make
 ```
@@ -130,6 +131,51 @@ The build produces one self-contained `vnovel_libretro.so` — the core, the
 runtime and all three engines linked into it, so nothing ships beside it. A host
 building the core therefore needs the KiriKiri engine's own CMake dependencies
 (SDL2, fontconfig, vorbisfile) available at build time.
+
+## Where the repositories live
+
+The project is mirrored: **GitHub is the mirror and the release channel,
+GitLab is the origin.** Both are public, both hold the same history, and both
+build on a tag — GitHub publishes the bundles as a Release, GitLab attaches them
+to its own.
+
+| Repository | GitHub | GitLab | What it is |
+|---|---|---|---|
+| vnovel | [vnovel-engine/vnovel](https://github.com/vnovel-engine/vnovel) | [matchaxnb/vnovel](https://gitlab.com/matchaxnb/vnovel) | The core itself (this repository) |
+| onscripter-libretro | [vnovel-engine/onscripter-libretro](https://github.com/vnovel-engine/onscripter-libretro) | [matchaxnb/onscripter-libretro](https://gitlab.com/matchaxnb/onscripter-libretro) | `deps-overlay`: the original core's tree plus the vendored deps |
+| onscripter-en | [vnovel-engine/onscripter-en](https://github.com/vnovel-engine/onscripter-en) | [matchaxnb/onscripter-en](https://gitlab.com/matchaxnb/onscripter-en) | ONScripter-EN engine, libretro patches |
+| ponscripter | [vnovel-engine/ponscripter](https://github.com/vnovel-engine/ponscripter) | [matchaxnb/ponscripter](https://gitlab.com/matchaxnb/ponscripter) | PONScripter engine, libretro patches |
+| smpeg | [vnovel-engine/smpeg](https://github.com/vnovel-engine/smpeg) | [matchaxnb/smpeg](https://gitlab.com/matchaxnb/smpeg) | SMPEG 0.4.5 with build fixes |
+| krkrsdl2 | [vnovel-engine/krkrsdl2](https://github.com/vnovel-engine/krkrsdl2) | [matchaxnb/krkrsdl2](https://gitlab.com/matchaxnb/krkrsdl2) | KiriKiri SDL2 port, libretro engine-module support |
+| krkrz | [vnovel-engine/krkrz](https://github.com/vnovel-engine/krkrz) | [matchaxnb/krkrz](https://gitlab.com/matchaxnb/krkrz) | TVP2/KAG runtime (`krkrsdl2` branch) |
+| SDL | [vnovel-engine/SDL](https://github.com/vnovel-engine/SDL) | [matchaxnb/SDL](https://gitlab.com/matchaxnb/SDL) | SDL2 fork used by the engine module |
+| FAudio | [vnovel-engine/FAudio](https://github.com/vnovel-engine/FAudio) | [matchaxnb/FAudio](https://gitlab.com/matchaxnb/FAudio) | XAudio2 reimplementation, libretro audio capture |
+| vnovel-database | [vnovel-engine/vnovel-database](https://github.com/vnovel-engine/vnovel-database) | [matchaxnb/vnovel-database](https://gitlab.com/matchaxnb/vnovel-database) | Community game fingerprints |
+| vnovel-tools-misc | [vnovel-engine/vnovel-tools-misc](https://github.com/vnovel-engine/vnovel-tools-misc) | [matchaxnb/vnovel-tools-misc](https://gitlab.com/matchaxnb/vnovel-tools-misc) | Standalone utilities and smoke launchers |
+
+**Clone from either side, but not from both in one tree.** `.gitmodules` names
+the **GitHub** URLs, so `--recursive` resolves against the mirror; a GitLab
+clone that also wants GitLab submodules needs
+
+```bash
+git clone https://gitlab.com/matchaxnb/vnovel.git
+cd vnovel
+git submodule set-url deps-overlay              https://gitlab.com/matchaxnb/onscripter-libretro.git
+git submodule set-url deps/onscripter-en        https://gitlab.com/matchaxnb/onscripter-en.git
+git submodule set-url deps/ponscripter          https://gitlab.com/matchaxnb/ponscripter.git
+git submodule set-url smpeg                     https://gitlab.com/matchaxnb/smpeg.git
+git submodule set-url deps/krkrsdl2             https://gitlab.com/matchaxnb/krkrsdl2.git
+git submodule update --init --recursive
+```
+
+and then the same for the submodules inside `deps/krkrsdl2` (`krkrz`, `SDL`,
+`FAudio`), which name their own URLs. Both sides carry every commit the parent
+needs, so either resolution builds.
+
+Releases are published on both, from the same tag: the **GitHub Release** holds
+the bundles, and GitLab's release page links its own per-platform artifacts.
+Linux bundles come as a `.tar.gz` and a `.deb`; Windows as a `.zip`; macOS as a
+`.tar.gz`.
 
 ## Engine data (the KiriKiri polyfill)
 
@@ -219,7 +265,8 @@ Two files are load-bearing and easy to break:
 Standalone utilities that the core does not build against (XP3 archivers, the
 XP3/Fate decryption scripts, the NScripter XOR encoder, and the manual
 PONScripter smoke launchers) live in a companion repository,
-[vnovel-tools-misc](https://gitlab.com/matchaxnb/vnovel-tools-misc).
+[vnovel-tools-misc](https://github.com/vnovel-engine/vnovel-tools-misc)
+([GitLab mirror](https://gitlab.com/matchaxnb/vnovel-tools-misc)).
 
 
 ## Testing
@@ -313,7 +360,8 @@ hash anyway.
 ### Submitting to the shared database
 
 Contributions are collected in a companion repository,
-[vnovel-database](https://gitlab.com/matchaxnb/vnovel-database), so nobody
+[vnovel-database](https://github.com/vnovel-engine/vnovel-database)
+([GitLab mirror](https://gitlab.com/matchaxnb/vnovel-database)), so nobody
 needs to open a merge request against the core to add a game:
 
 ```bash
@@ -521,12 +569,21 @@ a black screen.
 
 ## Submodules
 
-| Submodule | Upstream | Description |
-|-----------|----------|-------------|
-| `deps/onscripter-en` | [lightbinder/ONScripter-en](https://github.com/lightbinder/ONScripter-en) | ONScripter-EN engine with libretro patches |
-| `deps/ponscripter` | [Haeleth fullsrc 20111009](https://sekaitranslates.files.wordpress.com/2011/11/ponscripter-20111009-fullsrc1.tar.bz2) | PONScripter engine with libretro patches |
-| `deps-overlay` | [iyzsong/onscripter-libretro](https://github.com/iyzsong/onscripter-libretro) (archived) | Original libretro core + vendored deps (SDL, SDL_mixer, bzip2, libmad, libogg, libvorbis, libretro-common) |
-| `smpeg` | [icculus/smpeg](https://github.com/icculus/smpeg) | SMPEG 0.4.5 with build fixes |
+Every submodule resolves to a fork this project maintains, mirrored under
+[github.com/vnovel-engine](https://github.com/vnovel-engine) (see
+[Where the repositories live](#where-the-repositories-live)). The URLs in
+`.gitmodules` name the GitHub side.
+
+| Submodule | Upstream | Fork (GitHub / GitLab) | Description |
+|-----------|----------|------------------------|-------------|
+| `deps/onscripter-en` | [lightbinder/ONScripter-en](https://github.com/lightbinder/ONScripter-en) | [GH](https://github.com/vnovel-engine/onscripter-en) / [GL](https://gitlab.com/matchaxnb/onscripter-en) | ONScripter-EN engine with libretro patches |
+| `deps/ponscripter` | Haeleth fullsrc 20111009 | [GH](https://github.com/vnovel-engine/ponscripter) / [GL](https://gitlab.com/matchaxnb/ponscripter) | PONScripter engine with libretro patches |
+| `deps-overlay` | [iyzsong/onscripter-libretro](https://github.com/iyzsong/onscripter-libretro) (archived) | [GH](https://github.com/vnovel-engine/onscripter-libretro) / [GL](https://gitlab.com/matchaxnb/onscripter-libretro) | Original libretro core + vendored deps (SDL, SDL_mixer, bzip2, libmad, libogg, libvorbis, libretro-common) |
+| `smpeg` | [icculus/smpeg](https://github.com/icculus/smpeg) | [GH](https://github.com/vnovel-engine/smpeg) / [GL](https://gitlab.com/matchaxnb/smpeg) | SMPEG 0.4.5 with build fixes |
+| `deps/krkrsdl2` | [krkrsdl2/krkrsdl2](https://github.com/krkrsdl2/krkrsdl2) | [GH](https://github.com/vnovel-engine/krkrsdl2) / [GL](https://gitlab.com/matchaxnb/krkrsdl2) | KiriKiri SDL2 port |
+| `deps/krkrsdl2/external/krkrz` | [krkrsdl2/krkrz](https://github.com/krkrsdl2/krkrz) | [GH](https://github.com/vnovel-engine/krkrz) / [GL](https://gitlab.com/matchaxnb/krkrz) | TVP2/KAG runtime (`krkrsdl2` branch) |
+| `deps/krkrsdl2/external/SDL` | [libsdl-org/SDL](https://github.com/libsdl-org/SDL) | [GH](https://github.com/vnovel-engine/SDL) / [GL](https://gitlab.com/matchaxnb/SDL) | SDL2 fork the engine module links |
+| `deps/krkrsdl2/external/FAudio` | [FNA-XNA/FAudio](https://github.com/FNA-XNA/FAudio) | [GH](https://github.com/vnovel-engine/FAudio) / [GL](https://gitlab.com/matchaxnb/FAudio) | XAudio2 reimplementation with libretro audio capture |
 
 ## Input Mapping
 

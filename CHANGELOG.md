@@ -3,6 +3,48 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## 1.0.0-rc1 — 2026-10-26
+
+The first release candidate. The core itself is what 0.6.0 shipped — the same
+engines, the same reading options — but it now builds and ships everywhere it is
+meant to, which is what a 1.0 is being asked to promise.
+
+### Added
+
+- **macOS (Apple silicon) is a supported platform.** `make` on an arm64 Mac
+  produces `vnovel_libretro.dylib`, native, with every engine inside it. Two
+  build-level differences from Linux are handled for you: the engine's archives
+  are named to Darwin's linker, and Homebrew's freetype is located through
+  pkg-config. Universal (x86_64 + arm64) binaries are not built yet — that needs
+  per-architecture handling of the engine's SSE flags.
+
+- **Debian and Ubuntu packages.** Each Linux release is published as a `.deb`
+  as well as a tarball, installing the core to the path Debian's own RetroArch
+  package reads (`/usr/lib/<arch>/libretro/`) with its core-info beside it.
+
+- **Releases on GitHub, alongside GitLab.** Every repository this project
+  depends on is mirrored to `github.com/vnovel-engine`, and a tag there
+  publishes the bundles as a GitHub Release. Both forges carry the same history
+  and build on the same tag; clone from either.
+
+- **Continuous builds for every platform.** Linux x86_64, Linux arm64, Windows
+  x86_64 and macOS arm64 are built, packaged and verified on each push. Every
+  bundle is checked before it is published: exactly one core, the core-info and
+  the game database beside it, an installer, and no leftover engine module.
+
+### Fixed
+
+- The Windows build no longer depends on a Linux distribution shipping a
+  cross-compiled freetype. The engine's freetype is built from the tree, so the
+  DLL is assembled from the sources here plus standard packages, and its only
+  imports are Windows system libraries.
+
+- macOS builds: three separate failures, all of which needed a case-insensitive
+  filesystem to appear, and none of which affected Linux. A libc++ header
+  resolved to libmad's `VERSION` file; the same filesystem made two object files
+  collapse into one in the engine archive, dropping symbols at link time; and a
+  `vsnprintf` redeclaration collided with the macOS SDK's.
+
 ## 0.6.0 — 2026-10-26
 
 Dialogue you can read: the typeface, its size, its spacing and its contrast are

@@ -92,8 +92,16 @@ static void engine_pushKey(EngineHandle, int sym, int down)
    SDL_Event ev;
    memset(&ev, 0, sizeof ev);
    ev.type                = down ? SDL_KEYDOWN : SDL_KEYUP;
-   ev.key.keysym.sym      = sym;
-   ev.key.keysym.scancode = sym;
+   /* The cast is required, not decoration: the wire protocol carries the key
+    * as an int and SDL's SDLKey/SDLMod are enumerations, so the assignment is
+    * an int-to-enum conversion. gcc downgrades that to a warning under
+    * -fpermissive; clang ignores -fpermissive and rejects it outright, which
+    * is how this was found (macOS, the only clang build). Spelling the cast
+    * out says the value is known to be a valid enumerator — the socket only
+    * forwards keys the frontend already produced — rather than leaving the
+    * conversion to a compiler flag that behaves differently per compiler. */
+   ev.key.keysym.sym      = (SDLKey)sym;
+   ev.key.keysym.scancode = (uint8_t)sym;
    SDL_PushEvent(&ev);
 }
 

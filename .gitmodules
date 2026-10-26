@@ -1,20 +1,20 @@
 [submodule "deps-overlay"]
 	path = deps-overlay
-	url = https://gitlab.com/matchaxnb/onscripter-libretro.git
+	url = https://github.com/vnovel-engine/onscripter-libretro.git
 	branch = main
 [submodule "deps/onscripter-en"]
 	path = deps/onscripter-en
-	url = https://gitlab.com/matchaxnb/onscripter-en.git
+	url = https://github.com/vnovel-engine/onscripter-en.git
 	branch = main
 [submodule "smpeg"]
 	path = smpeg
-	url = https://gitlab.com/matchaxnb/smpeg.git
+	url = https://github.com/vnovel-engine/smpeg.git
 	branch = main
 [submodule "deps/ponscripter"]
 	path = deps/ponscripter
-	url = https://gitlab.com/matchaxnb/ponscripter.git
+	url = https://github.com/vnovel-engine/ponscripter.git
 	branch = main
 [submodule "deps/krkrsdl2"]
 	path = deps/krkrsdl2
-	url = https://gitlab.com/matchaxnb/krkrsdl2.git
+	url = https://github.com/vnovel-engine/krkrsdl2.git
 	branch = main

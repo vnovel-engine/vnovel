@@ -76,12 +76,15 @@ static void prefix##_setDebugLevel(EngineHandle h, int l) \
 } \
 static void prefix##_setTextSpeed(EngineHandle h, int s) \
 { \
-   /* Inject a key event to change text speed, same as pressing 0/1/2/3. */ \
+   /* Inject a key event to change text speed, same as pressing 0/1/2/3. \
+    * The casts are int-to-enum conversions for the same reason as in \
+    * engine_runtime_accessors.h's engine_pushKey: gcc's -fpermissive hides \
+    * them, clang does not honour that flag and rejects them. */ \
    (void)h; \
    SDL_keysym sym; \
-   sym.sym      = SDLK_1 + s; /* 1=slow, 2=normal, 3=fast */ \
-   sym.scancode = sym.sym; \
-   sym.mod      = 0; \
+   sym.sym      = (SDLKey)(SDLK_1 + s); /* 1=slow, 2=normal, 3=fast */ \
+   sym.scancode = (uint8_t)sym.sym; \
+   sym.mod      = (SDLMod)0; \
    SDL_Event ev; \
    ev.type       = SDL_KEYUP; \
    ev.key.keysym = sym; \

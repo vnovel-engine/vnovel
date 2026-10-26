@@ -14,18 +14,31 @@ set -eu
 platform=${1:?usage: package.sh <platform>}
 out=dist
 
-# Version: prefer an exact tag, else the short SHA. CI_COMMIT_TAG is set only
-# for tag pipelines; a local run falls back to git describe.
-version=""
-if [ -n "${CI_COMMIT_TAG:-}" ]; then
-	version=$CI_COMMIT_TAG
-else
-	version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-fi
+# Version: the tag when building from one, else the git description. One
+# implementation, in ci/version.sh, because the Debian package and the release
+# notes need the same answer.
+version=$(sh "$(dirname "$0")/version.sh")
+
+# The core carries the platform's own extension, and the bundle ships exactly
+# one of them: a .so for Linux, a .dll for Windows, a .dylib for macOS. Found
+# by name rather than derived from $platform, so a mislabelled platform string
+# cannot make this pick the wrong file or no file.
+core=""
+for ext in so dll dylib; do
+	if [ -f "vnovel_libretro.$ext" ]; then
+		core="vnovel_libretro.$ext"
+		break
+	fi
+done
+[ -n "$core" ] || {
+	echo "package: no vnovel_libretro.{so,dll,dylib} in $(pwd)" >&2
+	echo "package: build the core first (make / make platform=mingw)" >&2
+	exit 1
+}
 
 # Files that MUST be in every bundle. The core is self-contained (runtime and
 # both engines are linked in).
-required="vnovel_libretro.so vnovel_libretro.info vnovel.rdb install.sh"
+required="$core vnovel_libretro.info vnovel.rdb install.sh"
 
 stage="$out/vnovel-$version-$platform"
 rm -rf "$stage"
@@ -47,27 +60,35 @@ else
 	echo "package: note: resources/logo.png not found, skipping artwork" >&2
 fi
 
-# Windows: the core links its support libraries dynamically (see the mingw
-# block in the top-level Makefile), so the DLLs have to travel with it. They
-# come from the mingw sysroot the build used ($MINGW_PREFIX/bin, or the usual
-# cross locations), and a missing one is fatal — the core would not start.
+# Windows: whatever the core imports from outside Windows travels with it. The
+# list is read from the DLL's own import table rather than guessed at, for two
+# reasons: the mingw build links freetype, bzip2 and brotli statically (see the
+# mingw block in the top-level Makefile), so copying them unconditionally would
+# ship several megabytes nothing loads; and a dependency that is neither a
+# Windows system library nor present in the toolchain is fatal, because the core
+# would not start — which the old per-name warning hid.
 case "$platform" in
 	windows-*)
-		for d in \
-			"${MINGW_PREFIX:-/nonexistent}/bin" \
-			/usr/x86_64-w64-mingw32/sys-root/mingw/bin \
-			/usr/x86_64-w64-mingw32/bin \
-			/usr/i686-w64-mingw32/sys-root/mingw/bin
+		imports=$(x86_64-w64-mingw32-objdump -p "$core" 2>/dev/null |
+			sed -n 's/^[[:space:]]*DLL Name: //p' | sort -u)
+		for dll in libfreetype-6.dll zlib1.dll libbrotlidec.dll \
+			libbrotlicommon.dll libwinpthread-1.dll
 		do
-			[ -d "$d" ] || continue
-			for dll in libfreetype-6.dll zlib1.dll libbrotlidec.dll \
-				libbrotlicommon.dll libwinpthread-1.dll; do
-				if [ -f "$d/$dll" ]; then
-					cp "$d/$dll" "$stage/"
-				elif [ ! -f "$stage/$dll" ]; then
-					echo "package: WARNING: $dll not found in $d" >&2
-				fi
+			printf '%s\n' "$imports" | grep -qix "$dll" || continue
+			found=""
+			for d in \
+				"${MINGW_PREFIX:-/nonexistent}/bin" \
+				/usr/x86_64-w64-mingw32/sys-root/mingw/bin \
+				/usr/x86_64-w64-mingw32/bin \
+				/usr/i686-w64-mingw32/sys-root/mingw/bin
+			do
+				[ -f "$d/$dll" ] || continue
+				cp "$d/$dll" "$stage/"
+				found=1
+				break
 			done
+			[ -n "$found" ] ||
+				{ echo "package: ERROR: the core imports $dll and it was not found" >&2; exit 1; }
 		done
 		;;
 esac
@@ -83,10 +104,10 @@ Install:
     ./install.sh                 # detect the frontend's cores directory
     ./install.sh --dir ~/.config/retroarch/cores
 
-The core is a single self-contained vnovel_libretro.so (the runtime and both
-engines are linked in). install.sh copies it and also installs vnovel.rdb,
-which lets RetroArch show a game's name instead of its script filename when you
-scan a folder.
+The core is a single self-contained $core (the runtime and both engines are
+linked in). install.sh copies it and also installs vnovel.rdb, which lets
+RetroArch show a game's name instead of its script filename when you scan a
+folder.
 
 Artwork is in resources/ (logo.png).
 

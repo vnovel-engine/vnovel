@@ -19,8 +19,16 @@ set -eu
 PROG=$(basename "$0")
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-# The single artifact this release ships.
-CORE="vnovel_libretro.so"
+# The single artifact this release ships. A bundle carries exactly one, under
+# the platform's own extension; the first that exists is the one installed, so
+# the same script serves the Linux, Windows and macOS bundles.
+CORE=""
+for _ext in so dll dylib; do
+	if [ -f "$HERE/vnovel_libretro.$_ext" ]; then
+		CORE="vnovel_libretro.$_ext"
+		break
+	fi
+done
 INFO="vnovel_libretro.info"
 RDB="vnovel.rdb"
 
@@ -93,7 +101,8 @@ case "$cores_dir" in
 esac
 
 src_core="$HERE/$CORE"
-[ -f "$src_core" ] || die "$CORE not found next to $PROG; run this from the unpacked release"
+[ -n "$CORE" ] && [ -f "$src_core" ] || \
+	die "no vnovel_libretro.{so,dll,dylib} next to $PROG; run this from the unpacked release"
 
 # uninstall
 
