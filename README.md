@@ -153,24 +153,34 @@ to its own.
 | vnovel-database | [vnovel-engine/vnovel-database](https://github.com/vnovel-engine/vnovel-database) | [matchaxnb/vnovel-database](https://gitlab.com/matchaxnb/vnovel-database) | Community game fingerprints |
 | vnovel-tools-misc | [vnovel-engine/vnovel-tools-misc](https://github.com/vnovel-engine/vnovel-tools-misc) | [matchaxnb/vnovel-tools-misc](https://gitlab.com/matchaxnb/vnovel-tools-misc) | Standalone utilities and smoke launchers |
 
-**Clone from either side, but not from both in one tree.** `.gitmodules` names
-the **GitHub** URLs, so `--recursive` resolves against the mirror; a GitLab
-clone that also wants GitLab submodules needs
+**Pick the branch that matches where you clone from.**
+
+| Branch | Submodule URLs point at | Use it when |
+|---|---|---|
+| `main` | GitHub (`github.com/vnovel-engine`) | you clone from GitHub, or want the mirror |
+| `main-gitlab` | GitLab (`gitlab.com/matchaxnb`) | you clone from GitLab — including the Recalbox/Buildroot packages |
+
+The two branches are the same release, commit for commit; the only difference
+between them is `.gitmodules`.
 
 ```bash
-git clone https://gitlab.com/matchaxnb/vnovel.git
-cd vnovel
-git submodule set-url deps-overlay              https://gitlab.com/matchaxnb/onscripter-libretro.git
-git submodule set-url deps/onscripter-en        https://gitlab.com/matchaxnb/onscripter-en.git
-git submodule set-url deps/ponscripter          https://gitlab.com/matchaxnb/ponscripter.git
-git submodule set-url smpeg                     https://gitlab.com/matchaxnb/smpeg.git
-git submodule set-url deps/krkrsdl2             https://gitlab.com/matchaxnb/krkrsdl2.git
-git submodule update --init --recursive
+git clone --recursive https://github.com/vnovel-engine/vnovel.git      # main
+git clone --recursive -b main-gitlab https://gitlab.com/matchaxnb/vnovel.git
 ```
 
-and then the same for the submodules inside `deps/krkrsdl2` (`krkrz`, `SDL`,
-`FAudio`), which name their own URLs. Both sides carry every commit the parent
-needs, so either resolution builds.
+Cloning `main` from GitLab still works — the submodules then come from GitHub,
+which needs no account but does mean one build depends on two forges. Cloning
+`main-gitlab` from GitLab keeps the whole tree on one forge, which is why the
+Recalbox packages use that branch: a mirror outage or a rate limit on the other
+side cannot fail an image build.
+
+The submodules inside `deps/krkrsdl2` (`krkrz`, `SDL`, `FAudio`) use **relative**
+URLs, so they resolve against whichever forge you cloned `deps/krkrsdl2` from —
+no branch choice needed for them. The dependencies this project does not
+maintain (`simde`, `meson_toolchains`, `zlib`) keep absolute upstream URLs.
+
+Every dependency is tagged at the commit this release pins, so a build can name
+what it used. Both forges carry every commit, so either resolution builds.
 
 Releases are published on both, from the same tag: the **GitHub Release** holds
 the bundles, and GitLab's release page links its own per-platform artifacts.
