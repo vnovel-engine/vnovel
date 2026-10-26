@@ -2671,39 +2671,88 @@ static const char *font_face_files[FONT_OPTION_MAX + 1];  /* value index -> file
  *
  * The directory is the engine data directory — the one overrides.txt and the
  * KAG polyfill already live in, where tools/deploy-engine-data.sh installs the
- * faces. Two ways to find it, and both are needed:
+ * faces. It is found the same way src/engine_kirikiri_cabi.cpp finds it, and
+ * both must agree or the KiriKiri engine would look in one place while the
+ * ONScripter engines looked in another:
  *
- *   KRKRSDL2_DATA_PATH   set explicitly by a launcher, or by the KiriKiri engine
- *                        itself at its own init. An explicit value is the user's
- *                        decision and wins.
- *   <system dir>/vnovel  what the core resolves from the frontend when the
- *                        variable is not set, so the ONScripter engines find the
- *                        faces too — the directory is meant for all three, it is
- *                        just that only the KiriKiri path had a reason to look
- *                        it up before.
+ *   KRKRSDL2_DATA_PATH      set explicitly by a launcher, or by the KiriKiri
+ *                           engine at its own init. An explicit value is the
+ *                           user's decision and wins.
+ *   <cores dir>/vnovel      the packaged location, derived from
+ *                           RETRO_ENVIRONMENT_GET_LIBRETRO_PATH — the
+ *                           directory the core was loaded from, which is the
+ *                           one a package is entitled to write.
+ *
+ * Deliberately NOT the system ("BIOS") directory: that one is the user's, so a
+ * package must not install into it, and depending on a copy there is what made
+ * a KiriKiri game fail to boot on a stock install.
  *
  * Called before the `Font` option's values are built, which is what needs the
- * directory. The frontend calls SET_ENVIRONMENT more than once, and the system
- * directory is not available on every call, so the resolved value STICKS: once
- * a directory has been found it is never downgraded to none, or a later bare
- * call would wipe a good answer and leave the option with no faces. */
+ * directory. The frontend calls SET_ENVIRONMENT more than once, and the
+ * libretro path is not available on every call, so the resolved value STICKS:
+ * once a directory has been found it is never downgraded to none, or a later
+ * bare call would wipe a good answer and leave the option with no faces. */
 void resolve_font_dir(void)
 {
    const char *dir = getenv("KRKRSDL2_DATA_PATH");
 
    if ((!dir || !dir[0]) && (!vnovel_font_dir || !vnovel_font_dir[0]))
    {
-      const char *sysdir = NULL;
-      if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysdir) &&
-          sysdir && sysdir[0])
+      const char *coredir = NULL;
+      if (environ_cb(RETRO_ENVIRONMENT_GET_LIBRETRO_PATH, &coredir) &&
+          coredir && coredir[0])
       {
          static char dirbuf[PATH_MAX_LENGTH];
-         snprintf(dirbuf, sizeof(dirbuf), "%s/vnovel", sysdir);
-         dir = dirbuf;
+         static char probebuf[PATH_MAX_LENGTH];
+         /* The frontend reports the core's own file, not its directory. */
+         snprintf(dirbuf, sizeof(dirbuf), "%s", coredir);
+         char *slash = strrchr(dirbuf, '/');
+#ifdef _WIN32
+         char *bslash = strrchr(dirbuf, '\\');
+         if (!slash || (bslash && bslash > slash))
+            slash = bslash;
+#endif
+         if (slash)
+            *slash = '\0';
+         if (dirbuf[0])
+         {
+            /* Only accept it if it carries the faces, for the same reason the
+             * engine probes for the polyfill: an empty vnovel/ directory means
+             * nothing was installed and the option should offer no faces
+             * rather than five that cannot be opened.
+             *
+             * A local stat rather than libretro-common's path_is_directory:
+             * that helper lives in a file this build does not link (the core
+             * links only the compat/encodings subset), and pulling it in for
+             * one check would be a worse trade than three lines here. */
+            struct stat st;
+            snprintf(probebuf, sizeof(probebuf), "%s/vnovel", dirbuf);
+            if (stat(probebuf, &st) == 0 && S_ISDIR(st.st_mode))
+            {
+               snprintf(dirbuf, sizeof(dirbuf), "%s", probebuf);
+               dir = dirbuf;
+            }
+         }
       }
    }
    if (dir && dir[0])
+   {
       vnovel_font_dir = dir;
+      /* Publish it as the engine's data path too, because this is the only
+       * point at which the frontend will answer GET_LIBRETRO_PATH: the libretro
+       * API documents that call as valid "within retro_set_environment() only",
+       * and the KiriKiri engine asks for it much later, from its own init
+       * thread. Asking there returns nothing, so the engine used to fall back
+       * to its compiled-in /usr/share/krkrsdl2 and fail to find the polyfill on
+       * any packaged install — the core would find the fonts (resolved here,
+       * early) while the engine could not find the parser.
+       *
+       * setenv only when unset, so an explicit environment value still wins;
+       * the engine's own checker applies the same rule and now finds this
+       * already set rather than reaching for its built-in default. */
+      if (!getenv("KRKRSDL2_DATA_PATH"))
+         setenv("KRKRSDL2_DATA_PATH", vnovel_font_dir, 1);
+   }
 }
 
 static int font_file_present(const char *dir, const char *file)

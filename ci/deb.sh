@@ -85,6 +85,31 @@ cp vnovel_libretro.info "$stage/usr/share/libretro/info/"
 chmod 0644 "$stage/usr/share/libretro/info/vnovel_libretro.info"
 cp LICENSE "$stage/usr/share/doc/$pkg/copyright"
 
+# The KiriKiri engine's non-compiled data, as vnovel/ beside the core in the
+# libretro cores directory. The core finds it from its own path, so it belongs
+# here and nowhere else: without system_polyfill/ no .xp3 game can boot, and
+# without overrides.txt the engine tries to load the game's own Windows plugins
+# and aborts startup.
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+engdata="$repo_dir/deps/krkrsdl2/data"
+[ -d "$engdata/system_polyfill" ] ||
+	{ echo "deb: no engine data at $engdata" >&2; exit 1; }
+mkdir -p "$stage/usr/lib/$triplet/libretro/vnovel/system_polyfill"
+cp "$engdata/overrides.txt" "$engdata/mona.ttf" \
+	"$stage/usr/lib/$triplet/libretro/vnovel/"
+cp "$engdata"/system_polyfill/*.tjs \
+	"$stage/usr/lib/$triplet/libretro/vnovel/system_polyfill/"
+for f in ComicNeue-Regular.ttf OpenDyslexic-Regular.otf \
+	AtkinsonHyperlegible-Regular.ttf EBGaramond-Variable.ttf \
+	BIZUDPGothic-Regular.ttf
+do
+	[ -f "$repo_dir/resources/fonts/$f" ] || continue
+	cp "$repo_dir/resources/fonts/$f" \
+		"$stage/usr/lib/$triplet/libretro/vnovel/"
+done
+chmod 0644 "$stage/usr/lib/$triplet/libretro/vnovel"/* \
+	"$stage/usr/lib/$triplet/libretro/vnovel/system_polyfill"/*.tjs
+
 installed_size=$(du -sk "$stage/usr" | cut -f1)
 
 cat > "$stage/DEBIAN/control" <<EOF

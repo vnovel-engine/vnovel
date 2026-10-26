@@ -475,20 +475,15 @@ extern "C"
       krkr_static_loaded = true;
 
       /* Export the frontend's system ("BIOS") directory so the engine looks
-       * for overrides.txt there first (KRKRSDL2_OVERRIDE_PATH). Single-file
-       * deployment is why: a core that must be one file cannot ship the table
-       * beside itself, so the user-editable copy lives where the frontend
-       * already keeps per-system files, and the packaged one stays the
-       * fallback. Only set when unset: an environment value is an explicit
-       * override and must not be replaced by the default.
+       * for overrides.txt there first (KRKRSDL2_OVERRIDE_PATH). That is where a
+       * *user* override belongs: it sits outside the immutable packaged
+       * install, survives a package upgrade, and is the directory users already
+       * know to put per-system files in. Only set when unset: an environment
+       * value is an explicit override and must not be replaced by the default.
        *
        * Deliberately NOT applied to KRKRSDL2_DATA_PATH. That is the root the
-       * polyfill is loaded from, and the distribution installs the polyfill to
-       * a fixed location (/usr/share/krkrsdl2) while placing only the override
-       * table in the BIOS directory. Pointing DATA_PATH at the BIOS directory
-       * would make the engine look for <bios>/system_polyfill/, which nothing
-       * creates, and the scenario parser would go missing on a packaged
-       * install. A launcher that ships its own copy sets DATA_PATH itself. */
+       * polyfill is loaded from, and a user's BIOS directory is not where a
+       * package installs it. */
       {
          const char *sysdir = NULL;
          if (environ_cb_global &&
@@ -497,35 +492,24 @@ extern "C"
             sysdir = NULL;
          if (sysdir && *sysdir && !getenv("KRKRSDL2_OVERRIDE_PATH"))
             setenv("KRKRSDL2_OVERRIDE_PATH", sysdir, 1);
-         /* The engine's own data dir. Two locations are possible and both are
-          * supported, so a distribution and a hand-placed copy can coexist:
-          *
-          *   <frontend system dir>/vnovel   the distributable copy. It sits with
-          *                                  the frontend's per-system files, so
-          *                                  it travels with the share and needs
-          *                                  no per-machine setup. Preferred when
-          *                                  present.
-          *   the compiled-in default        where a packaged install puts it
-          *                                  (/usr/share/krkrsdl2 on Linux).
-          *
-          * Checked by looking for the polyfill, because that is what the loader
-          * needs: an overrides.txt alone is not enough to run a KiriKiri game.
-          * Only set when unset — an explicit environment value is the user's
-          * decision and wins. */
-         if (sysdir && *sysdir && !getenv("KRKRSDL2_DATA_PATH"))
-         {
-            char cand[PATH_MAX_LENGTH];
-            snprintf(cand, sizeof(cand), "%s/vnovel/system_polyfill", sysdir);
-            krkr_normalize_path(cand);
-            if (krkr_dir_exists(cand))
-            {
-               char dpath[PATH_MAX_LENGTH];
-               snprintf(dpath, sizeof(dpath), "%s/vnovel", sysdir);
-               krkr_normalize_path(dpath);
-               setenv("KRKRSDL2_DATA_PATH", dpath, 1);
-            }
-         }
       }
+
+      /* The engine's data dir (system_polyfill/*.tjs + overrides.txt + the
+       * selectable font faces) is already set by this point.
+       *
+       * resolve_font_dir() in libretro.cpp sets KRKRSDL2_DATA_PATH from the
+       * libretro core path, and it has to: the frontend only answers
+       * RETRO_ENVIRONMENT_GET_LIBRETRO_PATH from within retro_set_environment(),
+       * which the libretro API documents, so asking here — on the engine's own
+       * init thread, long after — returns nothing and the engine would fall
+       * back to its compiled-in /usr/share/krkrsdl2 and never find the
+       * polyfill on a packaged install.
+       *
+       * Nothing to do but assert the invariant, because a silent failure here
+       * is a KiriKiri game that starts and then cannot parse its scenario. */
+      if (!getenv("KRKRSDL2_DATA_PATH"))
+         fprintf(stderr, "krkr_init: KRKRSDL2_DATA_PATH unset; the engine will "
+                         "fall back to its built-in data directory\n");
 
       krkr_auto_mode_ptr       = &krkrsdl2_auto_mode;
       krkr_engine_stopped_ptr  = &krkrsdl2_engine_stopped;

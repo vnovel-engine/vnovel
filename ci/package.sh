@@ -49,10 +49,44 @@ for f in $required; do
 	cp "$f" "$stage/"
 done
 
+# The KiriKiri engine's non-compiled data, under vnovel/ beside the core.
+#
+# Not optional, and not cosmetic: without system_polyfill/ the engine has no
+# scenario parser and a .xp3 game cannot boot at all, and without overrides.txt
+# it treats the game's own Windows plugins as loadable and aborts startup. The
+# core finds this directory from the libretro core path (the directory it was
+# loaded from), so a bundle that omits it produces a core that starts and then
+# fails on every KiriKiri game — which is exactly what earlier bundles did.
+#
+# install.sh copies the whole tree next to the core, so the layout here is the
+# layout at the frontend's cores directory.
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+engdata_src="$repo_dir/deps/krkrsdl2/data"
+if [ -d "$engdata_src/system_polyfill" ]; then
+	mkdir -p "$stage/vnovel/system_polyfill"
+	cp "$engdata_src/overrides.txt" "$engdata_src/mona.ttf" "$stage/vnovel/"
+	cp "$engdata_src"/system_polyfill/*.tjs "$stage/vnovel/system_polyfill/"
+else
+	echo "package: ERROR: $engdata_src/system_polyfill missing" >&2
+	echo "package: the engine cannot run a KiriKiri game without it" >&2
+	exit 1
+fi
+
+# The core option's selectable faces. Their absence costs the reader the choice
+# of that face and nothing else, so unlike the polyfill these are best-effort —
+# but they are the feature the option exists for, so a bundle is expected to
+# have them.
+for f in ComicNeue-Regular.ttf OpenDyslexic-Regular.otf \
+	AtkinsonHyperlegible-Regular.ttf EBGaramond-Variable.ttf \
+	BIZUDPGothic-Regular.ttf
+do
+	[ -f "$repo_dir/resources/fonts/$f" ] || continue
+	cp "$repo_dir/resources/fonts/$f" "$stage/vnovel/"
+done
+
 # The logo, for the README the bundle ships and for anything that wants artwork.
 # Computed from the script's own location, so it works from any CWD; not fatal,
 # since a bundle without artwork is still a working bundle.
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if [ -f "$repo_dir/resources/logo.png" ]; then
 	mkdir -p "$stage/resources"
 	cp "$repo_dir/resources/logo.png" "$stage/resources/"

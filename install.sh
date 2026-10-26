@@ -153,4 +153,38 @@ if [ -f "$HERE/$RDB" ]; then
 	fi
 fi
 
+# The KiriKiri engine's data, as vnovel/ beside the core. Not optional: without
+# system_polyfill/ the engine has no scenario parser and no .xp3 game can boot,
+# and without overrides.txt it tries to load the game's own Windows plugins and
+# aborts startup. The core finds the directory from its own path, so it must sit
+# next to the core and not somewhere else.
+#
+# Copied whole rather than file by file so a future addition to the engine's
+# data travels without this script being updated.
+if [ -d "$HERE/vnovel" ]; then
+	say "install vnovel/ (engine data) -> $cores_dir/"
+	if [ "$dry" -eq 1 ]; then
+		:
+	elif [ -d "$cores_dir/vnovel" ]; then
+		# Merge, and remove stale files: an upgrade must not leave a renamed
+		# or withdrawn .tjs behind to be loaded.
+		cp -R "$HERE/vnovel/." "$cores_dir/vnovel/" 2>/dev/null ||
+			die "failed to install vnovel/"
+	else
+		cp -R "$HERE/vnovel" "$cores_dir/vnovel" || die "failed to install vnovel/"
+	fi
+	# Load-bearing and silently fatal when missing: the parser is the whole
+	# polyfill, and the override table is what stops the engine from trying to
+	# run the game's own PE plugins.
+	for req in vnovel/overrides.txt vnovel/system_polyfill/PluginStubs.tjs \
+		vnovel/system_polyfill/KAGParser.tjs
+	do
+		if [ "$dry" -eq 0 ] && [ ! -r "$cores_dir/$req" ]; then
+			die "$req missing after install; KiriKiri games will not run"
+		fi
+	done
+else
+	die "vnovel/ (engine data) missing from the bundle; KiriKiri games will not run"
+fi
+
 say "done. Load the 'VNovel' core; select a game's nscript.dat, pscript.dat or data.xp3."

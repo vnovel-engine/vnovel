@@ -9,24 +9,29 @@
 # polyfill parses every scenario), plugin shims, the plugin override table, and
 # a fallback font.
 #
-# They are DATA, so they belong in the frontend's system ("BIOS") directory:
+# They are DATA, and they go beside the core, in a vnovel/ subdirectory of the
+# frontend's libretro ("cores") directory:
 #
-# They go in a per-core subdirectory of the frontend's system ("BIOS")
-# directory, the same shape the BIOS directory already uses for cores needing
-# several files (PPSSPP/, dolphin-emu/):
+#     Linux (packaged)     /usr/lib/<triplet>/libretro/vnovel
+#     Recalbox / Pi        /usr/lib/libretro/vnovel
+#     RetroArch elsewhere  <libretro_directory>/vnovel
 #
-#     Recalbox / Pi        /recalbox/share/bios/vnovel  -> /mnt/recalbox/bios/vnovel
-#     Windows (same share) K:\Recalbox\bios\vnovel
-#     RetroArch elsewhere  <system_directory>/vnovel
+# That is a libretro path by construction: it is the directory the core was
+# loaded from, which the core reads back with
+# RETRO_ENVIRONMENT_GET_LIBRETRO_PATH, so the data always travels with the core
+# and the two can never be version-mismatched. It is also the one directory a
+# package is entitled to install into.
 #
-# The core resolves it with no configuration: at startup it asks the frontend
-# for its system directory and, if <system_directory>/vnovel/system_polyfill/
-# exists, points KRKRSDL2_DATA_PATH there; KRKRSDL2_OVERRIDE_PATH is set to the
-# same directory so overrides.txt is found. Absent that, the engine falls back
-# to the compiled-in default (/usr/share/krkrsdl2), where a packaged install
-# puts its copy.
+# This used to be the frontend's system ("BIOS") directory. It was moved: that
+# directory belongs to the user, so a package must not write there, and making
+# the core depend on a copy in it meant a KiriKiri game failed to boot on a
+# stock install where nothing had ever created it.
 #
-# Two files are load-bearing and easy to break:
+# The core resolves this with no configuration. An explicit KRKRSDL2_DATA_PATH
+# still wins, and the engine's own compiled-in default (/usr/share/krkrsdl2)
+# remains the last resort for a hand-placed install.
+#
+# Two files are load-bearing:
 #
 #   PluginStubs.tjs   must keep its UTF-8 BOM. Without it the engine cannot
 #                     decode the file, which aborts the whole polyfill before
@@ -48,7 +53,7 @@ SRC="$CORE_DIR/deps/krkrsdl2/data"
 # DATA for the installed tree, not something compiled into the core.
 FONTS_SRC="$CORE_DIR/resources/fonts"
 
-TARGET=${1:-/mnt/recalbox/bios/vnovel}
+TARGET=${1:-/usr/lib/libretro/vnovel}
 
 [ -d "$SRC" ] || { echo "no such source: $SRC" >&2; exit 1; }
 # The target may not exist yet on a fresh install, so create it — but only if
