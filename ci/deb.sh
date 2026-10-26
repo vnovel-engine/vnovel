@@ -107,8 +107,13 @@ do
 	cp "$repo_dir/resources/fonts/$f" \
 		"$stage/usr/lib/$triplet/libretro/vnovel/"
 done
-chmod 0644 "$stage/usr/lib/$triplet/libretro/vnovel"/* \
-	"$stage/usr/lib/$triplet/libretro/vnovel/system_polyfill"/*.tjs
+# Files only, and directories separately. `chmod 0644 dir/*` would also match
+# the system_polyfill subdirectory and strip its execute bit, after which
+# nothing inside it can be reached — the chmod of the .tjs files then fails with
+# "Permission denied" and the build stops, having already built and packed
+# everything by that point.
+find "$stage/usr/lib/$triplet/libretro/vnovel" -type f -exec chmod 0644 {} +
+find "$stage/usr/lib/$triplet/libretro/vnovel" -type d -exec chmod 0755 {} +
 
 installed_size=$(du -sk "$stage/usr" | cut -f1)
 
