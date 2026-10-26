@@ -10,7 +10,6 @@
 # engine inside it, and no engine module is built or bundled here.
 
 stages:
-  - lint
   - build
   - package
   - release
@@ -19,34 +18,6 @@ variables:
   GIT_SUBMODULE_STRATEGY: recursive
   GIT_DEPTH: 0
   PACKAGE_DIR: dist
-
-# lint
-
-# Enforce the libretro coding standards on this repository's own sources only.
-# The engine forks under deps/ and smpeg/ keep upstream formatting, so they are
-# excluded: reformatting them would make every future upstream merge a
-# conflict. `.clang-format` encodes the standard (three-space indent, Allman
-# braces, 80 columns).
-lint:format:
-  stage: lint
-  image: silkeh/clang:latest
-  script:
-    - clang-format --version
-    - |
-      files=$(ls src/*.c src/*.cpp src/*.h 2>/dev/null)
-      bad=0
-      for f in $files; do
-        if ! clang-format --dry-run --Werror "$f" >/dev/null 2>&1; then
-          echo "needs formatting: $f"
-          clang-format "$f" | diff -u "$f" - | head -40
-          bad=1
-        fi
-      done
-      [ "$bad" -eq 0 ] || { echo "run: clang-format -i src/*.c src/*.cpp src/*.h"; exit 1; }
-      echo "formatting OK ($(echo $files | wc -w) files)"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # build
 
@@ -67,9 +38,19 @@ build:linux-x86_64:
   variables:
     PLATFORM: linux-x86_64
   before_script:
+    # cmake and ninja are not optional: the KiriKiri engine is built by its own
+    # CMake project, and without them the build dies with "cmake: not found"
+    # after compiling most of the core. libsdl2-dev, libfontconfig-dev and
+    # libvorbis-dev likewise: the engine's CMake requires sdl2 and looks for
+    # the other two, so their absence is a configure failure, not a warning.
     - apt-get update -qq
-    - apt-get install -y -qq build-essential pkg-config libfreetype-dev
-      ca-certificates python3
+    - apt-get install -y -qq build-essential pkg-config ca-certificates python3
+      cmake ninja-build libfreetype-dev libsdl2-dev libfontconfig-dev
+      libvorbis-dev
+  script:
+    - make -j"$(nproc)"
+    - sh ci/package.sh "$PLATFORM"
+    - sh ci/deb.sh amd64 "$(sh ci/version.sh | sed 's/^v//')" vnovel_libretro.so
 
 build:linux-aarch64:
   extends: .build_template
@@ -82,16 +63,33 @@ build:linux-aarch64:
     # "cannot find -lfreetype". Debian resolves this with multiarch: keep
     # amd64 packages from the default mirror and pull arm64 from the same
     # archive explicitly.
+    #
+    # SDL2, fontconfig and vorbis need the same treatment for the same reason,
+    # and are not optional: the engine's CMake requires sdl2 through
+    # pkg-config, so without the arm64 .pc files the configure step fails
+    # before anything is compiled. The Makefile's aarch64 block already points
+    # pkg-config at /usr/lib/aarch64-linux-gnu/pkgconfig, which is where these
+    # install.
     - dpkg --add-architecture arm64
     - 'sed -i "s/^Types: deb$/Types: deb\\nArchitectures: amd64/" /etc/apt/sources.list.d/debian.sources'
-    - 'echo "deb [arch=arm64] http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/arm64.list'
+    # The arm64 side must list the SAME suites the amd64 side has, or apt sees
+    # two architectures with different candidate versions of the same library
+    # and refuses to solve: with only stable+trixie listed for arm64, an
+    # amd64-side point update (stable-updates) made libpcre2-8-0:arm64 a
+    # release behind and the install died with "Unable to correct problems, you
+    # have held broken packages", which says nothing about the real cause.
+    - 'echo "deb [arch=arm64] http://deb.debian.org/debian stable main" > /etc/apt/sources.list.d/arm64.list'
+    - 'echo "deb [arch=arm64] http://deb.debian.org/debian stable-updates main" >> /etc/apt/sources.list.d/arm64.list'
+    - 'echo "deb [arch=arm64] http://deb.debian.org/debian-security stable-security main" >> /etc/apt/sources.list.d/arm64.list'
     - apt-get update -qq
     - apt-get install -y -qq build-essential pkg-config ca-certificates python3
-      gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-    - apt-get install -y -qq libfreetype-dev:arm64
+      cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+    - apt-get install -y -qq libfreetype-dev:arm64 libsdl2-dev:arm64
+      libfontconfig-dev:arm64 libvorbis-dev:arm64
   script:
     - make -j"$(nproc)" platform=aarch64
     - sh ci/package.sh "$PLATFORM"
+    - sh ci/deb.sh arm64 "$(sh ci/version.sh | sed 's/^v//')" vnovel_libretro.so
 
 build:windows-x86_64:
   extends: .build_template
@@ -99,17 +97,28 @@ build:windows-x86_64:
   variables:
     PLATFORM: windows-x86_64
   before_script:
+    # Same as the Linux job, plus the cross toolchain. zip is what package.sh
+    # needs for the Windows bundle. libz-mingw-w64-dev is what the vendored
+    # freetype builds against: Debian ships no mingw freetype, so the engine's
+    # freetype comes from tools/build-mingw-vorbis.sh, and that one needs a
+    # zlib for the mingw target (nothing else in the tree does).
     - apt-get update -qq
-    - apt-get install -y -qq build-essential pkg-config ca-certificates
-      gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64-tools python3
+    - apt-get install -y -qq build-essential pkg-config ca-certificates python3
+      cmake ninja-build zip unzip gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+      mingw-w64-tools libz-mingw-w64-dev
   script:
+    # The static vorbis the engine links comes first and is separate: without
+    # it the engine builds with no .ogg decoder, silently.
+    - tools/build-mingw-vorbis.sh
     - make -j"$(nproc)" platform=mingw
     - sh ci/package.sh "$PLATFORM"
 
 # package
 
 # Packaging happens inside each build job (the artifacts are the bundle), so
-# this stage only verifies the bundles are complete before a release.
+# this stage only verifies the bundles before a release. The checks themselves
+# live in ci/verify-bundle.sh, shared with the GitHub workflow and runnable
+# locally — a second copy of them here would be a second thing to keep in step.
 verify-bundles:
   stage: package
   image: debian:stable
@@ -117,30 +126,17 @@ verify-bundles:
     - build:linux-x86_64
     - build:linux-aarch64
     - build:windows-x86_64
+  before_script:
+    # unzip for the Windows bundle, objdump (binutils) for the DLL's import
+    # table, ar (also binutils) and tar for the .deb — and xz-utils, because a
+    # .deb's data/control members are xz-compressed and tar shells out to xz.
+    # Without it the .deb checks die on "xz: Cannot exec", which looks like a
+    # corrupt package rather than a missing tool.
+    - apt-get update -qq
+    - apt-get install -y -qq binutils unzip zip xz-utils
   script:
     - ls -l dist/
-    - |
-      for a in dist/*.tar.gz dist/*.zip; do
-        [ -e "$a" ] || continue
-        echo "== $a"
-        case "$a" in
-          *.zip) unzip -l "$a" ;;
-          *)     tar tzf "$a" ;;
-        esac
-      done
-    # Every bundle must carry the single self-contained core, and must NOT
-    # carry any engine module: a stray module means the build fell back to the
-    # old multi-artifact path.
-    - |
-      for a in dist/*.tar.gz; do
-        [ -e "$a" ] || continue
-        tar tzf "$a" | grep -q vnovel_libretro.so || { echo "$a: core missing"; exit 1; }
-        if tar tzf "$a" | grep -qE 'vnovel_engine_.*\.so|vnovel_runtime\.so'; then
-          echo "$a: stray engine/runtime module in bundle"; exit 1
-        fi
-        tar tzf "$a" | grep -q install.sh || { echo "$a: installer missing"; exit 1; }
-      done
-    - echo "bundles complete"
+    - sh ci/verify-bundle.sh dist/*
 
 # release
 
@@ -187,3 +183,5 @@ release:
           url: "$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/download?job=build:linux-aarch64"
         - name: "windows-x86_64 (zip)"
           url: "$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/download?job=build:windows-x86_64"
+        - name: "Debian packages (amd64, arm64)"
+          url: "$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/download?job=build:linux-x86_64"

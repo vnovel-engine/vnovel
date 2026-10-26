@@ -4,21 +4,26 @@ This is the only build document. If another file disagrees with it, this file is
 right and that file is stale.
 
 The build produces **one self-contained file**: `vnovel_libretro.so` (`.dll` on
-Windows). It contains the core, the runtime, ONScripter-EN, PONScripter and the
-KiriKiri engine. Nothing ships beside it. There is no runtime `dlopen`, no
-engine module and no `vnovel_runtime.so`.
+Windows, `.dylib` on macOS). It contains the core, the runtime, ONScripter-EN,
+PONScripter and the KiriKiri engine. Nothing ships beside it. There is no
+runtime `dlopen`, no engine module and no `vnovel_runtime.so`.
 
-There are three workspaces. Pick the one you want; they do not combine.
+There are four workspaces. Pick the one you want; they do not combine.
 
 | Workspace | Command | Result |
 |---|---|---|
 | Linux, native x86_64 | `make` | `vnovel_libretro.so` |
+| Linux, native aarch64 | `make` on an arm64 host | `vnovel_libretro.so` |
 | Windows x86_64, cross from Linux | `make platform=mingw` | `vnovel_libretro.dll` |
+| macOS arm64, native | `make` on an Apple-silicon Mac | `vnovel_libretro.dylib` |
 | Raspberry Pi 5 (and other Recalbox targets) | buildroot in Docker — see [Raspberry Pi 5](#raspberry-pi-5-recalbox) | an image, or the core package |
 
 `make platform=aarch64` (a host cross-build) exists and works, but it is **not**
 part of the Raspberry Pi 5 flow; buildroot cross-builds with its own toolchain.
 See [Host aarch64 cross-build](#host-aarch64-cross-build-optional).
+
+The CI is the authoritative list of what actually builds: `.github/workflows/build.yml`
+(GitHub, which adds macOS) and `.gitlab-ci.yml` (GitLab, which does not).
 
 ---
 
@@ -29,7 +34,7 @@ Every workspace needs:
 - **git with submodules.** The engines are submodules. A clone without them
   fails at the first engine header.
   ```bash
-  git clone --recursive https://gitlab.com/matchaxnb/vnovel.git
+  git clone --recursive https://github.com/vnovel-engine/vnovel.git
   # or, in an existing clone:
   git submodule update --init --recursive
   ```
@@ -115,8 +120,9 @@ to make visible.
 ## Windows x86_64 (cross from Linux, mingw)
 
 ```bash
-# 1. Once per tree: build the static vorbis/ogg the engine links, and generate
-#    the mingw CMake toolchain file. Writes build/mingw-deps/ (gitignored).
+# 1. Once per tree: build the static vorbis/ogg and freetype the engine links,
+#    and generate the mingw CMake toolchain file. Writes build/mingw-deps/
+#    (gitignored).
 tools/build-mingw-vorbis.sh
 
 # 2. Then:
@@ -128,24 +134,27 @@ The result is `vnovel_libretro.dll` in the repository root.
 ### Why step 1 is separate
 
 The Windows build must be self-contained: it links vorbis (BGM) and freetype
-statically rather than importing their DLLs. The mingw sysroot has no static
-vorbis, so `tools/build-mingw-vorbis.sh` builds libogg and libvorbis from the
-vendored sources in `deps-overlay` and installs them into
-`build/mingw-deps/vorbis/`. It also writes
+(fonts) statically rather than importing their DLLs. The mingw sysroot on
+Debian/Ubuntu has no static vorbis and no libfreetype (Arch's does, which is why
+this is only needed off Arch), so `tools/build-mingw-vorbis.sh` builds libogg,
+libvorbis and libfreetype from vendored sources and installs them into
+`build/mingw-deps/{vorbis,freetype}/`. It also writes
 `build/mingw-deps/mingw-toolchain.cmake`, the toolchain file the engine's CMake
 is configured with.
 
 Both live under `build/` (gitignored) so they survive a reboot. A wiped prefix
-does not fail loudly: the engine's configure simply reports "vorbis not found",
-the build succeeds, and **every `.ogg` track is silently absent**.
+does not fail loudly: the engine's configure simply reports "vorbis/freetype
+not found", the build proceeds, and **every `.ogg` track is silently absent**
+(and on a sysroot without freetype, the compile dies at `ft2build.h`).
 
 The script needs `mingw-w64` (`x86_64-w64-mingw32-gcc`, `-g++`, `-windres`,
-`-ar`, `-ranlib`, `-strip`, `x86_64-w64-mingw32-pkg-config`), `cmake` and
-`ninja`:
+`-ar`, `-ranlib`, `-strip`, `x86_64-w64-mingw32-pkg-config`), `cmake`, `ninja`
+and zlib (`libz-mingw-w64-dev`):
 
 ```bash
 # Debian/Ubuntu
-apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64-tools cmake ninja-build
+apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64-tools \
+  cmake ninja-build libz-mingw-w64-dev
 ```
 
 ### What `make platform=mingw` needs from step 1
@@ -154,13 +163,48 @@ apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64-tools cma
 |---|---|
 | `build/mingw-deps/mingw-toolchain.cmake` | Without it CMake configures for the **host**: host-arch archives, and the link then fails with a wall of architecture errors. |
 | `build/mingw-deps/vorbis/{include,lib}` | Without it the engine builds with no `.ogg` decoder — silently. |
+| `build/mingw-deps/freetype/{include,lib}` | Without it the engine and the core find no `ft2build.h`; the engine's `pkg_check_modules(FREETYPE2)` comes up empty. Reached through `PKG_CONFIG_PATH_CUSTOM`, which the cross pkg-config wrapper prepends to its search path. |
 
 SDL2 is **not** taken from the mingw sysroot: the engine vendors SDL2 and links
-its static archive. There is deliberately no fontconfig on Windows.
+its static archive. There is deliberately no fontconfig and no bzip2/brotli on
+Windows: the vendored freetype uses its internal gzip code, so neither is a
+dependency.
 
-To also build the 32-bit (`win32`) flavour, override the toolchain prefix:
-`make platform=mingw CROSS=i686-w64-mingw32-`. The generated
-`build/mingw-deps/` is x86_64-only, so pass that only with a matching sysroot.
+---
+
+## macOS (native, arm64)
+
+```bash
+brew install pkg-config cmake ninja sdl2 freetype fontconfig libvorbis
+make -j"$(sysctl -n hw.ncpu)"
+```
+
+The result is `vnovel_libretro.dylib` in the repository root.
+
+**arm64 only, so far.** A universal (`x86_64;arm64`) dylib needs the engine's
+`-msse2`/`-mavx2` source flags to be applied per-architecture — today they are
+attached whenever `CMAKE_SYSTEM_PROCESSOR` is `i686`/`amd64`, so a universal
+build would hand those flags to the arm64 slice too. That is a change to the
+`krkrsdl2` fork's CMake, not to this tree. Everything else is
+architecture-neutral: the SIMD translation units are compiled through `simde`.
+
+No engine source change is needed for macOS: the engine's own Apple paths
+(`sysctl`, `libproc`, `TargetConditionals`, the macOS font directories, the
+`mmap` bitmap allocator) are already there, and the core's platform-sensitive
+code is guarded (`__GLIBC__` for `execinfo.h`, `SO_NOSIGPIPE` in `src/devsock.c`).
+
+### What is different from the Linux build
+
+| Piece | Linux | macOS |
+|---|---|---|
+| freetype | `-lfreetype`, headers on the default path | `pkg-config --cflags/--libs freetype2`. Homebrew's `freetype` is keg-only, so `ft2build.h` is otherwise unfindable and the build dies on `deps/ponscripter/src/font.cpp` |
+| engine libs | `-lSDL2 -lfontconfig -lvorbisfile -lvorbis` | the same four through `pkg-config --libs`, because none of them is on the default library path |
+| undefined symbols | `-Wl,--no-undefined` | `-Wl,-undefined,error` |
+| rpath anchor | `$ORIGIN` | `@loader_path` |
+| engine archives | `-Wl,--whole-archive … -Wl,--no-whole-archive` | `-Wl,-force_load,<archive>`; Darwin's `ld` has no `--whole-archive` |
+
+If `pkg-config` cannot find the four libraries, the Makefile stops with that as
+the message rather than failing later in the engine's CMake.
 
 ---
 

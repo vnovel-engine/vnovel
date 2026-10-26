@@ -51,7 +51,20 @@ CXX           ?= c++
 fpic          :=
 SHARED        :=
 TARGET_EXT    := .so
-PLATFLAGS     :=
+# The C++ standard is pinned rather than left to the compiler's default, which
+# is not the same everywhere: gcc defaults to gnu++17, but Apple clang defaults
+# to gnu++98. Vendored code here needs at least C++11 — wuffs' auxiliary API
+# (wuffs_aux, used by src/sdl-libretro/SDL_image.cpp) exists only when
+# __cplusplus >= 201103L — so on macOS an unpinned build silently loses it and
+# fails with "use of undeclared identifier 'wuffs_aux'". The cross platforms
+# already pin it in their $(CXX) override; this makes the native builds agree.
+CXXSTD        ?= -std=c++11
+# -Wno-narrowing: smpeg's huffman tables are upstream code that writes -1
+# sentinels into unsigned fields ({ 0, 0-1, ... }), which is ill-formed in
+# C++11 and a hard error on gcc 13+ rather than a warning. The mingw block has
+# always passed this flag for the same source; a native gcc 13 build needs it
+# too, which is why it belongs in the default rather than in one platform.
+PLATFLAGS     := -Wno-narrowing
 SDL_SYSTIMER  ?= unix/SDL_systimer.c
 
 # Platform configuration
@@ -187,9 +200,19 @@ else ifeq ($(platform), mingw)
    # exact value.
    KRKR_MINGW_DEPS   := $(CURDIR)/build/mingw-deps
    KRKR_CMAKE_TOOLCHAIN := $(KRKR_MINGW_DEPS)/mingw-toolchain.cmake
-   # The static vorbis/ogg the engine links on Windows; built by
-   # tools/build-mingw-vorbis.sh, consumed by the engine's own CMake.
+   # The static vorbis/ogg and freetype the engine links on Windows; both are
+   # built by tools/build-mingw-vorbis.sh (one command, one prefix tree under
+   # build/mingw-deps/) and consumed by the engine's own CMake. Vorbis is passed
+   # explicitly to the engine's CMake; freetype is found through pkg-config.
    KRKR_CMAKE_VORBIS := -DKRKRSDL2_MINGW_VORBIS_PREFIX=$(KRKR_MINGW_DEPS)/vorbis
+   # The static freetype the engine and the core both link. Built from the
+   # vendored tree at deps/krkrsdl2/external/krkrz/external/freetype by
+   # tools/build-mingw-vorbis.sh, which writes a freetype2.pc into
+   # build/mingw-deps/freetype/lib/pkgconfig/. The mingw sysroot on
+   # Debian/Ubuntu has no libfreetype.a (and no freetype2.pc); Arch's does, so
+   # on Arch this just shadows it with the same vendored source.
+   MINGW_FT_PREFIX := $(KRKR_MINGW_DEPS)/freetype
+   MINGW_FT_PKGCONFIG := $(MINGW_FT_PREFIX)/lib/pkgconfig
    # The engine resolves FreeType with pkg_check_modules(), and CMake otherwise
    # runs the HOST pkg-config — which reports /usr/include and /usr/lib, so the
    # cross build silently mixes glibc headers into the mingw compile and dies on
@@ -199,12 +222,29 @@ else ifeq ($(platform), mingw)
    # to the build directory, producing a path that does not exist, and then
    # FreeType detection silently comes up empty (ft2build.h not found).
    KRKR_CMAKE_PKGCONFIG := -DPKG_CONFIG_EXECUTABLE=$(shell which $(CROSS)pkg-config)
+   # The cross pkg-config wrapper (/usr/bin/$(CROSS)pkg-config, from
+   # mingw-w64-tools) must find the built freetype2.pc ahead of any system one.
+   # Two wrapper variants ship, so both hooks are set:
+   #   - Arch's wrapper exports PKG_CONFIG_PATH=${PKG_CONFIG_PATH_CUSTOM}:...
+   #     and clobbers any pre-set PKG_CONFIG_PATH, so PKG_CONFIG_PATH_CUSTOM is
+   #     the hook there.
+   #   - Debian/Ubuntu's wrapper only sets PKG_CONFIG_LIBDIR (when unset) and
+   #     leaves PKG_CONFIG_PATH alone, so a directly-set PKG_CONFIG_PATH is the
+   #     hook there (pkg-config searches it before PKG_CONFIG_LIBDIR).
+   # Setting both is harmless on the variant that ignores one, and the built
+   # .pc wins on both. KRKR_CMAKE_ENV is part of the flag stamp, so a changed
+   # prefix reconfigures the engine rather than silently using a stale freetype.
+   KRKR_CMAKE_ENV := PKG_CONFIG_PATH=$(MINGW_FT_PKGCONFIG) \
+                     PKG_CONFIG_PATH_CUSTOM=$(MINGW_FT_PKGCONFIG)
    # What the engine needs on top of the core's own objects. On Linux these are
    # shared libraries from the sysroot; on Windows they must be the engine's own
-   # static SDL2, the statically built vorbis/ogg, and the Windows system
-   # libraries the engine references. This list mirrors the engine's own
+   # static SDL2, the statically built vorbis/ogg and freetype (all from
+   # tools/build-mingw-vorbis.sh), and the Windows system libraries the engine
+   # references. This list mirrors the engine's own
    # CMakeFiles/krkrsdl2.dir/linkLibs.rsp — the authoritative closure — and
-   # deliberately has no fontconfig: the engine's mingw build does not use it.
+   # deliberately has no fontconfig and no bzip2/brotli: the engine's mingw
+   # build does not use fontconfig, and the vendored freetype (built with its
+   # internal gzip code) has no bzip2/brotli dependency.
    #
    # SDL2 is named by path, not -lSDL2: krkrsdl2 vendors its SDL2 and builds it
    # as a static archive under its own build directory, and there is no SDL2
@@ -215,8 +255,8 @@ else ifeq ($(platform), mingw)
    KRKR_MINGW_SDL2 = $(KRKR_BUILD_DIR)/external/SDL/libSDL2.a
    KRKR_SYS_LIBS = $(KRKR_MINGW_SDL2) \
                     -L$(KRKR_MINGW_DEPS)/vorbis/lib -lvorbisfile -lvorbis -logg \
+                    -L$(MINGW_FT_PREFIX)/lib -lfreetype \
                     -lwinpthread -lz \
-                    $(MINGW_TRIPLET_STATIC_LIBS) \
                     -luuid -lmpr -ldmoguids -lmfplat -lstrmiids -lmf \
                     -lpropsys -lmfuuid -lamstrmid -ldxguid -lwindowscodecs \
                     -lquartz \
@@ -229,51 +269,52 @@ else ifeq ($(platform), mingw)
    # Everything is linked dynamically on Windows: a mingw-w64 distribution ships
    # these as import libraries rather than static archives, so a static link
    # cannot be relied on to resolve. Only what is not already compiled into the
-   # core is taken from the toolchain — bzip2, ogg, vorbis, libmad and SMPEG are
-   # built from source, so linking the system -lbz2 as well would collide
-   # (multiple definition of BZ2_bzRead*).
-   SINGLE_LDFLAGS += -lwinpthread -lz -lbrotlidec -lbrotlicommon
-   # freetype comes from the mingw cross package, so ask the *cross* pkg-config:
-   # the native one reports host paths and the include never resolves.
+   # core is taken from the toolchain. zlib (-lz) comes from the mingw sysroot
+   # (apt libz-mingw-w64-dev); ogg, vorbis, freetype, libmad and SMPEG are built
+   # from source. bzip2 and brotli are not here: nothing in the tree needs them
+   # once freetype is the vendored build (its internal gzip code has no such
+   # dependency), and linking the system -lbz2 would collide with the
+   # from-source one (multiple definition of BZ2_bzRead*).
+   SINGLE_LDFLAGS += -lwinpthread -lz
+   # FreeType is the vendored build from tools/build-mingw-vorbis.sh, found
+   # through the *cross* pkg-config: the native one reports host paths and the
+   # include never resolves. Both wrapper hooks are set (see KRKR_CMAKE_ENV
+   # above for why): PKG_CONFIG_PATH for Debian's wrapper, PKG_CONFIG_PATH_CUSTOM
+   # for Arch's. On Arch, where the sysroot also ships a freetype2.pc, the
+   # built one wins because it is searched first by both hooks.
    MINGW_PKGCONFIG ?= $(CROSS)pkg-config
-   FT_CFLAGS := $(shell $(MINGW_PKGCONFIG) --cflags freetype2 2>/dev/null)
-   # --static, and the archive named by path rather than -lfreetype: the plain
-   # form names libfreetype.dll.a, so the DLL would import libfreetype-6.dll and
-   # the package would have to ship it. libfreetype.a is present in the same
-   # sysroot, so naming it explicitly keeps the DLL self-contained, which is the
-   # whole point of this build. -Wl,-Bstatic around -lfreetype is not enough on
-   # its own: the engine's SDL2/vorbis section later re-enters -Bdynamic and ld
-   # resolves left to right, so the first, static binding is what must win.
-   # $(CROSS) carries a trailing dash ("x86_64-w64-mingw32-"), so it cannot be
-   # concatenated into a path: /usr/$(CROSS)lib becomes ...mingw32-lib.
-   MINGW_TRIPLET := $(patsubst %-,%,$(CROSS))
-   MINGW_SYSROOT := /usr/$(MINGW_TRIPLET)/lib
-   # Libraries selected by absolute path rather than -lNAME.
-   #
-   # The sysroot carries both an import library (libNAME.dll.a) and a static
-   # archive (libNAME.a) for several of these, and -lNAME prefers the import
-   # library — so the DLL would import libbrotlidec.dll / libfreetype-6.dll and
-   # the package would have to ship them, defeating the self-contained build.
-   # Naming the archive is unambiguous and is the only form that works without
-   # wrapping the whole link line in -Bstatic (which is impossible here: the
-   # compiler runtime must stay dynamic, and ld matches left to right).
-   MINGW_STATIC_LIB = $(if $(wildcard $(MINGW_SYSROOT)/lib$(1).a),$(MINGW_SYSROOT)/lib$(1).a,-l$(1))
-   MINGW_TRIPLET_STATIC_LIBS := $(call MINGW_STATIC_LIB,bz2) \
-                                $(call MINGW_STATIC_LIB,brotlidec) \
-                                $(call MINGW_STATIC_LIB,brotlicommon)
-   MINGW_FT_STATIC := $(call MINGW_STATIC_LIB,freetype)
-   # pkg-config repeats -lbz2/-lbrotli*, which would re-select the import
-   # libraries after the static archives above. Keep only what is not already
-   # named by path (-lz and anything else it may add).
-   FT_LIBS   := $(MINGW_FT_STATIC) \
-                $(shell PKG_CONFIG_LIBDIR=/usr/$(MINGW_SYSROOT)/pkgconfig \
-                          $(MINGW_PKGCONFIG) --libs --static freetype2 2>/dev/null \
-                          | tr ' ' '\n' \
-                          | grep -vE -- '-lfreetype|-lbz2|-lbrotlidec|-lbrotlicommon' \
-                          | tr '\n' ' ')
+   MINGW_FT_PKG_ENV := PKG_CONFIG_PATH=$(MINGW_FT_PKGCONFIG) \
+                       PKG_CONFIG_PATH_CUSTOM=$(MINGW_FT_PKGCONFIG)
+   FT_CFLAGS := $(shell $(MINGW_FT_PKG_ENV) $(MINGW_PKGCONFIG) --cflags freetype2 2>/dev/null)
+   # The archive is named by path rather than -lfreetype. The built .pc's Libs
+   # line is just "-L${libdir} -lfreetype" (no bz2/brotli: the vendored freetype
+   # uses its internal gzip code), so -lfreetype would also work — but naming
+   # the .a is unambiguous and keeps the DLL self-contained even if a sysroot
+   # libfreetype.dll.a later appeared ahead of it. -Wl,-Bstatic around
+   # -lfreetype is not enough on its own: the engine's SDL2/vorbis section
+   # later re-enters -Bdynamic and ld resolves left to right, so the first,
+   # static binding is what must win.
+   FT_LIBS   := $(MINGW_FT_PREFIX)/lib/libfreetype.a
    CXXFLAGS += $(FT_CFLAGS)
    CFLAGS   += $(FT_CFLAGS)
    LDFLAGS  += $(FT_LIBS)
+   # The engine's CMake build uses KRKR_CXX_BASE (CMAKE_CXX_FLAGS), which does
+   # not carry CXXSTD — the core's own compile gets -std=c++11 through CXXFLAGS,
+   # but the engine's CMake does not, so pin it via KRKR_CXX_EXTRA.
+   #
+   # The vendored DirectShow baseclasses (streams.h, included by MFPlayer.cpp)
+   # unconditionally #define __in and __out as empty macros. These collide with
+   # parameter names in libstdc++'s <tuple> and <thread>: __in/__out get
+   # macro-expanded to nothing, producing "expected primary-expression before
+   # ')'/'<<'" hard errors. On gcc 16 (the Arch host) this is a suppressible
+   # -Wtemplate-body diagnostic that -w silences; on gcc 13 (Debian/Ubuntu CI) it
+   # is a hard error that -w cannot suppress. Force-including <mutex> and
+   # <thread> before any source includes means the stdlib headers are parsed
+   # before streams.h defines the macros, so the collision never happens. The
+   # engine sets CXX_STANDARD 14 on its target, which overrides CMAKE_CXX_FLAGS's
+   # -std=, so the actual standard is gnu++14 (harmless: the fix is about include
+   # order, not the standard version).
+   KRKR_CXX_EXTRA += $(CXXSTD) -include mutex -include thread
 
 else ifeq ($(platform), win)
    # Native Windows (MSVC not supported; use mingw platform for cross-compile)
@@ -286,9 +327,32 @@ else ifeq ($(platform), win)
    LDFLAGS   += -lws2_32
 
 else ifneq (,$(findstring osx,$(platform)))
+   # macOS: arm64-only for now (see BUILDING.md). Everything the engine needs
+   # comes from Homebrew, so pkg-config is the only way to find it — a bare
+   # -lfreetype and a bare ft2build.h both miss, the latter fatally: the core's
+   # own PONScripter object includes <ft2build.h> and only pkg-config reports
+   # Homebrew's include/freetype2 directory.
    TARGET_EXT := .dylib
    fpic    := -fPIC
-   SHARED  := -dynamiclib
+   # -undefined,error is the Mach-O spelling of Linux's --no-undefined: without
+   # it dyld resolves what the linker could not at load time, turning a link
+   # error into a runtime one.
+   SHARED  := -dynamiclib -Wl,-undefined,error
+   CXXFLAGS += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+   CFLAGS   += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+   LDFLAGS  += $(shell $(PKG_CONFIG) --libs freetype2 2>/dev/null)
+   # dyld has no $ORIGIN; @loader_path is the equivalent anchor. Kept for the
+   # same reason as on ELF: the vendored font directory and any plugin the
+   # overrides table names resolve relative to the core.
+   MOD_RPATH := -Wl,-rpath,@loader_path
+   # Homebrew keeps each formula in its own prefix and none of them is on the
+   # default library path, so the bare -l names the Linux build uses do not
+   # resolve. Ask pkg-config for the same four libraries instead.
+   KRKR_SYS_LIBS := $(shell $(PKG_CONFIG) --libs sdl2 fontconfig vorbisfile vorbis 2>/dev/null)
+   ifeq ($(strip $(KRKR_SYS_LIBS)),)
+      $(error macOS: pkg-config found no sdl2/fontconfig/vorbisfile/vorbis. \
+        Install them with: brew install pkg-config sdl2 freetype fontconfig libvorbis)
+   endif
 
 else ifeq ($(platform), emscripten)
    TARGET_EXT := .bc
@@ -372,7 +436,7 @@ BUILD_DIR := build/$(platform)$(BUILD_TAG)
 OBJCOPY ?= objcopy
 NM      ?= nm
 
-CXXFLAGS += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) $(VISIBILITY)
+CXXFLAGS += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(CXXSTD) $(fpic) $(VISIBILITY)
 CFLAGS   += $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall $(fpic) $(VISIBILITY)
 
 # The output name
@@ -655,11 +719,23 @@ endif
 # Whole-archived at link time, because the engine reaches its own objects
 # through a registry rather than through references the linker can follow, so a
 # plain archive member would be dropped.
+#
+# Only the engine archive is taken whole. FAudio is NOT: it is an ordinary
+# dependency whose members the linker finds by reference, and taking it whole
+# would pull in every platform back-end it carries. The forms below keep that
+# split.
+#
+# The spelling is per-platform: ELF brackets a list with
+# --whole-archive/--no-whole-archive, while Darwin's ld has neither and names
+# the one archive to keep instead.
 KRKR_DEPS := $(KRKR_ARCHIVE) $(KRKR_FAUDIO)
-ifeq ($(KRKR_FAUDIO),)
-KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive
+ifneq (,$(findstring osx,$(platform)))
+   # Darwin: -force_load names the archive; FAudio follows as a plain archive.
+   KRKR_LINK := -Wl,-force_load,$(KRKR_ARCHIVE) $(KRKR_FAUDIO)
+else ifeq ($(KRKR_FAUDIO),)
+   KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive
 else
-KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive $(KRKR_FAUDIO)
+   KRKR_LINK := -Wl,--whole-archive $(KRKR_ARCHIVE) -Wl,--no-whole-archive $(KRKR_FAUDIO)
 endif
 # What the engine needs beyond what the core already links. The core links only
 # the vendored SDL 1.2 (renamed to PrivateSDL_*) plus freetype; the engine needs
@@ -994,6 +1070,6 @@ $(BUILD_DIR)/engine_pons_cabi.o: $(SRC_DIR)/engine_pons_cabi.cpp
 $(BUILD_DIR)/engine_kirikiri_cabi.o: $(SRC_DIR)/engine_kirikiri_cabi.cpp
 	@$(if $(Q),echo "CXX kirikiri-cabi $<",)
 	@mkdir -p $(dir $@)
-	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(fpic) \
+	$(Q)$(CXX) $(OPTFLAGS) $(DEFINES) $(PLATFLAGS) -Wall -fpermissive $(CXXSTD) $(fpic) \
 		-I$(LIBRETRO_COMM)/include -I$(CORE_DIR) -I$(SRC_DIR) $(VISIBILITY) \
 		-c -o $@ $<

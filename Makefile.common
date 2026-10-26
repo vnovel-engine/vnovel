@@ -10,6 +10,15 @@ SMPEG_DIR       := $(CORE_DIR)/smpeg
 SDL_DIR         := $(DEPS_DIR)/sdl
 
 # Include paths (shared)
+#
+# libmad is deliberately NOT here. Its directory is an autotools source tree
+# that ships a plain "VERSION" file beside mad.h, and putting it on the global
+# include path makes <version> — which libc++ reaches through <cstddef> and
+# which is a real header since C++11 — resolve to that file on a
+# case-insensitive filesystem (macOS), where the compiler then tries to parse
+# "0.15.1b" as C++ ("error: expected unqualified-id"). Linux is case-sensitive
+# and never noticed. Only the SDL_mixer MP3 backend needs mad.h, so the path is
+# attached to those two objects below instead of to everything.
 INCFLAGS := \
   -I$(LIBRETRO_COMM)/include \
   -I$(ONSCRIPTER_EN) \
@@ -17,7 +26,6 @@ INCFLAGS := \
   -I$(DEPS_DIR)/bzip2 \
   -I$(DEPS_DIR)/libogg/include \
   -I$(DEPS_DIR)/libvorbis/include \
-  -I$(DEPS_DIR)/libmad \
   -I$(SDL_LIBRETRO) \
   -I$(SDL_DIR)/include \
   -I$(DEPS_DIR) \
@@ -141,6 +149,26 @@ RUNTIME_C += $(addprefix $(DEPS_DIR)/sdl-mixer/, \
   load_voc.c load_aiff.c load_ogg.c music_ogg.c \
   dynamic_ogg.c music_mad.c \
 )
+
+# The translation units that reach libmad's headers, and the reason libmad is
+# not on the shared include path (see the note on INCFLAGS):
+#
+#   deps/sdl-mixer/music.c, music_mad.c   the mixer's MP3 backend
+#   deps/onscripter-en/MadWrapper.cpp     the engine's own MP3 wrapper
+#   deps/ponscripter/src/MadWrapper.cpp   likewise
+#
+# The two mixer objects are named exactly, the two engine objects by pattern.
+# That split is not stylistic: these are pattern-specific variables, and make
+# requires a NON-EMPTY stem for them to bind. "music.%o" therefore matches
+# "music.ons.o" but never "music.o", so a pattern there silently does nothing —
+# which is exactly how the first version of this rule shipped broken. Where the
+# stem is non-empty (.ons/.pons) the pattern is safe and worth having, because it
+# cannot go stale if a source is renamed.
+LIBMAD_INCLUDES := -I$(DEPS_DIR)/libmad
+$(BUILD_DIR)/$(DEPS_DIR)/sdl-mixer/music.o: CFLAGS += $(LIBMAD_INCLUDES)
+$(BUILD_DIR)/$(DEPS_DIR)/sdl-mixer/music_mad.o: CFLAGS += $(LIBMAD_INCLUDES)
+$(BUILD_DIR)/$(ONSCRIPTER_EN)/MadWrapper.%.o: CXXFLAGS += $(LIBMAD_INCLUDES)
+$(BUILD_DIR)/$(PONSCRIPTER)/MadWrapper.%.o: CXXFLAGS += $(LIBMAD_INCLUDES)
 
 # libretro-common
 RUNTIME_C += $(addprefix $(LIBRETRO_COMM)/, \
