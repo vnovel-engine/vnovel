@@ -2751,7 +2751,16 @@ void resolve_font_dir(void)
        * the engine's own checker applies the same rule and now finds this
        * already set rather than reaching for its built-in default. */
       if (!getenv("KRKRSDL2_DATA_PATH"))
+      {
+#ifdef _WIN32
+         /* MSVCRT has no setenv; the equivalent is _putenv_s. Same "only when
+          * unset" rule as the POSIX branch — an explicit value is the user's
+          * decision and wins. */
+         _putenv_s("KRKRSDL2_DATA_PATH", vnovel_font_dir);
+#else
          setenv("KRKRSDL2_DATA_PATH", vnovel_font_dir, 1);
+#endif
+      }
    }
 }
 
