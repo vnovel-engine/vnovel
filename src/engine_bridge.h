@@ -119,6 +119,19 @@ extern "C"
     * and the only value that leaves a normal run bit-identical. */
    VNOVEL_EXPORT extern const char *vnovel_font_face_file;
 
+   /* The ordered face chain: the chosen face first, then the bundled faces by
+    * priority (descending), then any other face in the directory. NULL-
+    * terminated basenames in `vnovel_font_dir`; the first entry is NULL when
+    * the user chose the game's own font.
+    *
+    * KiriKiri walks the whole list per glyph, so a Latin face and a CJK face
+    * can both be active and each script gets the first face that has its
+    * glyph. ONScripter/PONScripter have no per-glyph fallback in their
+    * SDL_ttf, so they use the first entry — the chosen face. The game's own
+    * font is not in the list: the engine appends it last, so it is the last
+    * resort. */
+   VNOVEL_EXPORT extern const char *const *vnovel_font_chain;
+
    /* Scale applied to whatever size the game's script asked for, in percent.
     * 100 = unchanged. Read per glyph (see below). Engines clamp through
     * vnovel_font_scaled_size, so a hostile value cannot make every glyph a

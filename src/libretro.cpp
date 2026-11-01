@@ -2665,6 +2665,30 @@ static void krkr_keyboard_cb(bool down, unsigned keycode, uint32_t, uint16_t)
  * else about. */
 #define FONT_OPTION_MAX 40
 static const char *font_face_files[FONT_OPTION_MAX + 1];  /* value index -> file */
+static int font_face_priorities[FONT_OPTION_MAX + 1];     /* value index -> priority */
+
+/* The ordered fallback chain published to the engines as `vnovel_font_chain`:
+ * the chosen face first, then the offered faces by priority (descending), then
+ * the rest in the order they were offered. Built from the option's own value
+ * list, so it cannot disagree with what the frontend was handed. */
+static const char *font_chain[FONT_OPTION_MAX + 1];
+
+static void build_font_chain(const char *chosen_file)
+{
+   int n = 0, p, k;
+   for (p = 9; p >= 1; p--)
+      for (k = 0; font_face_files[k]; k++)
+         if (font_face_priorities[k] == p && font_face_files[k][0] &&
+             (!chosen_file || strcmp(font_face_files[k], chosen_file) != 0))
+            font_chain[n++] = font_face_files[k];
+   if (chosen_file && chosen_file[0])
+   {
+      memmove(font_chain + 1, font_chain, (size_t)n * sizeof(*font_chain));
+      font_chain[0] = chosen_file;
+      n++;
+   }
+   font_chain[n] = NULL;
+}
 
 /* Where the selectable faces live, published to the engines as
  * `vnovel_font_dir`.
@@ -2888,7 +2912,8 @@ void build_font_face_options(const char *dir)
     * what makes the bridge report "no face" for it. */
    def->values[n].value = "game";
    def->values[n].label = NULL;   /* the value is its own label */
-   font_face_files[n]   = "";
+   font_face_files[n]      = "";
+   font_face_priorities[n] = 0;
    n++;
 
    for (i = 0; i < VNOVEL_FONT_SOURCE_COUNT && n < FONT_OPTION_MAX; i++)
@@ -2898,7 +2923,8 @@ void build_font_face_options(const char *dir)
          continue;   /* not deployed: offering it would be a dead choice */
       def->values[n].value = vnovel_font_sources[i].label;
       def->values[n].label = NULL;
-      font_face_files[n]   = file;
+      font_face_files[n]      = file;
+      font_face_priorities[n] = vnovel_font_sources[i].priority;
       n++;
    }
 
@@ -2934,7 +2960,8 @@ void build_font_face_options(const char *dir)
             strcpy(copy, name);
             def->values[n].value = copy;
             def->values[n].label = NULL;
-            font_face_files[n]   = copy;
+            font_face_files[n]      = copy;
+            font_face_priorities[n] = 1;   /* a face the user added */
             n++;
          }
          retro_closedir(rd);
@@ -3007,6 +3034,8 @@ static void publish_font_options(void)
                    v, vnovel_font_dir ? vnovel_font_dir : "(no face directory)");
       }
       vnovel_font_face_file = file;
+      build_font_chain(file);
+      vnovel_font_chain = font_chain;
    }
 
    /* Size: a percentage of the game's own size. Clamped here as well as in the

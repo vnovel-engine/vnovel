@@ -96,9 +96,12 @@ setup_fate() {
 
 setup_fata() {
 	# The real game is 394 MB and opens on a "Headphones Recommended" screen
-	# that waits for a click. Symlink its files and override only the entry
-	# script: a loose startup.tjs runs a test scenario that draws one of the
-	# game's own backgrounds and a line of text. The archive is untouched.
+	# that waits for a click. Symlink its files and override only first.ks:
+	# the game's own startup.tjs and system/Initialize.tjs run (they set KAG
+	# up and process first.ks), then first.ks keeps the game's setup calls and
+	# jumps to the prologue's first dialogue scene instead of the
+	# notice/logo/title sequence. The archive is untouched. The setup is the
+	# game's own and takes ~40 s, so run this one with WAIT=55.
 	src="/mnt/largepool/bulk/Software/The House in Fata Morgana"
 	dir=/tmp/scene-fata
 	rm -rf "$dir"; mkdir -p "$dir"
@@ -106,15 +109,51 @@ setup_fata() {
 		ln -s "$f" "$dir/"
 	done
 	# The engine's resource override directory is checked before the archive,
-	# so the entry script and the test scenario go there.
+	# so first.ks goes there. The setup calls are the game's own (scenario/
+	# first.ks, up to the *start|Title label); everything after that label is
+	# the notice/logo/title sequence this skips.
 	mkdir -p "$dir/.overrides"
-	cat > "$dir/.overrides/startup.tjs" <<'EOF'
-Scripts.execStorage(System.getEnv("KRKRSDL2_DATA_PATH") + "/system_polyfill/KAGParser.tjs");
-Scripts.execStorage("test.ks");
-EOF
-	cat > "$dir/.overrides/test.ks" <<'EOF'
-@bg storage="bgimage/1door_b.png"
-It feels like each second passing is grinding a year off my life. That's how fast I feel 'death' closing in on me.
+	cat > "$dir/.overrides/first.ks" <<'EOF'
+[wait time=200]
+[loadplugin module=wuvorbis.dll]
+[loadplugin module=AdjustMoni.dll]
+[call storage="fallen_leaf.ks"]
+[call storage="rain.ks"]
+[call storage="system_define.ks" target=*system_define]
+[call storage="macro.ks"]
+[call storage="fallen_leaf.ks"]
+[call storage="slider_control.ks"]
+[call storage="slider.ks"]
+[call storage="systembutton.ks"]
+[call storage="HeartBeatPlugin.ks"]
+[call storage="flash.ks"]
+@iscript
+Scripts.execStorage("WearFilmPlugin.tjs");
+@endscript
+@iscript
+Scripts.execStorage("QuakePlugin.tjs");
+@endscript
+@iscript
+Scripts.execStorage("_MotionBlurPlugin.tjs");
+@endscript
+[call storage="CtrlSkip.ks"]
+[ctrlskip enabled=true quickflg=true]
+[call storage="highSpeedLabeler.ks"]
+[call storage="Macro_Text.ks"]
+[call storage="Macro_CharLayers.ks"]
+[call storage="Macro_Layers.ks"]
+[call storage="Macro_TimeEffect.ks"]
+[call storage="Macro_APimage.ks"]
+[call storage="macros_sprites.ks"]
+[call storage="achievements.ks"]
+[clearvar]
+[eval exp="sf.showpagebreak = 1"]
+
+*test
+; Jump to the game's first dialogue scene. The setup above is the game's own
+; (scenario/first.ks, up to the *start|Title label); this skips the notice,
+; logo and title screens and lands on the prologue's first line.
+[jump storage="prologue.ks"]
 EOF
 	GAME_DIR=$dir; GAME_FILE=$dir/data.xp3
 }

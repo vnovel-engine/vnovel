@@ -65,6 +65,7 @@ VNOVEL_EXPORT int vnovel_textbox_opacity                     = 100;
  * per-glyph values default to the identity. */
 VNOVEL_EXPORT const char *vnovel_font_dir    = 0;
 VNOVEL_EXPORT const char *vnovel_font_face_file = 0;
+VNOVEL_EXPORT const char *const *vnovel_font_chain = 0;
 VNOVEL_EXPORT int vnovel_font_size_percent   = 100;
 VNOVEL_EXPORT int vnovel_font_tint_r         = 100;
 VNOVEL_EXPORT int vnovel_font_tint_g         = 100;
@@ -93,9 +94,11 @@ VNOVEL_EXPORT int vnovel_font_selected_path(char *out, int out_size,
     * options absent gets. */
    if (!out || out_size <= 0 || !vnovel_font_dir || !vnovel_font_dir[0])
       return 0;
-   if (!vnovel_font_face_file || !vnovel_font_face_file[0])
+   /* The chain's first entry is the chosen face; the single-file field is
+    * kept for a caller that only wants the name. */
+   file = (vnovel_font_chain && vnovel_font_chain[0]) ? vnovel_font_chain[0] : 0;
+   if (!file || !file[0])
       return 0;
-   file = vnovel_font_face_file;
    n = snprintf(out, (size_t)out_size, "%s/%s", vnovel_font_dir, file);
    /* Truncated: a path that does not fit is not a path, so report "no face"
     * rather than something an engine would try to open. */

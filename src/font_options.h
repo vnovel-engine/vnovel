@@ -59,22 +59,28 @@ extern "C"
    {
       const char *label;     /* core-option value */
       const char *file;      /* installed basename */
+      /* Fallback priority: higher wins. The engine tries the faces in
+       * descending priority, per glyph, so a Latin face can sit above a CJK
+       * face and each script gets the first face that has its glyph. The
+       * game's own font is priority 0 (last resort) and is appended by the
+       * engine; a face the user drops into the directory is priority 1. */
+      int priority;
       const char *project;   /* upstream URL */
       const char *licence;   /* licence name */
    } VNovelFontSource;
 
    static const VNovelFontSource vnovel_font_sources[] = {
-         {"OpenDyslexic", "OpenDyslexic-Regular.otf",
+         {"OpenDyslexic", "OpenDyslexic-Regular.otf", 1,
           "https://github.com/antijingoist/opendyslexic",
           "SIL OFL 1.1 (Reserved Font Name: OpenDyslexic)"},
-         {"Atkinson Hyperlegible", "AtkinsonHyperlegible-Regular.ttf",
+         {"Atkinson Hyperlegible", "AtkinsonHyperlegible-Regular.ttf", 1,
           "https://github.com/googlefonts/atkinson-hyperlegible",
           "SIL OFL 1.1"},
-         {"Comic Neue", "ComicNeue-Regular.ttf",
+         {"Comic Neue", "ComicNeue-Regular.ttf", 1,
           "https://github.com/crozynski/comicneue", "SIL OFL 1.1"},
-         {"EB Garamond", "EBGaramond-Variable.ttf",
+         {"EB Garamond", "EBGaramond-Variable.ttf", 3,
           "https://github.com/octaviopardo/EBGaramond12", "SIL OFL 1.1"},
-         {"BIZ UDPGothic", "BIZUDPGothic-Regular.ttf",
+         {"BIZ UDPGothic", "BIZUDPGothic-Regular.ttf", 2,
           "https://github.com/googlefonts/morisawa-biz-ud-gothic",
           "SIL OFL 1.1"},
    };

@@ -3,6 +3,19 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## Unreleased
+
+### Fixed
+
+- **The `Font` option now applies on KiriKiri.** The engine's font-existence
+  table was built from a list the port never filled, so every requested face
+  looked absent and the lookup always fell back to the bundled Mona — the
+  chosen face was registered but never selected. The list is now filled from
+  the registered faces and their aliases. A chosen face also becomes the
+  engine's default (with Mona second for glyphs it lacks), so a game that names
+  a face the host does not have — its own font, installed system-wide on
+  Windows — gets the chosen face instead of Mona.
+
 ## 1.0.0-rc7 — 2026-11-01
 
 ### Added

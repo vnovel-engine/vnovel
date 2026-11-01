@@ -211,8 +211,15 @@ face. `EB Garamond` is a reading serif. `BIZ UDPGothic` is a Japanese
 universal-design face and the only bundled one with Japanese glyphs.
 
 **Japanese text.** The Latin faces carry no CJK glyphs, so a Japanese game under
-one of them falls back to the game's own font (or Mona) for that text. Choose
-`BIZ UDPGothic` for Japanese.
+one of them falls back to Mona for that text. Choose `BIZ UDPGothic` for
+Japanese.
+
+**On KiriKiri the chosen face is the default.** A KiriKiri game names its face
+by name, and a game that ships its own font expects it installed system-wide
+(the Windows installer does that). When the host does not have that name, the
+chosen face answers it, with Mona second for glyphs the chosen face lacks. A
+game that loads its own font through `addFont` still gets that font, because
+the engine resolves the game's own faces first.
 
 **Font Size** scales the size the game's script asked for, so the text box, line
 spacing and wrapping grow with the text rather than the text outgrowing them.
