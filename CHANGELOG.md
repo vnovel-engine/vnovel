@@ -3,6 +3,17 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## Unreleased
+
+### Fixed
+
+- **Total-fit wrapping no longer breaks a word in the middle.** The engine's
+  break mask was allocated uninitialised, and the offsets it skips (a
+  clickwait's `@`, a backtick) kept whatever the heap held there. The planner
+  read that as a legal break, chose it, and the layout — which cannot break at
+  a text command — ignored the plan and overflowed into a hard mid-word break.
+  Seen in Tsukihime with EB Garamond at 150%: "That's" split across two lines.
+
 ## 1.0.0-rc4 — 2026-11-01
 
 ### Changed
