@@ -3,6 +3,24 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## 1.0.0-rc3 — 2026-11-01
+
+### Added
+
+- **A Windows installer (`install.bat`).** The release bundle carried
+  `install.sh`, which needs a POSIX shell — Git Bash or WSL — so a Windows
+  reader had to copy the files by hand. `install.bat` is plain `cmd.exe` and
+  does what `install.sh` does: it finds the frontend's cores directory (or
+  takes `--dir`), installs the core, its `.info`, the game database and the
+  KiriKiri engine data, and supports `--uninstall` and `--dry-run`.
+
+- **The Windows zip is a drop-in RetroArch directory.** It now holds `cores/`
+  (the core, its `.info` and `vnovel/`) and `database/rdb/` at the root, so
+  extracting it into a portable RetroArch directory puts every file where the
+  frontend reads it, with no installer run at all. `install.bat` remains for a
+  cores directory somewhere else. The Linux and macOS bundles keep the flat
+  layout `install.sh` expects.
+
 ## 1.0.0-rc2 — 2026-10-27
 
 Replaces 1.0.0-rc1, which could not run KiriKiri games from a release.
