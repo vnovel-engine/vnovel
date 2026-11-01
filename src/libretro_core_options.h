@@ -211,7 +211,9 @@ extern "C"
                 {"960x720", NULL},
                 {"1024x768", NULL},
                 {"1280x960", NULL},
+                {"1440x1080", NULL},
                 {"1600x1200", NULL},
+                {"1920x1440", NULL},
                 {NULL, NULL},
           },
           "native"},
@@ -371,13 +373,21 @@ extern "C"
           "whatever is behind it. A percentage per channel: 'white' is the "
           "game's own colour unchanged, 'brighter' and 'pure white' push a "
           "dim or tinted text colour up toward full white, 'dimmer' pulls it "
-          "down toward the background. Use this when the game's text colour is "
-          "low-contrast against its text box.",
+          "down toward the background. The colour presets push one channel "
+          "(or a pair) to its maximum, for a deliberately strong tint. Use "
+          "this when the game's text colour is low-contrast against its text "
+          "box.",
           {
                 {"dimmer", NULL},
                 {"normal", NULL},
                 {"brighter", NULL},
                 {"pure white", NULL},
+                {"strong red", NULL},
+                {"strong green", NULL},
+                {"strong blue", NULL},
+                {"strong red + blue", NULL},
+                {"strong red + green", NULL},
+                {"strong green + blue", NULL},
                 {NULL, NULL},
           },
           "normal"},

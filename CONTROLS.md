@@ -172,7 +172,7 @@ point is legibility for people with reading impairment, and general comfort.
 | `Font Size` (`vnovel_font_size`) | 50–300% in 5% steps | `100` |
 | `Font Letter Spacing` (`vnovel_font_letter_spacing`) | −0.20 to +0.50 em in 0.01 steps, plus −0.25…−1.00 em outliers | `0.00` |
 | `Font Word Spacing` (`vnovel_font_word_spacing`) | −0.20 to +0.50 em in 0.01 steps, plus −0.25…−1.00 em outliers | `0.00` |
-| `Font Tint (Contrast)` (`vnovel_font_tint`) | `dimmer`, `normal`, `brighter`, `pure white` | `normal` |
+| `Font Tint (Contrast)` (`vnovel_font_tint`) | `dimmer`, `normal`, `brighter`, `pure white`, `strong red`, `strong green`, `strong blue`, `strong red + blue`, `strong red + green`, `strong green + blue` | `normal` |
 | `Font Tint - Custom RGB` (`vnovel_font_tint_custom`) | `off`, or three comma-separated percentages | `off` |
 
 `game` uses the game's own font (or the engine's fallback when the game has

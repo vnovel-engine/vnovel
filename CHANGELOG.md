@@ -3,6 +3,20 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## Unreleased
+
+### Added
+
+- **Two more internal resolution targets: 1440×1080 and 1920×1440.** The
+  option now spans 640×480 through 1920×1440, covering 1×, 1.5×, 2× and 2.5×
+  of the common 4:3 sizes.
+- **Strong colour tints.** `Font Tint (Contrast)` gains `strong red`,
+  `strong green`, `strong blue`, and the three pairs (`strong red + blue`,
+  `strong red + green`, `strong green + blue`), each pushing one channel (or
+  two) to its maximum for a deliberately strong tint.
+- **`tools/scene-harness/`** — a per-game scene renderer and a gallery matrix
+  runner, used to compare rendering across resolutions, faces, sizes and tints.
+
 ## 1.0.0-rc6 — 2026-11-01
 
 ### Fixed

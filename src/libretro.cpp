@@ -3035,6 +3035,12 @@ static void publish_font_options(void)
       if (v && strcmp(v, "dimmer") == 0)          { r = g = b = 60; }
       else if (v && strcmp(v, "brighter") == 0)   { r = g = b = 130; }
       else if (v && strcmp(v, "pure white") == 0) { r = g = b = 200; }
+      else if (v && strcmp(v, "strong red") == 0)         { r = 200; }
+      else if (v && strcmp(v, "strong green") == 0)       { g = 200; }
+      else if (v && strcmp(v, "strong blue") == 0)        { b = 200; }
+      else if (v && strcmp(v, "strong red + blue") == 0)  { r = 200; b = 200; }
+      else if (v && strcmp(v, "strong red + green") == 0) { r = 200; g = 200; }
+      else if (v && strcmp(v, "strong green + blue") == 0){ g = 200; b = 200; }
       else
       {
          const char *c = opt_string("vnovel_font_tint_custom", NULL);
