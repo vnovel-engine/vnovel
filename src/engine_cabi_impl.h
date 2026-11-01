@@ -108,8 +108,8 @@ static int prefix##_isSkipMode(EngineHandle h) \
 } \
 static void prefix##_setResolution(EngineHandle h, int w, int hh) \
 { \
-   if (w <= 0 || hh <= 0) \
-      return; /* 0/0 = native */ \
+   if (w == 0) \
+      return; /* game native: the engine's own screen_width/screen_height */ \
    /* setPreferredWidth() is the engine's own rescale path (the -window-width \
     * CLI option): it sets screen_ratio1/2 so the whole render is produced at \
     * the requested width, height following the script's aspect. */ \

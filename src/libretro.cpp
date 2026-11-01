@@ -3229,16 +3229,26 @@ bool retro_load_game(const struct retro_game_info *game)
    // sizes itself (and its window/layer) from that. Read once here so both
    // engines see the same value: ONS via vtable->setResolution below, KiriKiri
    // via krkr_set_resolution in its branch.
+   /* Two modes, not one size:
+    *   game - the game's own size (Config.tjs scWidth/scHeight, or the KAG
+    *          default); the layout is untouched.
+    *   WxH  - a fixed size; the game's Config.tjs is rewritten to it, so the
+    *          layers and text layout are that size.
+    * The engines get a mode, not just a size: -1,-1 is "game", a positive
+    * pair is fixed. */
+   enum { RES_GAME, RES_FIXED };
+   int res_mode = RES_GAME;
    int forced_res_w = 0, forced_res_h = 0;
    {
       const char *res = opt_string("vnovel_internal_resolution", NULL);
-      if (res && strcmp(res, "native") != 0)
+      if (res && strcmp(res, "game") != 0)
       {
          unsigned a = 0, b = 0;
          if (sscanf(res, "%ux%u", &a, &b) == 2)
          {
             forced_res_w = (int)a;
             forced_res_h = (int)b;
+            res_mode = RES_FIXED;
          }
       }
    }
@@ -3461,7 +3471,7 @@ bool retro_load_game(const struct retro_game_info *game)
      * the engine sees it before it builds its main window. 0,0 is a no-op: the
      * host display size applies. The engine's SDL surface is not forced; the
      * core scales the finished frame. */
-      if (forced_res_w > 0 && forced_res_h > 0)
+      if (res_mode == RES_FIXED)
       {
          krkr_set_resolution(forced_res_w, forced_res_h);
          log_cb(RETRO_LOG_INFO,
@@ -3471,8 +3481,8 @@ bool retro_load_game(const struct retro_game_info *game)
       }
       else
       {
-         krkr_set_resolution(0, 0);
-         log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
+         krkr_set_resolution(-1, -1);
+         log_cb(RETRO_LOG_INFO, "Internal resolution: game\n");
       }
       /* Read the text-plane options and make the requests BEFORE the engine
        * starts, not on the first retro_run.
@@ -3609,7 +3619,7 @@ bool retro_load_game(const struct retro_game_info *game)
    // Internal rendering resolution for the ONS/PONS engines (parsed above).
    if (vtable->setResolution)
    {
-      if (forced_res_w > 0 && forced_res_h > 0)
+      if (res_mode == RES_FIXED)
       {
          vtable->setResolution(engine, forced_res_w, forced_res_h);
          log_cb(RETRO_LOG_INFO,
@@ -3619,7 +3629,7 @@ bool retro_load_game(const struct retro_game_info *game)
       }
       else
       {
-         log_cb(RETRO_LOG_INFO, "Internal resolution: native\n");
+         log_cb(RETRO_LOG_INFO, "Internal resolution: game\n");
       }
    }
 

@@ -28,6 +28,7 @@ set -eu
 
 GAME=${GAME:-tsukihime}
 RES=${RES:-640x480}
+SCREEN=${SCREEN:-$RES}
 FONT=${FONT:-EB Garamond}
 SIZE=${SIZE:-100}
 TINT=${TINT:-normal}
@@ -150,11 +151,36 @@ Scripts.execStorage("_MotionBlurPlugin.tjs");
 [eval exp="sf.showpagebreak = 1"]
 
 *test
-; Jump to the game's first dialogue scene. The setup above is the game's own
+; Jump to the rose-garden scene (Mell and Nellie), the first scene with
+; graphics after the first door. The setup above is the game's own
 ; (scenario/first.ks, up to the *start|Title label); this skips the notice,
-; logo and title screens and lands on the prologue's first line.
-[jump storage="prologue.ks"]
+; logo and title screens. The message layer, background and both sprites are
+; set up here because the jump lands mid-scene, after the game's own setup
+; tags; the target is the narration just before Nellie's "Oh, dearest Mell,
+; please..." line.
+[freeimage layer="base"]
+[layopt layer="message0" page="fore" visible="false"]
+[position layer="message0" frame="meserei3" left="0" top="0" width="800" height="600" marginl="70" margint="420" marginr="60" marginb="20"]
+[backlay]
+[layopt layer="message0" page="back" visible="true"]
+[trans method="universal" rule="円形(外から中へ)" time=1]
+[wt]
+[font color="0x707070" shadowcolor="0x242424" shadow="true"]
+[image storage="薔薇園" layer="base" page="back"]
+[trans method="crossfade" time=1]
+[wt]
+[char_setopt dispalign=no popdownceil=170 aligntime=600 transtime=300 erasealign=no alignaccel=-2]
+[ネリー storage="幼体 幼怒り - - "]
+[char_setopt dispalign=no popdownceil=170 aligntime=600 transtime=500 erasealign=no alignaccel=-2]
+[メル storage="幼体 幼読書 - - " initpos="-10,0"  posx="left"]
+[jump storage="scenario.ks" target=*scenario_4B1407FC_77A8_4A4B_995D_9B1FDDB3075A]
 EOF
+	# The game's scripts are UTF-16LE with a BOM, and the engine reads a .ks
+	# by its BOM. The Japanese storage and macro names above need it: a UTF-8
+	# file fails with "Cannot convert given narrow string to wide string".
+	{ printf '\377\376'; iconv -f UTF-8 -t UTF-16LE "$dir/.overrides/first.ks"; } \
+		> "$dir/.overrides/first.ks.tmp"
+	mv "$dir/.overrides/first.ks.tmp" "$dir/.overrides/first.ks"
 	GAME_DIR=$dir; GAME_FILE=$dir/data.xp3
 }
 
@@ -233,7 +259,7 @@ RA_PID=""; XVFB_PID=""
 # display then fails and the capture reads the stale screen.
 pkill -f "Xvfb $DISP " 2>/dev/null || true
 sleep 1
-Xvfb "$DISP" -screen 0 "${RES}x24" +extension GLX +render -nolisten tcp \
+Xvfb "$DISP" -screen 0 "${SCREEN}x24" +extension GLX +render -nolisten tcp \
 	>/dev/null 2>&1 &
 XVFB_PID=$!
 sleep 1

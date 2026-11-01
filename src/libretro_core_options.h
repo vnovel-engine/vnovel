@@ -194,18 +194,15 @@ extern "C"
           "return"},
          {"vnovel_internal_resolution",
           "Internal Resolution",
-          "Resolution the game engine is told the frontend expects. 'native' "
-          "uses "
-          "the host display's own size. A fixed size is reported to the engine "
-          "as "
-          "System.screenWidth/screenHeight so an engine/script that sizes "
-          "itself "
-          "from the screen renders natively at that resolution; the finished "
-          "frame "
-          "is then scaled by RetroArch like any other output. RetroArch's own "
-          "scaling settings still apply.",
+          "Resolution the game engine is told the frontend expects. 'game' "
+          "uses the game's own size (its Config.tjs scWidth/scHeight, or the "
+          "KAG default), so the layout is untouched. A fixed size is reported "
+          "to the engine as System.screenWidth/screenHeight and the game's "
+          "Config.tjs is rewritten to it, so the game's layers and text layout "
+          "are that size; the finished frame is then scaled by RetroArch like "
+          "any other output. RetroArch's own scaling settings still apply.",
           {
-                {"native", NULL},
+                {"game", NULL},
                 {"640x480", NULL},
                 {"800x600", NULL},
                 {"960x720", NULL},
@@ -216,7 +213,7 @@ extern "C"
                 {"1920x1440", NULL},
                 {NULL, NULL},
           },
-          "native"},
+          "game"},
          {"vnovel_text_speed",
           "Text Speed",
           "Override the engine's text display speed. 'default' uses the "
