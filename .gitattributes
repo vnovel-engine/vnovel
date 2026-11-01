@@ -1,0 +1,3 @@
+# Batch files must keep CRLF: cmd.exe misparses labels and goto targets in
+# LF-only files, and a checkout with core.autocrlf would otherwise rewrite it.
+*.bat text eol=crlf

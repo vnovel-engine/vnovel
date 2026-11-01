@@ -5,8 +5,9 @@
 #
 # One bundle is one platform and carries exactly one core. What is checked is
 # what a consumer would notice: the core present and named for the platform,
-# the core-info and the game database beside it, install.sh to install it, and
-# no stray engine module left over from the older multi-artifact layout.
+# the core-info and the game database beside it, the platform's installer
+# (install.sh, or install.bat for the Windows drop-in layout), and no stray
+# engine module left over from the older multi-artifact layout.
 #
 # A Windows DLL gets one extra check, and it is the one that matters for a
 # libretro core: the DLL must import only Windows system libraries. A core that
@@ -95,8 +96,8 @@ for bundle in "$@"; do
 		*)     listing=$(tar tzf "$bundle") ;;
 	esac
 
-	for want in vnovel_libretro.info vnovel.rdb install.sh; do
-		printf '%s\n' "$listing" | grep -q "/$want\$" ||
+	for want in vnovel_libretro.info vnovel.rdb; do
+		printf '%s\n' "$listing" | grep -qE "(^|/)$want\$" ||
 			bad "$bundle: $want missing"
 	done
 
@@ -127,6 +128,15 @@ for bundle in "$@"; do
 	fi
 
 	core=$(printf '%s\n' "$listing" | grep -E '/vnovel_libretro\.(so|dll|dylib)$' | head -1)
+
+	# The installer is the platform's own: install.sh for the flat bundles,
+	# install.bat for the Windows drop-in layout.
+	case "$core" in
+		*.dll) installer=install.bat ;;
+		*)     installer=install.sh ;;
+	esac
+	printf '%s\n' "$listing" | grep -qE "(^|/)$installer\$" ||
+		bad "$bundle: $installer missing"
 
 	case "$core" in
 		*.dll)

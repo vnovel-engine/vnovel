@@ -107,9 +107,10 @@ build/aarch64/vnovel_libretro.so
 
 The linked core is then **copied to the repository root** under its plain name
 (`vnovel_libretro.so` / `.dll`), because the scripts, the tests, `install.sh`,
-`ci/package.sh` and buildroot's recipe all expect it there. That root copy is the
-one shared name: it is whatever you built last. Building for another platform
-leaves the previous platform's artifact in its own directory untouched.
+`install.bat`, `ci/package.sh` and buildroot's recipe all expect it there. That
+root copy is the one shared name: it is whatever you built last. Building for
+another platform leaves the previous platform's artifact in its own directory
+untouched.
 
 If a build seems to use the wrong architecture, check the root copy against the
 per-platform one — that mismatch is exactly what per-platform directories exist

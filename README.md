@@ -187,6 +187,11 @@ the bundles, and GitLab's release page links its own per-platform artifacts.
 Linux bundles come as a `.tar.gz` and a `.deb`; Windows as a `.zip`; macOS as a
 `.tar.gz`.
 
+The Windows zip is laid out as a portable RetroArch directory — `cores/` with
+the core, its `.info` and `vnovel/`, and `database/rdb/` with the game database
+— so extracting it into a RetroArch directory is the whole install. `install.bat`
+in the same archive installs into a cores directory somewhere else.
+
 ## Engine data (the KiriKiri polyfill)
 
 The core is one file, but the KiriKiri engine needs a small set of
@@ -237,8 +242,9 @@ costs only the choice of that face — the `Font` option then uses the game's ow
 font.
 
 It ships in every release bundle and in the Debian package, and `install.sh`
-copies it next to the core, so an unpacked bundle and an installed package behave
-identically and neither needs any per-machine setup.
+(and `install.bat` on Windows) copies it next to the core, so an unpacked bundle
+and an installed package behave identically and neither needs any per-machine
+setup.
 
 **The core resolves it with no configuration.** It derives the cores directory
 from its own loaded path and points `KRKRSDL2_DATA_PATH` at the `vnovel/`
