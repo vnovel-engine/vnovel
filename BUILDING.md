@@ -58,6 +58,13 @@ The vendored libraries (SDL 1.2, SDL_mixer, libogg, libvorbis, libmad, bzip2,
 libretro-common) need nothing installed: they are built from the submodule
 `deps-overlay`, symlinked into `deps/` by the Makefile's first rule.
 
+FreeType is the one dependency the release builds pin rather than take from the
+host: `tools/build-freetype.sh <target>` fetches and builds the pinned upstream
+version (2.15.0) as a static archive, and `FREETYPE_PREFIX` makes the core link
+it. The CI does this for every platform, so the same FreeType renders the
+bundled faces everywhere. A local `make` without `FREETYPE_PREFIX` still uses
+the host's `freetype2` through pkg-config, which is fine for development.
+
 ---
 
 ## Linux (native x86_64)
@@ -121,54 +128,64 @@ to make visible.
 ## Windows x86_64 (cross from Linux, mingw)
 
 ```bash
-# 1. Once per tree: build the static vorbis/ogg and freetype the engine links,
-#    and generate the mingw CMake toolchain file. Writes build/mingw-deps/
-#    (gitignored).
+# 1. Once per tree: build the static vorbis/ogg the engine links, and generate
+#    the mingw CMake toolchain file. Writes build/mingw-deps/ (gitignored).
 tools/build-mingw-vorbis.sh
 
-# 2. Then:
-make platform=mingw
+# 2. Build the pinned FreeType both the engine and the core link.
+tools/build-freetype.sh mingw
+
+# 3. Then:
+make platform=mingw FREETYPE_PREFIX=build/freetype/mingw
 ```
 
 The result is `vnovel_libretro.dll` in the repository root.
 
-### Why step 1 is separate
+### Why the dependency steps are separate
 
 The Windows build must be self-contained: it links vorbis (BGM) and freetype
 (fonts) statically rather than importing their DLLs. The mingw sysroot on
 Debian/Ubuntu has no static vorbis and no libfreetype (Arch's does, which is why
-this is only needed off Arch), so `tools/build-mingw-vorbis.sh` builds libogg,
-libvorbis and libfreetype from vendored sources and installs them into
-`build/mingw-deps/{vorbis,freetype}/`. It also writes
+this is only needed off Arch), so `tools/build-mingw-vorbis.sh` builds libogg
+and libvorbis from vendored sources and installs them into
+`build/mingw-deps/vorbis/`. It also writes
 `build/mingw-deps/mingw-toolchain.cmake`, the toolchain file the engine's CMake
 is configured with.
+
+FreeType is built by `tools/build-freetype.sh mingw` into
+`build/freetype/mingw/`, from the pinned upstream tarball. `FREETYPE_PREFIX`
+points both the engine's CMake and the core's SDL_ttf at it, so the Windows
+build uses the same FreeType version as Linux and macOS instead of the vendored
+2.6.3 fork (which predates variable-font support, so the bundled EB Garamond
+rendered differently there). `tools/build-mingw-vorbis.sh` skips its own
+FreeType build when `FREETYPE_PREFIX` is set.
 
 Both live under `build/` (gitignored) so they survive a reboot. A wiped prefix
 does not fail loudly: the engine's configure simply reports "vorbis/freetype
 not found", the build proceeds, and **every `.ogg` track is silently absent**
 (and on a sysroot without freetype, the compile dies at `ft2build.h`).
 
-The script needs `mingw-w64` (`x86_64-w64-mingw32-gcc`, `-g++`, `-windres`,
-`-ar`, `-ranlib`, `-strip`, `x86_64-w64-mingw32-pkg-config`), `cmake`, `ninja`
-and zlib (`libz-mingw-w64-dev`):
+The scripts need `mingw-w64` (`x86_64-w64-mingw32-gcc`, `-g++`, `-windres`,
+`-ar`, `-ranlib`, `-strip`, `x86_64-w64-mingw32-pkg-config`), `cmake`, `ninja`,
+`curl`, `xz-utils` and zlib (`libz-mingw-w64-dev`):
 
 ```bash
 # Debian/Ubuntu
 apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 mingw-w64-tools \
-  cmake ninja-build libz-mingw-w64-dev
+  cmake ninja-build curl xz-utils libz-mingw-w64-dev
 ```
 
-### What `make platform=mingw` needs from step 1
+### What `make platform=mingw` needs from the steps above
 
 | Needed | Why |
 |---|---|
 | `build/mingw-deps/mingw-toolchain.cmake` | Without it CMake configures for the **host**: host-arch archives, and the link then fails with a wall of architecture errors. |
 | `build/mingw-deps/vorbis/{include,lib}` | Without it the engine builds with no `.ogg` decoder — silently. |
-| `build/mingw-deps/freetype/{include,lib}` | Without it the engine and the core find no `ft2build.h`; the engine's `pkg_check_modules(FREETYPE2)` comes up empty. Reached through `PKG_CONFIG_PATH_CUSTOM`, which the cross pkg-config wrapper prepends to its search path. |
+| `build/freetype/mingw/{include,lib}` | Without it the engine and the core find no `ft2build.h`; the engine's `pkg_check_modules(FREETYPE2)` comes up empty. Reached through `PKG_CONFIG_PATH_CUSTOM`, which the cross pkg-config wrapper prepends to its search path. |
 
 SDL2 is **not** taken from the mingw sysroot: the engine vendors SDL2 and links
 its static archive. There is deliberately no fontconfig and no bzip2/brotli on
-Windows: the vendored freetype uses its internal gzip code, so neither is a
+Windows: the static freetype uses its internal gzip code, so neither is a
 dependency.
 
 ---

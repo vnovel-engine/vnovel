@@ -45,8 +45,14 @@ jobs:
           sudo apt-get install -y -qq build-essential pkg-config cmake ninja-build \
             python3 xz-utils unzip libfreetype-dev libsdl2-dev libfontconfig-dev \
             libvorbis-dev
+      - name: Build FreeType
+        run: tools/build-freetype.sh host
       - name: Build
-        run: make -j"$(nproc)"
+        env:
+          # The engine's CMake finds freetype through pkg-config; point it at
+          # the tree just built so the engine and the core use one version.
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/freetype/host/lib/pkgconfig
+        run: make -j"$(nproc)" FREETYPE_PREFIX=build/freetype/host
       - name: Package the bundle and the Debian package
         run: |
           sh ci/package.sh linux-x86_64
@@ -80,8 +86,12 @@ jobs:
           sudo apt-get install -y -qq build-essential pkg-config cmake ninja-build \
             python3 xz-utils unzip libfreetype-dev libsdl2-dev libfontconfig-dev \
             libvorbis-dev
+      - name: Build FreeType
+        run: tools/build-freetype.sh host
       - name: Build
-        run: make -j"$(nproc)"
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/freetype/host/lib/pkgconfig
+        run: make -j"$(nproc)" FREETYPE_PREFIX=build/freetype/host
       - name: Package the bundle and the Debian package
         run: |
           sh ci/package.sh linux-aarch64
@@ -107,14 +117,16 @@ jobs:
           sudo apt-get install -y -qq build-essential pkg-config cmake ninja-build \
             python3 zip unzip xz-utils gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
             mingw-w64-tools libz-mingw-w64-dev
-      - name: Build the static vorbis, ogg and freetype the engine links
+      - name: Build FreeType
+        run: tools/build-freetype.sh mingw
+      - name: Build the static vorbis and ogg the engine links
         # Separate from the core build on purpose: it installs into
         # build/mingw-deps/, and without it the engine builds with no .ogg
-        # decoder and no freetype — silently, with the build still succeeding
-        # (or, on a sysroot without freetype, dying at ft2build.h).
-        run: tools/build-mingw-vorbis.sh
+        # decoder — silently, with the build still succeeding. FreeType is
+        # built by the step above, so the vendored 2.6.3 tree is skipped.
+        run: FREETYPE_PREFIX=build/freetype/mingw tools/build-mingw-vorbis.sh
       - name: Build
-        run: make -j"$(nproc)" platform=mingw
+        run: make -j"$(nproc)" platform=mingw FREETYPE_PREFIX=build/freetype/mingw
       - name: Package the bundle
         run: sh ci/package.sh windows-x86_64
       - name: Verify
@@ -139,14 +151,16 @@ jobs:
           submodules: recursive
       - name: Install build dependencies
         run: brew install pkg-config cmake ninja sdl2 freetype fontconfig libvorbis
+      - name: Build FreeType
+        run: tools/build-freetype.sh host
       - name: Build
         env:
-          # freetype is keg-only, so Homebrew does not link its .pc file into
-          # the shared pkgconfig directory and neither the core's own ft2build.h
-          # include nor the engine's freetype lookup would resolve. sdl2,
-          # fontconfig and libvorbis are not keg-only and are found already.
-          PKG_CONFIG_PATH: /opt/homebrew/opt/freetype/lib/pkgconfig
-        run: make -j"$(sysctl -n hw.ncpu)"
+          # The engine's CMake finds freetype through pkg-config; point it at
+          # the tree just built so the engine and the core use one version.
+          # Homebrew's is kept as a fallback. sdl2, fontconfig and libvorbis
+          # are not keg-only and are found already.
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/freetype/host/lib/pkgconfig:/opt/homebrew/opt/freetype/lib/pkgconfig
+        run: make -j"$(sysctl -n hw.ncpu)" FREETYPE_PREFIX=build/freetype/host
       - name: Package the bundle
         run: sh ci/package.sh macos-arm64
       - name: Verify

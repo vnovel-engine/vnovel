@@ -33,6 +33,11 @@ endif
 # KiriKiri archive rule is defined above `all`.
 .DEFAULT_GOAL := all
 CORE_DIR     := .
+# Optional: a FreeType prefix built by tools/build-freetype.sh. When set, every
+# platform links that static archive instead of the host's -lfreetype, so the
+# same FreeType version is used everywhere (the bundled EB Garamond is a
+# variable font, and FreeType 2.6.3 predates variable-font support).
+FREETYPE_PREFIX ?=
 # C/C++ sources. The Makefiles and generated manifests (sdl-vendored.h)
 # stay at $(CORE_DIR) so `make` runs from a pristine clone; only the sources
 # move here.
@@ -107,8 +112,13 @@ PKG_CONFIG ?= pkg-config
 ifeq ($(platform), unix)
    TARGET_EXT := .so
    fpic    := -fPIC
-   CXXFLAGS += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
-   CFLAGS   += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+   ifneq ($(FREETYPE_PREFIX),)
+      CXXFLAGS += -I$(FREETYPE_PREFIX)/include/freetype2
+      CFLAGS   += -I$(FREETYPE_PREFIX)/include/freetype2
+   else
+      CXXFLAGS += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+      CFLAGS   += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+   endif
    SHARED  := -shared -Wl,--no-undefined
    LINK_EXTRA := $(LINK_EXTRA_unix)
    LDFLAGS += $(LINK_LIBS_unix)
@@ -167,8 +177,13 @@ else ifeq ($(platform), aarch64)
    # whatever the linker finds first, which on a multiarch host is the amd64
    # library, and once the sysroot only carries arm64 the link fails with
    # "cannot find -lfreetype".
-   AARCH64_FT_CFLAGS := $(shell $(AARCH64_PKG_ENV) $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
-   AARCH64_FT_LIBS   := $(shell $(AARCH64_PKG_ENV) $(PKG_CONFIG) --libs freetype2 2>/dev/null)
+   ifneq ($(FREETYPE_PREFIX),)
+      AARCH64_FT_CFLAGS := -I$(FREETYPE_PREFIX)/include/freetype2
+      AARCH64_FT_LIBS   := $(FREETYPE_PREFIX)/lib/libfreetype.a
+   else
+      AARCH64_FT_CFLAGS := $(shell $(AARCH64_PKG_ENV) $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+      AARCH64_FT_LIBS   := $(shell $(AARCH64_PKG_ENV) $(PKG_CONFIG) --libs freetype2 2>/dev/null)
+   endif
    LDFLAGS  += $(if $(AARCH64_FT_LIBS),$(AARCH64_FT_LIBS),-lfreetype)
    CXXFLAGS += $(AARCH64_FT_CFLAGS)
    CFLAGS   += $(AARCH64_FT_CFLAGS)
@@ -211,7 +226,7 @@ else ifeq ($(platform), mingw)
    # build/mingw-deps/freetype/lib/pkgconfig/. The mingw sysroot on
    # Debian/Ubuntu has no libfreetype.a (and no freetype2.pc); Arch's does, so
    # on Arch this just shadows it with the same vendored source.
-   MINGW_FT_PREFIX := $(KRKR_MINGW_DEPS)/freetype
+   MINGW_FT_PREFIX := $(if $(FREETYPE_PREFIX),$(FREETYPE_PREFIX),$(KRKR_MINGW_DEPS)/freetype)
    MINGW_FT_PKGCONFIG := $(MINGW_FT_PREFIX)/lib/pkgconfig
    # The engine resolves FreeType with pkg_check_modules(), and CMake otherwise
    # runs the HOST pkg-config — which reports /usr/include and /usr/lib, so the
@@ -338,9 +353,15 @@ else ifneq (,$(findstring osx,$(platform)))
    # it dyld resolves what the linker could not at load time, turning a link
    # error into a runtime one.
    SHARED  := -dynamiclib -Wl,-undefined,error
-   CXXFLAGS += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
-   CFLAGS   += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
-   LDFLAGS  += $(shell $(PKG_CONFIG) --libs freetype2 2>/dev/null)
+   ifneq ($(FREETYPE_PREFIX),)
+      CXXFLAGS += -I$(FREETYPE_PREFIX)/include/freetype2
+      CFLAGS   += -I$(FREETYPE_PREFIX)/include/freetype2
+      LDFLAGS  += $(FREETYPE_PREFIX)/lib/libfreetype.a
+   else
+      CXXFLAGS += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+      CFLAGS   += $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+      LDFLAGS  += $(shell $(PKG_CONFIG) --libs freetype2 2>/dev/null)
+   endif
    # dyld has no $ORIGIN; @loader_path is the equivalent anchor. Kept for the
    # same reason as on ELF: the vendored font directory and any plugin the
    # overrides table names resolve relative to the core.

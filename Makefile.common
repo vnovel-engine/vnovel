@@ -78,8 +78,14 @@ CFLAGS += -DFPM_DEFAULT -DSIZEOF_INT=4
 # SDL_mixer config
 CFLAGS += -DOGG_MUSIC -DMP3_MAD_MUSIC
 
-# Thread library
+# Thread library. With FREETYPE_PREFIX the static archive is named by path, so
+# the same FreeType version is linked on every platform; otherwise the host's
+# -lfreetype is used.
+ifneq ($(FREETYPE_PREFIX),)
+LDFLAGS += -lpthread $(FREETYPE_PREFIX)/lib/libfreetype.a
+else
 LDFLAGS += -lpthread -lfreetype
+endif
 
 # Source files
 

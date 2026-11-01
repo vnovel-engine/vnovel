@@ -5,6 +5,16 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
 ## Unreleased
 
+### Changed
+
+- **Every release build links the same, current FreeType.** The Windows build
+  used the vendored `krkrz` fork at 2.6.3 while Linux and macOS linked whatever
+  the host had. The bundled EB Garamond is a variable font, which 2.6.3
+  predates, so the same face rendered differently across platforms.
+  `tools/build-freetype.sh` now fetches and builds the pinned upstream version
+  (2.15.0) as a static archive for each target, and `FREETYPE_PREFIX` makes the
+  core link it. The Windows DLL still imports no FreeType DLL.
+
 ### Fixed
 
 - **Total-fit wrapping no longer breaks a word in the middle.** The engine's

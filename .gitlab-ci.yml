@@ -48,7 +48,8 @@ build:linux-x86_64:
       cmake ninja-build libfreetype-dev libsdl2-dev libfontconfig-dev
       libvorbis-dev
   script:
-    - make -j"$(nproc)"
+    - tools/build-freetype.sh host
+    - PKG_CONFIG_PATH="$PWD/build/freetype/host/lib/pkgconfig" make -j"$(nproc)" FREETYPE_PREFIX=build/freetype/host
     - sh ci/package.sh "$PLATFORM"
     - sh ci/deb.sh amd64 "$(sh ci/version.sh | sed 's/^v//')" vnovel_libretro.so
 
@@ -87,7 +88,8 @@ build:linux-aarch64:
     - apt-get install -y -qq libfreetype-dev:arm64 libsdl2-dev:arm64
       libfontconfig-dev:arm64 libvorbis-dev:arm64
   script:
-    - make -j"$(nproc)" platform=aarch64
+    - tools/build-freetype.sh aarch64
+    - PKG_CONFIG_PATH="$PWD/build/freetype/aarch64/lib/pkgconfig" make -j"$(nproc)" platform=aarch64 FREETYPE_PREFIX=build/freetype/aarch64
     - sh ci/package.sh "$PLATFORM"
     - sh ci/deb.sh arm64 "$(sh ci/version.sh | sed 's/^v//')" vnovel_libretro.so
 
@@ -107,10 +109,12 @@ build:windows-x86_64:
       cmake ninja-build zip unzip gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
       mingw-w64-tools libz-mingw-w64-dev
   script:
+    - tools/build-freetype.sh mingw
     # The static vorbis the engine links comes first and is separate: without
-    # it the engine builds with no .ogg decoder, silently.
-    - tools/build-mingw-vorbis.sh
-    - make -j"$(nproc)" platform=mingw
+    # it the engine builds with no .ogg decoder, silently. FreeType is built
+    # above, so the vendored 2.6.3 tree is skipped.
+    - FREETYPE_PREFIX=build/freetype/mingw tools/build-mingw-vorbis.sh
+    - make -j"$(nproc)" platform=mingw FREETYPE_PREFIX=build/freetype/mingw
     - sh ci/package.sh "$PLATFORM"
 
 # package

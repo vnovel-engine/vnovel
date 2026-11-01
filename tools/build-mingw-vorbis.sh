@@ -112,6 +112,11 @@ echo "installed static libogg/libvorbis into $VORBIS_PREFIX"
 # engine's pkg_check_modules(FREETYPE2) and the core's FT_CFLAGS/FT_LIBS both
 # consume; it is reached through PKG_CONFIG_PATH (Debian's wrapper) and
 # PKG_CONFIG_PATH_CUSTOM (Arch's wrapper) — see the Makefile's mingw block.
+# When FREETYPE_PREFIX names a tree built by tools/build-freetype.sh, the
+# Makefile links that instead, so the vendored 2.6.3 build is skipped.
+if [ -n "${FREETYPE_PREFIX:-}" ]; then
+  echo "skipping vendored freetype; FREETYPE_PREFIX=$FREETYPE_PREFIX"
+else
 FT_PREFIX="$PREFIX/freetype"
 FT_BUILD="${FT_BUILD:-$DEPBUILD/bo-ft}"
 rm -rf "$FT_BUILD" "$FT_PREFIX"
@@ -159,4 +164,9 @@ EOF
 
 echo
 echo "installed static libfreetype into $FT_PREFIX"
-ls -1 "$PREFIX"/{vorbis,freetype}/lib/*.a
+fi
+
+echo
+echo "installed static libogg/libvorbis into $VORBIS_PREFIX"
+ls -1 "$PREFIX"/vorbis/lib/*.a
+[ -d "$PREFIX/freetype" ] && ls -1 "$PREFIX"/freetype/lib/*.a || true
