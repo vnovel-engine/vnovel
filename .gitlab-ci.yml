@@ -46,7 +46,7 @@ build:linux-x86_64:
     - apt-get update -qq
     - apt-get install -y -qq build-essential pkg-config ca-certificates python3
       cmake ninja-build libfreetype-dev libsdl2-dev libfontconfig-dev
-      libvorbis-dev
+      libvorbis-dev curl xz-utils
   script:
     - tools/build-freetype.sh host
     - PKG_CONFIG_PATH="$PWD/build/freetype/host/lib/pkgconfig" make -j"$(nproc)" FREETYPE_PREFIX=build/freetype/host
@@ -85,6 +85,7 @@ build:linux-aarch64:
     - apt-get update -qq
     - apt-get install -y -qq build-essential pkg-config ca-certificates python3
       cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      curl xz-utils
     - apt-get install -y -qq libfreetype-dev:arm64 libsdl2-dev:arm64
       libfontconfig-dev:arm64 libvorbis-dev:arm64
   script:
@@ -107,7 +108,7 @@ build:windows-x86_64:
     - apt-get update -qq
     - apt-get install -y -qq build-essential pkg-config ca-certificates python3
       cmake ninja-build zip unzip gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
-      mingw-w64-tools libz-mingw-w64-dev
+      mingw-w64-tools libz-mingw-w64-dev curl xz-utils
   script:
     - tools/build-freetype.sh mingw
     # The static vorbis the engine links comes first and is separate: without
