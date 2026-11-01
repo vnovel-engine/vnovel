@@ -351,7 +351,11 @@ extern "C"
           "comfortably. Applied to the size the game's script asked for, so the "
           "text box, line spacing and line wrapping all grow with the text "
           "instead of the text outgrowing them. 100% leaves the game's size "
-          "alone.",
+          "alone. Not applied on KiriKiri yet: each glyph is drawn into a "
+          "surface sized from the game's own metrics, so a larger size clips "
+          "the bottom of every glyph. The option is kept for the other engines "
+          "and will be enabled for KiriKiri once that surface is sized from the "
+          "scaled metrics.",
           {
                 {"50", NULL}, {"55", NULL}, {"60", NULL}, {"65", NULL}, {"70", NULL}, {"75", NULL},
                 {"80", NULL}, {"85", NULL}, {"90", NULL}, {"95", NULL}, {"100", NULL}, {"105", NULL},

@@ -3,7 +3,7 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
-## Unreleased
+## 1.0.0-rc8 — 2026-11-01
 
 ### Fixed
 
@@ -15,6 +15,16 @@ of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
   engine's default (with Mona second for glyphs it lacks), so a game that names
   a face the host does not have — its own font, installed system-wide on
   Windows — gets the chosen face instead of Mona.
+
+### Changed
+
+- **`Font Size` no longer applies on KiriKiri.** Each glyph is drawn into a
+  surface sized from the game's own font metrics, so any size above 100% made
+  the ink overflow that surface and clipped the bottom of every glyph (at 150%
+  the descenders and the lower third were gone). The option is neutralised for
+  KiriKiri until that surface is sized from the scaled metrics; the option, the
+  bridge helper and the core option are all intact, and its description now
+  says so. The other engines are unaffected.
 
 ## 1.0.0-rc7 — 2026-11-01
 
