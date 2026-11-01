@@ -10,12 +10,13 @@ rem The Windows counterpart of install.sh. The core is one self-contained DLL
 rem (the runtime and both engines are linked in), so this installs the single
 rem .dll. The database and the core-info file go to RetroArch's own directories
 rem so the frontend can name games on a scan, and the KiriKiri engine data goes
-rem beside the core as vnovel\.
+rem to the frontend's system directory as vnovel\.
 rem
 rem Two bundle shapes are understood:
-rem   flat      the core, the .info, vnovel.rdb and this script side by side
-rem   drop-in   cores\ and database\rdb\ at the root, so extracting the archive
-rem             into a portable RetroArch directory is the whole install
+rem   flat      the core, the .info, vnovel.rdb, vnovel\ and this script side
+rem             by side
+rem   drop-in   cores\, system\ and database\rdb\ at the root, so extracting the
+rem             archive into a portable RetroArch directory is the whole install
 rem
 rem Plain cmd.exe; no PowerShell, no WSL, no external tools.
 
@@ -26,12 +27,14 @@ set "HERE=%~dp0"
 if "%HERE:~-1%"=="\" set "HERE=%HERE:~0,-1%"
 
 rem Where the bundle's own files are. The drop-in archive keeps the core under
-rem cores\ and the database under database\rdb\; the flat bundle keeps them
-rem beside this script.
+rem cores\, the database under database\rdb\ and the engine data under system\;
+rem the flat bundle keeps them beside this script.
 set "SRC_CORES=%HERE%"
 set "SRC_DB=%HERE%"
+set "SRC_SYSTEM=%HERE%"
 if exist "%HERE%\cores\vnovel_libretro.dll" set "SRC_CORES=%HERE%\cores"
 if exist "%HERE%\database\rdb\vnovel.rdb" set "SRC_DB=%HERE%\database\rdb"
+if exist "%HERE%\system\vnovel\overrides.txt" set "SRC_SYSTEM=%HERE%\system"
 
 rem The single artifact this release ships. A bundle carries exactly one, under
 rem the platform's own extension; the first that exists is the one installed.
@@ -41,6 +44,7 @@ set "INFO=vnovel_libretro.info"
 set "RDB=vnovel.rdb"
 
 set "CORES_DIR="
+set "SYSTEM_DIR="
 set "UNINSTALL=0"
 set "DRY=0"
 set "RC=0"
@@ -48,6 +52,7 @@ set "RC=0"
 :parse
 if "%~1"=="" goto :parsed
 if /i "%~1"=="--dir" goto :arg_dir
+if /i "%~1"=="--system-dir" goto :arg_system_dir
 if /i "%~1"=="--uninstall" goto :arg_uninstall
 if /i "%~1"=="--dry-run" goto :arg_dry
 if /i "%~1"=="--prefix" goto :arg_prefix
@@ -70,6 +75,18 @@ echo %PROG%: --dir needs an argument>&2
 set "RC=1"
 goto :finish
 
+:arg_system_dir
+if "%~2"=="" goto :arg_system_dir_missing
+set "SYSTEM_DIR=%~2"
+shift
+shift
+goto :parse
+
+:arg_system_dir_missing
+echo %PROG%: --system-dir needs an argument>&2
+set "RC=1"
+goto :finish
+
 :arg_uninstall
 set "UNINSTALL=1"
 shift
@@ -88,10 +105,12 @@ goto :finish
 :usage
 echo Usage: %PROG% [options]
 echo.
-echo   --dir DIR      install the core into DIR (the frontend's cores directory)
-echo   --uninstall    remove a previously installed core
-echo   --dry-run      print what would be done, install nothing
-echo   -h, --help     this help
+echo   --dir DIR         install the core into DIR (the frontend's cores directory)
+echo   --system-dir DIR  the frontend's system directory; the engine data goes in
+echo                     DIR\vnovel (default: derived from --dir)
+echo   --uninstall       remove a previously installed core
+echo   --dry-run         print what would be done, install nothing
+echo   -h, --help        this help
 echo.
 echo With no --dir, the bundle's own cores\ directory is used when it has one
 echo (the drop-in archive), then common RetroArch locations are probed.
@@ -145,6 +164,15 @@ goto :no_db
 for %%A in ("%CORES_DIR%\..\database\rdb") do set "DB_DIR=%%~fA"
 :no_db
 
+rem The engine data lives in the frontend's system directory, as vnovel\.
+rem The drop-in archive already carries system\ beside cores\.
+if not defined SYSTEM_DIR if exist "%HERE%\system\vnovel\overrides.txt" if /i "%CORES_DIR%"=="%HERE%\cores" set "SYSTEM_DIR=%HERE%\system"
+rem Otherwise derive it from the cores directory, when that sits under a
+rem RetroArch config directory.
+if not defined SYSTEM_DIR if exist "%CORES_DIR%\..\retroarch.cfg" for %%A in ("%CORES_DIR%\..\system") do set "SYSTEM_DIR=%%~fA"
+if not defined SYSTEM_DIR if exist "%CORES_DIR%\..\database" for %%A in ("%CORES_DIR%\..\system") do set "SYSTEM_DIR=%%~fA"
+if defined SYSTEM_DIR for %%A in ("%SYSTEM_DIR%\.") do set "SYSTEM_DIR=%%~fA"
+
 if not defined CORE goto :no_core
 if not exist "%SRC_CORES%\%CORE%" goto :no_core
 
@@ -179,26 +207,28 @@ goto :no_rdb
 echo note: install %RDB% into your frontend's database\rdb directory to get game names
 :no_rdb
 
-rem The KiriKiri engine's data, as vnovel\ beside the core. Not optional: without
-rem system_polyfill\ the engine has no scenario parser and no .xp3 game can
-rem boot, and without overrides.txt it tries to load the game's own Windows
-rem plugins and aborts startup. The core finds the directory from its own path,
-rem so it must sit next to the core and not somewhere else.
+rem The KiriKiri engine's data, as vnovel\ in the frontend's system directory.
+rem Not optional: without system_polyfill\ the engine has no scenario parser and
+rem no .xp3 game can boot, and without overrides.txt it tries to load the game's
+rem own Windows plugins and aborts startup.
 rem
 rem Merged rather than replaced: a reader may have dropped in a font of their
 rem own under one of the shipped names, and install.sh merges for the same
 rem reason.
-if not exist "%SRC_CORES%\vnovel" goto :no_engdata
-echo install vnovel\ (engine data) -^> %CORES_DIR%\
+if not exist "%SRC_SYSTEM%\vnovel" goto :no_engdata
+if not defined SYSTEM_DIR goto :no_system_dir
+echo install vnovel\ (engine data) -^> %SYSTEM_DIR%\
 if "%DRY%"=="1" goto :after_engdata
-call :install_tree "%SRC_CORES%\vnovel" "%CORES_DIR%\vnovel"
+if not exist "%SYSTEM_DIR%" mkdir "%SYSTEM_DIR%"
+if errorlevel 1 goto :fail_system_mkdir
+call :install_tree "%SRC_SYSTEM%\vnovel" "%SYSTEM_DIR%\vnovel"
 if errorlevel 1 goto :fail_engdata
 rem Load-bearing and silently fatal when missing: the parser is the whole
 rem polyfill, and the override table is what stops the engine from trying to
 rem run the game's own PE plugins.
-if not exist "%CORES_DIR%\vnovel\overrides.txt" goto :fail_engdata
-if not exist "%CORES_DIR%\vnovel\system_polyfill\PluginStubs.tjs" goto :fail_engdata
-if not exist "%CORES_DIR%\vnovel\system_polyfill\KAGParser.tjs" goto :fail_engdata
+if not exist "%SYSTEM_DIR%\vnovel\overrides.txt" goto :fail_engdata
+if not exist "%SYSTEM_DIR%\vnovel\system_polyfill\PluginStubs.tjs" goto :fail_engdata
+if not exist "%SYSTEM_DIR%\vnovel\system_polyfill\KAGParser.tjs" goto :fail_engdata
 :after_engdata
 
 echo done. Load the 'VNovel' core; select a game's nscript.dat, pscript.dat or data.xp3.
@@ -228,6 +258,16 @@ goto :finish
 
 :fail_db_mkdir
 echo %PROG%: cannot create %DB_DIR%>&2
+set "RC=1"
+goto :finish
+
+:fail_system_mkdir
+echo %PROG%: cannot create %SYSTEM_DIR%>&2
+set "RC=1"
+goto :finish
+
+:no_system_dir
+echo %PROG%: cannot work out the system directory from %CORES_DIR%; pass --system-dir>&2
 set "RC=1"
 goto :finish
 

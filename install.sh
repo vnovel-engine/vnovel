@@ -10,7 +10,8 @@
 # The core is one self-contained shared library (the runtime and both engines
 # are linked in), so this installs the single .so. The database and the
 # core-info file go to RetroArch's own directories so the frontend can name
-# games on a scan.
+# games on a scan. The KiriKiri engine data goes to the frontend's system
+# directory as vnovel/ (or, with --prefix, to <prefix>/share/krkrsdl2).
 #
 # POSIX sh; no bashisms, so it runs on BusyBox (Recalbox, LibreELEC, batocera).
 
@@ -34,6 +35,7 @@ RDB="vnovel.rdb"
 
 cores_dir=""
 prefix=""
+system_dir=""
 uninstall=0
 dry=0
 
@@ -41,11 +43,14 @@ usage() {
 	cat <<EOF
 Usage: $PROG [options]
 
-  --dir DIR      install the core into DIR (the frontend's cores directory)
-  --prefix DIR   install under DIR: <DIR>/lib/libretro (default /usr/local)
-  --uninstall    remove a previously installed core
-  --dry-run      print what would be done, install nothing
-  -h, --help     this help
+  --dir DIR         install the core into DIR (the frontend's cores directory)
+  --prefix DIR      install under DIR: <DIR>/lib/libretro, data in
+                    <DIR>/share/krkrsdl2
+  --system-dir DIR  the frontend's system directory; the engine data goes in
+                    <DIR>/vnovel (default: derived from --dir)
+  --uninstall       remove a previously installed core
+  --dry-run         print what would be done, install nothing
+  -h, --help        this help
 
 With neither --dir nor --prefix, common RetroArch locations are probed and the
 first existing one is used.
@@ -59,6 +64,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--dir)      [ $# -ge 2 ] || die "--dir needs an argument"; cores_dir=$2; shift 2 ;;
 		--prefix)   [ $# -ge 2 ] || die "--prefix needs an argument"; prefix=$2; shift 2 ;;
+		--system-dir) [ $# -ge 2 ] || die "--system-dir needs an argument"; system_dir=$2; shift 2 ;;
 		--uninstall) uninstall=1; shift ;;
 		--dry-run)  dry=1; shift ;;
 		-h|--help)  usage; exit 0 ;;
@@ -89,6 +95,34 @@ if [ -z "$cores_dir" ]; then
 fi
 
 [ -n "$cores_dir" ] || die "no cores directory found; pass --dir or --prefix"
+
+# The engine data lives in the frontend's system directory, as vnovel/, the
+# same place the other cores keep theirs (Dolphin's system/dolphin-emu,
+# PPSSPP's system/PPSSPP). A package installs it in its own share directory
+# instead, which is the layout the engine's compiled-in default expects.
+data_dir=""
+if [ -n "$system_dir" ]; then
+	data_dir="$system_dir/vnovel"
+elif [ -n "$prefix" ]; then
+	data_dir="$prefix/share/krkrsdl2"
+else
+	case "$cores_dir" in
+		*/cores)
+			base=${cores_dir%/cores}
+			[ -d "$base" ] && system_dir="$base/system"
+			;;
+	esac
+	[ -n "$system_dir" ] || \
+		die "cannot work out the system directory from $cores_dir; pass --system-dir"
+	data_dir="$system_dir/vnovel"
+fi
+
+# The core's compiled-in package path is /usr/share/krkrsdl2. A prefix other
+# than /usr needs the environment variable, because the core cannot know where
+# it was installed.
+if [ -n "$prefix" ] && [ "$prefix" != "/usr" ]; then
+	say "note: set KRKRSDL2_DATA_PATH=$data_dir for a $prefix install"
+fi
 
 # The database lives beside the frontend config, not beside the cores. Derive
 # it from the cores path when it is the usual <config>/retroarch/cores shape.
@@ -153,33 +187,30 @@ if [ -f "$HERE/$RDB" ]; then
 	fi
 fi
 
-# The KiriKiri engine's data, as vnovel/ beside the core. Not optional: without
-# system_polyfill/ the engine has no scenario parser and no .xp3 game can boot,
-# and without overrides.txt it tries to load the game's own Windows plugins and
-# aborts startup. The core finds the directory from its own path, so it must sit
-# next to the core and not somewhere else.
+# The KiriKiri engine's data, as vnovel/ in the frontend's system directory
+# (or directly in the package's share directory with --prefix). Not optional:
+# without system_polyfill/ the engine has no scenario parser and no .xp3 game
+# can boot, and without overrides.txt it tries to load the game's own Windows
+# plugins and aborts startup.
 #
 # Copied whole rather than file by file so a future addition to the engine's
 # data travels without this script being updated.
 if [ -d "$HERE/vnovel" ]; then
-	say "install vnovel/ (engine data) -> $cores_dir/"
+	say "install vnovel/ (engine data) -> $data_dir/"
+	[ "$dry" -eq 1 ] || mkdir -p "$data_dir" || die "cannot create $data_dir"
 	if [ "$dry" -eq 1 ]; then
 		:
-	elif [ -d "$cores_dir/vnovel" ]; then
-		# Merge, and remove stale files: an upgrade must not leave a renamed
-		# or withdrawn .tjs behind to be loaded.
-		cp -R "$HERE/vnovel/." "$cores_dir/vnovel/" 2>/dev/null ||
-			die "failed to install vnovel/"
 	else
-		cp -R "$HERE/vnovel" "$cores_dir/vnovel" || die "failed to install vnovel/"
+		cp -R "$HERE/vnovel/." "$data_dir/" 2>/dev/null ||
+			die "failed to install vnovel/"
 	fi
 	# Load-bearing and silently fatal when missing: the parser is the whole
 	# polyfill, and the override table is what stops the engine from trying to
 	# run the game's own PE plugins.
-	for req in vnovel/overrides.txt vnovel/system_polyfill/PluginStubs.tjs \
-		vnovel/system_polyfill/KAGParser.tjs
+	for req in overrides.txt system_polyfill/PluginStubs.tjs \
+		system_polyfill/KAGParser.tjs
 	do
-		if [ "$dry" -eq 0 ] && [ ! -r "$cores_dir/$req" ]; then
+		if [ "$dry" -eq 0 ] && [ ! -r "$data_dir/$req" ]; then
 			die "$req missing after install; KiriKiri games will not run"
 		fi
 	done

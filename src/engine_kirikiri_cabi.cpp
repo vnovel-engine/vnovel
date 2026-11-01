@@ -498,7 +498,8 @@ extern "C"
        * selectable font faces) is already set by this point.
        *
        * resolve_font_dir() in libretro.cpp sets KRKRSDL2_DATA_PATH from the
-       * libretro core path, and it has to: the frontend only answers
+       * frontend's system directory, the libretro core path, or the packaged
+       * /usr/share/krkrsdl2, and it has to: the frontend only answers
        * RETRO_ENVIRONMENT_GET_LIBRETRO_PATH from within retro_set_environment(),
        * which the libretro API documents, so asking here — on the engine's own
        * init thread, long after — returns nothing and the engine would fall

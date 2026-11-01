@@ -56,15 +56,17 @@ case "$platform" in
 	windows-*)
 		core_dir="$stage/cores"
 		db_dir="$stage/database/rdb"
+		data_dir="$stage/system/vnovel"
 		required="$core vnovel_libretro.info vnovel.rdb install.bat"
 		;;
 	*)
 		core_dir="$stage"
 		db_dir="$stage"
+		data_dir="$stage/vnovel"
 		required="$core vnovel_libretro.info vnovel.rdb install.sh"
 		;;
 esac
-mkdir -p "$core_dir" "$db_dir"
+mkdir -p "$core_dir" "$db_dir" "$data_dir"
 
 for f in $required; do
 	[ -f "$f" ] || { echo "package: missing required file: $f" >&2; exit 1; }
@@ -75,7 +77,9 @@ for f in $required; do
 	esac
 done
 
-# The KiriKiri engine's non-compiled data, under vnovel/ beside the core.
+# The KiriKiri engine's non-compiled data, under vnovel/ in the frontend's
+# system directory (system/vnovel/ in the Windows drop-in archive, vnovel/ at
+# the root of the flat bundles).
 #
 # Not optional, and not cosmetic: without system_polyfill/ the engine has no
 # scenario parser and a .xp3 game cannot boot at all, and without overrides.txt
@@ -84,14 +88,14 @@ done
 # loaded from), so a bundle that omits it produces a core that starts and then
 # fails on every KiriKiri game — which is exactly what earlier bundles did.
 #
-# The installers copy the whole tree next to the core, so the layout here is
-# the layout at the frontend's cores directory.
+# The installers copy the whole tree into the frontend's system directory, so
+# the layout here is the layout at that directory.
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 engdata_src="$repo_dir/deps/krkrsdl2/data"
 if [ -d "$engdata_src/system_polyfill" ]; then
-	mkdir -p "$core_dir/vnovel/system_polyfill"
-	cp "$engdata_src/overrides.txt" "$engdata_src/mona.ttf" "$core_dir/vnovel/"
-	cp "$engdata_src"/system_polyfill/*.tjs "$core_dir/vnovel/system_polyfill/"
+	mkdir -p "$data_dir/system_polyfill"
+	cp "$engdata_src/overrides.txt" "$engdata_src/mona.ttf" "$data_dir/"
+	cp "$engdata_src"/system_polyfill/*.tjs "$data_dir/system_polyfill/"
 else
 	echo "package: ERROR: $engdata_src/system_polyfill missing" >&2
 	echo "package: the engine cannot run a KiriKiri game without it" >&2
@@ -107,7 +111,7 @@ for f in ComicNeue-Regular.ttf OpenDyslexic-Regular.otf \
 	BIZUDPGothic-Regular.ttf
 do
 	[ -f "$repo_dir/resources/fonts/$f" ] || continue
-	cp "$repo_dir/resources/fonts/$f" "$core_dir/vnovel/"
+	cp "$repo_dir/resources/fonts/$f" "$data_dir/"
 done
 
 # The logo, for the README the bundle ships and for anything that wants artwork.
@@ -157,9 +161,9 @@ esac
 case "$platform" in
 	windows-*)
 		hint='Extract this archive into your RetroArch directory (the one with
-retroarch.exe): the cores/ and database/ trees land where the frontend reads
-them, so nothing else is needed. To install into a cores directory somewhere
-else, run:
+retroarch.exe): the cores/, system/ and database/ trees land where the frontend
+reads them, so nothing else is needed. To install into a cores directory
+somewhere else, run:
 
     install.bat --dir "C:\path\to\cores"'
 		;;

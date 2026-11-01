@@ -2673,19 +2673,23 @@ static const char *font_face_files[FONT_OPTION_MAX + 1];  /* value index -> file
  * KAG polyfill already live in, where tools/deploy-engine-data.sh installs the
  * faces. It is found the same way src/engine_kirikiri_cabi.cpp finds it, and
  * both must agree or the KiriKiri engine would look in one place while the
- * ONScripter engines looked in another:
+ * ONScripter engines looked in another. In order:
  *
  *   KRKRSDL2_DATA_PATH      set explicitly by a launcher, or by the KiriKiri
  *                           engine at its own init. An explicit value is the
  *                           user's decision and wins.
- *   <cores dir>/vnovel      the packaged location, derived from
- *                           RETRO_ENVIRONMENT_GET_LIBRETRO_PATH — the
- *                           directory the core was loaded from, which is the
- *                           one a package is entitled to write.
- *
- * Deliberately NOT the system ("BIOS") directory: that one is the user's, so a
- * package must not install into it, and depending on a copy there is what made
- * a KiriKiri game fail to boot on a stock install.
+ *   <system dir>/vnovel     the frontend's system directory, where the drop-in
+ *                           archive and install.sh put it. This is the
+ *                           convention the other cores follow (Dolphin's
+ *                           system/dolphin-emu, PPSSPP's system/PPSSPP).
+ *   <cores dir>/vnovel      beside the core, derived from
+ *                           RETRO_ENVIRONMENT_GET_LIBRETRO_PATH. The portable
+ *                           location, and the one a package that installs into
+ *                           the cores directory owns.
+ *   /usr/share/krkrsdl2     the system-wide package location, which is also
+ *                           the engine's compiled-in default. A .deb installs
+ *                           there: a package cannot write to the user's system
+ *                           directory.
  *
  * Called before the `Font` option's values are built, which is what needs the
  * directory. The frontend calls SET_ENVIRONMENT more than once, and the
@@ -2698,42 +2702,78 @@ void resolve_font_dir(void)
 
    if ((!dir || !dir[0]) && (!vnovel_font_dir || !vnovel_font_dir[0]))
    {
-      const char *coredir = NULL;
-      if (environ_cb(RETRO_ENVIRONMENT_GET_LIBRETRO_PATH, &coredir) &&
-          coredir && coredir[0])
+      static char dirbuf[PATH_MAX_LENGTH];
+      static char probebuf[PATH_MAX_LENGTH];
+      struct stat st;
+
+      /* Only accept a directory if it exists (the vnovel/ subdirectory is the
+       * marker), for the same reason the engine probes for the polyfill: an
+       * empty vnovel/ directory means nothing was installed and the option
+       * should offer no faces rather than five that cannot be opened.
+       *
+       * A local stat rather than libretro-common's path_is_directory: that
+       * helper lives in a file this build does not link (the core links only
+       * the compat/encodings subset), and pulling it in for one check would
+       * be a worse trade than three lines here. */
+
+      /* The frontend's system directory: where the drop-in archive and
+       * install.sh put the data, and the convention the other cores follow. */
+      const char *sysdir = NULL;
+      if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysdir) &&
+          sysdir && sysdir[0])
       {
-         static char dirbuf[PATH_MAX_LENGTH];
-         static char probebuf[PATH_MAX_LENGTH];
-         /* The frontend reports the core's own file, not its directory. */
-         snprintf(dirbuf, sizeof(dirbuf), "%s", coredir);
-         char *slash = strrchr(dirbuf, '/');
-#ifdef _WIN32
-         char *bslash = strrchr(dirbuf, '\\');
-         if (!slash || (bslash && bslash > slash))
-            slash = bslash;
-#endif
-         if (slash)
-            *slash = '\0';
-         if (dirbuf[0])
+         snprintf(probebuf, sizeof(probebuf), "%s/vnovel", sysdir);
+         if (stat(probebuf, &st) == 0 && S_ISDIR(st.st_mode))
          {
-            /* Only accept it if it carries the faces, for the same reason the
-             * engine probes for the polyfill: an empty vnovel/ directory means
-             * nothing was installed and the option should offer no faces
-             * rather than five that cannot be opened.
-             *
-             * A local stat rather than libretro-common's path_is_directory:
-             * that helper lives in a file this build does not link (the core
-             * links only the compat/encodings subset), and pulling it in for
-             * one check would be a worse trade than three lines here. */
-            struct stat st;
-            snprintf(probebuf, sizeof(probebuf), "%s/vnovel", dirbuf);
-            if (stat(probebuf, &st) == 0 && S_ISDIR(st.st_mode))
+            snprintf(dirbuf, sizeof(dirbuf), "%s", probebuf);
+            dir = dirbuf;
+         }
+      }
+
+      /* Beside the core: the portable location, and the one a package that
+       * installs into the cores directory owns. */
+      if (!dir || !dir[0])
+      {
+         const char *coredir = NULL;
+         if (environ_cb(RETRO_ENVIRONMENT_GET_LIBRETRO_PATH, &coredir) &&
+             coredir && coredir[0])
+         {
+            /* The frontend reports the core's own file, not its directory. */
+            snprintf(dirbuf, sizeof(dirbuf), "%s", coredir);
+            char *slash = strrchr(dirbuf, '/');
+#ifdef _WIN32
+            char *bslash = strrchr(dirbuf, '\\');
+            if (!slash || (bslash && bslash > slash))
+               slash = bslash;
+#endif
+            if (slash)
+               *slash = '\0';
+            if (dirbuf[0])
             {
-               snprintf(dirbuf, sizeof(dirbuf), "%s", probebuf);
-               dir = dirbuf;
+               snprintf(probebuf, sizeof(probebuf), "%s/vnovel", dirbuf);
+               if (stat(probebuf, &st) == 0 && S_ISDIR(st.st_mode))
+               {
+                  snprintf(dirbuf, sizeof(dirbuf), "%s", probebuf);
+                  dir = dirbuf;
+               }
             }
          }
       }
+
+#ifndef _WIN32
+      /* The system-wide package location, which is also the engine's
+       * compiled-in default. A .deb installs there: a package cannot write to
+       * the frontend's system directory, which belongs to the user. */
+      if (!dir || !dir[0])
+      {
+         snprintf(probebuf, sizeof(probebuf), "/usr/share/krkrsdl2");
+         if (stat(probebuf, &st) == 0 && S_ISDIR(st.st_mode))
+         {
+            snprintf(dirbuf, sizeof(dirbuf), "%s", probebuf);
+            dir = dirbuf;
+         }
+      }
+#endif
    }
    if (dir && dir[0])
    {

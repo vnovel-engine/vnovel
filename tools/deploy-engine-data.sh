@@ -9,27 +9,19 @@
 # polyfill parses every scenario), plugin shims, the plugin override table, and
 # a fallback font.
 #
-# They are DATA, and they go beside the core, in a vnovel/ subdirectory of the
-# frontend's libretro ("cores") directory:
+# They are DATA, and they go in the frontend's system directory, as a vnovel/
+# subdirectory (or in the package's share directory, /usr/share/krkrsdl2, which
+# is the engine's compiled-in default):
 #
-#     Linux (packaged)     /usr/lib/<triplet>/libretro/vnovel
-#     Recalbox / Pi        /usr/lib/libretro/vnovel
-#     RetroArch elsewhere  <libretro_directory>/vnovel
+#     RetroArch (all)      <system_directory>/vnovel
+#     Linux package        /usr/share/krkrsdl2
+#     Windows drop-in zip  system/vnovel beside retroarch.exe
 #
-# That is a libretro path by construction: it is the directory the core was
-# loaded from, which the core reads back with
-# RETRO_ENVIRONMENT_GET_LIBRETRO_PATH, so the data always travels with the core
-# and the two can never be version-mismatched. It is also the one directory a
-# package is entitled to install into.
-#
-# This used to be the frontend's system ("BIOS") directory. It was moved: that
-# directory belongs to the user, so a package must not write there, and making
-# the core depend on a copy in it meant a KiriKiri game failed to boot on a
-# stock install where nothing had ever created it.
-#
-# The core resolves this with no configuration. An explicit KRKRSDL2_DATA_PATH
-# still wins, and the engine's own compiled-in default (/usr/share/krkrsdl2)
-# remains the last resort for a hand-placed install.
+# The core resolves it with no configuration, in this order: an explicit
+# KRKRSDL2_DATA_PATH, <system_directory>/vnovel, <libretro_directory>/vnovel
+# (the portable location), then /usr/share/krkrsdl2. The system directory is
+# the convention the other cores follow; the share directory is what a
+# distribution package can write.
 #
 # Two files are load-bearing:
 #
@@ -53,7 +45,7 @@ SRC="$CORE_DIR/deps/krkrsdl2/data"
 # DATA for the installed tree, not something compiled into the core.
 FONTS_SRC="$CORE_DIR/resources/fonts"
 
-TARGET=${1:-/usr/lib/libretro/vnovel}
+TARGET=${1:-/usr/share/krkrsdl2}
 
 [ -d "$SRC" ] || { echo "no such source: $SRC" >&2; exit 1; }
 # The target may not exist yet on a fresh install, so create it — but only if

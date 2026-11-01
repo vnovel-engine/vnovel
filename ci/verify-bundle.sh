@@ -73,11 +73,12 @@ for bundle in "$@"; do
 			[ "$cores" -eq 1 ] || bad "$bundle: expected exactly one core, found $cores"
 			find "$data" -path '*usr/share/libretro/info/vnovel_libretro.info' |
 				grep -q . || bad "$bundle: core-info missing"
-			# Same load-bearing engine data as the tarball, beside the core.
+			# Same load-bearing engine data as the tarball, in the
+			# system-wide share directory the engine defaults to.
 			for want in \
-				'libretro/vnovel/overrides.txt' \
-				'libretro/vnovel/system_polyfill/KAGParser.tjs' \
-				'libretro/vnovel/system_polyfill/PluginStubs.tjs'
+				'share/krkrsdl2/overrides.txt' \
+				'share/krkrsdl2/system_polyfill/KAGParser.tjs' \
+				'share/krkrsdl2/system_polyfill/PluginStubs.tjs'
 			do
 				find "$data" -path "*$want" | grep -q . ||
 					bad "$bundle: $want missing (KiriKiri games cannot run)"
@@ -101,10 +102,11 @@ for bundle in "$@"; do
 			bad "$bundle: $want missing"
 	done
 
-	# The KiriKiri engine's data, beside the core as vnovel/. Load-bearing and
-	# silent when missing: without system_polyfill/ the engine has no scenario
-	# parser, so a .xp3 game starts and then fails, and without overrides.txt it
-	# tries to load the game's own Windows plugins and aborts startup. Checked
+	# The KiriKiri engine's data, as vnovel/ in the system directory (or at the
+	# root of the flat bundles). Load-bearing and silent when missing: without
+	# system_polyfill/ the engine has no scenario parser, so a .xp3 game starts
+	# and then fails, and without overrides.txt it tries to load the game's own
+	# Windows plugins and aborts startup. Checked
 	# by name because these are what the engine opens by name.
 	for want in \
 		/vnovel/overrides.txt \

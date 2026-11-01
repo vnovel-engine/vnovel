@@ -3,6 +3,20 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## Unreleased
+
+### Changed
+
+- **The KiriKiri engine data now lives in the frontend's system directory**, as
+  `vnovel/`, the same place the other cores keep theirs (Dolphin's
+  `system/dolphin-emu`, PPSSPP's `system/PPSSPP`). The Windows drop-in zip
+  carries it as `system/vnovel/`; `install.sh` and `install.bat` copy it there.
+  The `.deb` installs it to `/usr/share/krkrsdl2`, the engine's compiled-in
+  default, because a package cannot write to the user's system directory.
+
+  The core still finds a copy beside itself, so an existing rc3 install keeps
+  working, and an explicit `KRKRSDL2_DATA_PATH` still wins.
+
 ## 1.0.0-rc3 — 2026-11-01
 
 ### Added

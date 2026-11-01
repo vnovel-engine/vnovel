@@ -7,9 +7,9 @@ trivial: the font is the source of truth, the header is a build artifact.
 
 This is only for the two FALLBACK fonts. They are embedded because a game whose
 own font is missing must still render, and that has to work with nothing
-deployed beside the core. The user-selectable faces are NOT embedded: they ship
-as files next to the engine data (see tools/deploy-engine-data.sh), which keeps
-the core binary small and lets a user replace a face.
+deployed with the engine data. The user-selectable faces are NOT embedded: they
+ship as files next to the engine data (see tools/deploy-engine-data.sh), which
+keeps the core binary small and lets a user replace a face.
 """
 import os
 import sys

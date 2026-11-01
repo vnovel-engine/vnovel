@@ -188,9 +188,10 @@ Linux bundles come as a `.tar.gz` and a `.deb`; Windows as a `.zip`; macOS as a
 `.tar.gz`.
 
 The Windows zip is laid out as a portable RetroArch directory — `cores/` with
-the core, its `.info` and `vnovel/`, and `database/rdb/` with the game database
-— so extracting it into a RetroArch directory is the whole install. `install.bat`
-in the same archive installs into a cores directory somewhere else.
+the core and its `.info`, `system/vnovel/` with the engine data, and
+`database/rdb/` with the game database — so extracting it into a RetroArch
+directory is the whole install. `install.bat` in the same archive installs into
+a cores directory somewhere else.
 
 ## Engine data (the KiriKiri polyfill)
 
@@ -198,23 +199,27 @@ The core is one file, but the KiriKiri engine needs a small set of
 **non-compiled** assets at runtime. This build has no native `KAGParser` plugin,
 so the TJS polyfill parses every scenario.
 
-They live in a `vnovel/` subdirectory **beside the core**, in the frontend's
-libretro ("cores") directory:
+They live in a `vnovel/` subdirectory of the frontend's **system directory**,
+the same place the other cores keep theirs (Dolphin's `system/dolphin-emu`,
+PPSSPP's `system/PPSSPP`). A distribution package installs them in its own
+share directory instead, `/usr/share/krkrsdl2`, which is the engine's
+compiled-in default.
 
 | Platform | Directory |
 |---|---|
-| Linux (packaged) | `/usr/lib/<triplet>/libretro/vnovel` |
-| Recalbox / Pi | `/usr/lib/libretro/vnovel` |
-| RetroArch elsewhere | `<libretro_directory>/vnovel` |
+| RetroArch (all) | `<system_directory>/vnovel` |
+| Linux package (.deb) | `/usr/share/krkrsdl2` |
+| Windows drop-in zip | `system/vnovel` beside `retroarch.exe` |
 
-The core finds it with `RETRO_ENVIRONMENT_GET_LIBRETRO_PATH`, i.e. relative to
-its own file. That is deliberate: the data belongs to the core's version, so
-keeping it next to the core means the two can never be mismatched, and it is a
-directory a package may install into — unlike the system ("BIOS") directory,
-which belongs to the reader and is where this used to live.
+The core resolves it in this order: an explicit `KRKRSDL2_DATA_PATH`, then
+`<system_directory>/vnovel`, then `<libretro_directory>/vnovel` (the portable
+location), then `/usr/share/krkrsdl2`. The system directory is the convention
+the other cores follow; the cores directory remains for a portable install and
+for a package that owns it; the share directory is what a distribution package
+can write.
 
 ```
-libretro/vnovel/
+system/vnovel/
     overrides.txt             plugin override table (builtin shims + names)
     mona.ttf                  fallback font
     ComicNeue-Regular.ttf     |
@@ -241,18 +246,19 @@ drop in a face of their own under the same name. A missing or unreadable face
 costs only the choice of that face — the `Font` option then uses the game's own
 font.
 
-It ships in every release bundle and in the Debian package, and `install.sh`
-(and `install.bat` on Windows) copies it next to the core, so an unpacked bundle
-and an installed package behave identically and neither needs any per-machine
+It ships in every release bundle and in the Debian package. `install.sh` (and
+`install.bat` on Windows) copies it into the frontend's system directory, or
+into the package's share directory with `--prefix`, so an unpacked bundle and
+an installed package behave identically and neither needs any per-machine
 setup.
 
-**The core resolves it with no configuration.** It derives the cores directory
-from its own loaded path and points `KRKRSDL2_DATA_PATH` at the `vnovel/`
-directory there. The frontend's system ("BIOS") directory is still set as
-`KRKRSDL2_OVERRIDE_PATH`, so a reader can drop in an `overrides.txt` of their
-own without touching the packaged copy, and it takes precedence. An explicit
-`KRKRSDL2_DATA_PATH` wins over everything, and if no `vnovel/` copy exists the
-engine falls back to its compiled-in default (`/usr/share/krkrsdl2`).
+**The core resolves it with no configuration.** It points `KRKRSDL2_DATA_PATH`
+at the first of those directories that exists. The frontend's system ("BIOS")
+directory is still set as `KRKRSDL2_OVERRIDE_PATH`, so a reader can drop in an
+`overrides.txt` of their own without touching the packaged copy, and it takes
+precedence. An explicit `KRKRSDL2_DATA_PATH` wins over everything, and if no
+copy exists the engine falls back to its compiled-in default
+(`/usr/share/krkrsdl2`).
 
 Two files are load-bearing and easy to break:
 
