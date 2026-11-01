@@ -594,6 +594,18 @@ automatically. `RETRO_ENVIRONMENT_SET_GEOMETRY` is not called at runtime
 because on Wayland/EGL it triggers a full video driver reinit, producing
 a black screen.
 
+### Internal resolution and text crispness
+
+`Internal Resolution` (`vnovel_internal_resolution`) tells the engine the
+frontend expects a fixed size (640×480 … 1600×1200) instead of the host
+display's own. The engine then lays out and renders at that size, and
+RetroArch scales the finished frame to the display. Rendering above the
+display's size is supersampling: the glyphs are rasterized at the higher
+resolution and then downscaled, so text comes out noticeably crisper than at
+native. The output resolution is still whatever the display is; the option
+only changes the resolution the engine draws at. It costs memory and fill rate
+proportional to the area, so 2× (1280×960) is the usual sweet spot.
+
 ## Submodules
 
 Every submodule resolves to a fork this project maintains, mirrored under
