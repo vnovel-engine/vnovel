@@ -176,9 +176,9 @@ release:
       (ONScripter-EN, PONScripter, KiriKiri/KAG).
 
       Installation: on Linux and macOS, unpack the archive and run
-      `./install.sh`. On Windows, extract the zip into your RetroArch
-      directory (the one with `retroarch.exe`); to install into a cores
-      directory somewhere else, run `install.bat --dir "C:\path\to\cores"`.
+      ./install.sh. On Windows, extract the zip into your RetroArch
+      directory (the one with retroarch.exe); to install into a cores
+      directory somewhere else, run install.bat --dir "C:\path\to\cores".
 
       See [CHANGELOG.md]($CI_PROJECT_URL/-/blob/$CI_COMMIT_TAG/CHANGELOG.md)
       for what changed.
@@ -190,5 +190,3 @@ release:
           url: "$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/download?job=build:linux-aarch64"
         - name: "windows-x86_64 (zip)"
           url: "$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/download?job=build:windows-x86_64"
-        - name: "Debian packages (amd64, arm64)"
-          url: "$CI_PROJECT_URL/-/jobs/artifacts/$CI_COMMIT_TAG/download?job=build:linux-x86_64"
