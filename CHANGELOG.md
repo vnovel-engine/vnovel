@@ -3,7 +3,7 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
-## Unreleased
+## 1.0.0-rc4 — 2026-11-01
 
 ### Changed
 
