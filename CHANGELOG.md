@@ -3,6 +3,17 @@
 Releases of the VNovel libretro core. Each entry says what changed for a user
 of the core; per-engine detail is in each engine fork's own `CHANGELOG.md`.
 
+## 1.0.0-rc6 — 2026-11-01
+
+### Fixed
+
+- **The GitLab release job no longer fails after creating the release.** Two
+  config bugs: the "Debian packages" asset link reused the linux-x86_64 URL
+  (GitLab rejects a duplicate with `400 Url has already been taken`), and the
+  description's backticks were shell-expanded, so the install commands vanished
+  from the release body. The `.deb` files are already in the linux-x86_64
+  artifact, so the duplicate link is gone.
+
 ## 1.0.0-rc5 — 2026-11-01
 
 ### Changed
