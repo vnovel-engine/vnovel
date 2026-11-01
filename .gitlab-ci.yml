@@ -170,8 +170,10 @@ release:
       Multi-engine libretro core for Japanese visual novels
       (ONScripter-EN, PONScripter, KiriKiri/KAG).
 
-      Installation: unpack the archive for your platform and run
-      `./install.sh`.
+      Installation: on Linux and macOS, unpack the archive and run
+      `./install.sh`. On Windows, extract the zip into your RetroArch
+      directory (the one with `retroarch.exe`); to install into a cores
+      directory somewhere else, run `install.bat --dir "C:\path\to\cores"`.
 
       See [CHANGELOG.md]($CI_PROJECT_URL/-/blob/$CI_COMMIT_TAG/CHANGELOG.md)
       for what changed.
